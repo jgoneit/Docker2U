@@ -9,6 +9,10 @@ use std::{
     time::Duration,
 };
 
+#[cfg(all(test, unix))]
+#[path = "docker_tests.rs"]
+mod tests;
+
 const CONTEXT: &str = "colima-docker2u";
 const INSPECT_FORMAT: &str = r#"{"Id":{{json .Id}},"Name":{{json .Name}},"Image":{{json .Config.Image}},"Created":{{json .Created}},"State":{{json .State.Status}},"Health":{{with index .State "Health"}}{{json .Status}}{{else}}null{{end}},"Ports":{{json (index .NetworkSettings "Ports")}}}"#;
 

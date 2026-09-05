@@ -1,5 +1,7 @@
 mod docker;
 mod process;
+#[cfg(all(test, unix))]
+mod process_tests;
 
 use docker::{Action, ApiError, ContainerList, Core, Environment, Logs, Mutation};
 use tauri::Manager;
@@ -69,4 +71,23 @@ pub fn run() {
                 app.state::<Core>().shutdown();
             }
         });
+}
+
+#[cfg(test)]
+mod ipc_tests {
+    #[test]
+    fn capability_exposes_only_typed_operations() {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/main.json")).unwrap();
+        assert_eq!(capability["windows"], serde_json::json!(["main"]));
+        assert_eq!(
+            capability["permissions"],
+            serde_json::json!([
+                "allow-get-environment",
+                "allow-list-containers",
+                "allow-get-recent-logs",
+                "allow-mutate-container"
+            ])
+        );
+    }
 }
