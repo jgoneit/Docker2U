@@ -10,4 +10,11 @@ export default defineConfig({
     watch: { ignored: ['**/src-tauri/**'] },
   },
   build: { target: 'es2022' },
+  test: {
+    environment: 'jsdom',
+    setupFiles: ['./src/test/setup.ts'],
+    include: ['src/**/*.test.{ts,tsx}'],
+    clearMocks: true,
+    restoreMocks: true,
+  },
 });
