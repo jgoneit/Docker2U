@@ -14,6 +14,7 @@ use std::{
 mod tests;
 
 const CONTEXT: &str = "colima-docker2u";
+const APPROVED_MACOS_VERSION: &str = "26.5.2";
 const INSPECT_FORMAT: &str = r#"{"Id":{{json .Id}},"Name":{{json .Name}},"Image":{{json .Config.Image}},"Created":{{json .Created}},"State":{{json .State.Status}},"Health":{{with index .State "Health"}}{{json .Status}}{{else}}null{{end}},"Ports":{{json (index .NetworkSettings "Ports")}}}"#;
 
 #[derive(Debug, Serialize, Clone)]
@@ -304,6 +305,12 @@ struct State {
     diagnosing: bool,
     mutations: HashSet<String>,
 }
+#[derive(Clone, Debug)]
+struct HostInfo {
+    os: String,
+    architecture: String,
+    version: Option<String>,
+}
 #[derive(Clone, Default)]
 pub struct Core {
     runner: Runner,
@@ -312,6 +319,8 @@ pub struct Core {
     config: Option<RuntimeConfig>,
     #[cfg(test)]
     mutation_timeout: Option<Duration>,
+    #[cfg(test)]
+    host: Option<Result<HostInfo>>,
 }
 
 fn args(values: &[&str]) -> Vec<String> {
@@ -319,6 +328,43 @@ fn args(values: &[&str]) -> Vec<String> {
 }
 fn malformed(message: impl Into<String>) -> ApiError {
     ApiError::new("MalformedOutput", message)
+}
+fn parse_macos_version(bytes: &[u8]) -> Result<String> {
+    let version = std::str::from_utf8(bytes)
+        .map_err(|_| malformed("Host macOS version is not UTF-8"))?
+        .trim();
+    let parts: Vec<_> = version.split('.').collect();
+    if !(2..=3).contains(&parts.len())
+        || parts
+            .iter()
+            .any(|part| part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return Err(malformed("Host macOS version is missing or malformed"));
+    }
+    Ok(version.to_owned())
+}
+fn validate_host(host: &HostInfo) -> Result<()> {
+    if host.os == "macos" && host.architecture == "aarch64" && host.version.is_none() {
+        return Err(ApiError::new(
+            "HostDetection",
+            "Host macOS version could not be determined",
+        ));
+    }
+    if host.os != "macos"
+        || host.architecture != "aarch64"
+        || host.version.as_deref() != Some(APPROVED_MACOS_VERSION)
+    {
+        return Err(ApiError::new(
+            "UnsupportedRuntime",
+            format!(
+                "This local alpha requires macOS {APPROVED_MACOS_VERSION} on ARM64; detected {} {} ({})",
+                host.os,
+                host.version.as_deref().unwrap_or("version unavailable"),
+                host.architecture,
+            ),
+        ));
+    }
+    Ok(())
 }
 fn required<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
     value
@@ -354,6 +400,34 @@ fn command_label(path: &Path, args: &[String]) -> String {
 impl Core {
     pub fn shutdown(&self) {
         self.runner.shutdown();
+    }
+
+    fn detect_host(&self) -> Result<HostInfo> {
+        #[cfg(test)]
+        if let Some(host) = &self.host {
+            return host.clone();
+        }
+        let mut host = HostInfo {
+            os: std::env::consts::OS.into(),
+            architecture: std::env::consts::ARCH.into(),
+            version: None,
+        };
+        if host.os == "macos" && host.architecture == "aarch64" {
+            let output = self
+                .checked(
+                    Path::new("/usr/bin/sw_vers"),
+                    &args(&["-productVersion"]),
+                    &[],
+                    5,
+                )
+                .map_err(|mut error| {
+                    error.message =
+                        format!("Cannot determine host macOS version: {}", error.message);
+                    error
+                })?;
+            host.version = Some(parse_macos_version(&output)?);
+        }
+        Ok(host)
     }
 
     fn checked(
@@ -676,13 +750,7 @@ impl Core {
                 "This alpha requires Docker CLI 29.8.0, Colima 0.10.3, and the Linux ARM64 colima-docker2u Engine 29.5.2/API 1.54",
             ));
         }
-        #[cfg(not(test))]
-        if std::env::consts::OS != "macos" || std::env::consts::ARCH != "aarch64" {
-            return Err(ApiError::new(
-                "UnsupportedRuntime",
-                "This local alpha is validated only on Apple Silicon macOS",
-            ));
-        }
+        validate_host(&self.detect_host()?)?;
         target.fingerprint = fingerprint;
         Ok(target)
     }
