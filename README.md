@@ -62,6 +62,11 @@ Colima 연동과 네이티브 앱 실행을 각각 검증한다. 빌드나 mock 
 
 ## 로컬 개발
 
+PR과 `main` push는 [CI](.github/workflows/ci.yml)에서 React/IPC 테스트·TypeScript·
+frontend build와 macOS ARM64 Rust 검사·앱 빌드를 실행한다. 성공한 실행은 서명하지
+않은 앱 ZIP과 SHA-256 checksum을 7일간 보관한다. 실제 Colima 조작과 Finder GUI
+검증은 준비된 Mac에서 별도로 수행한다.
+
 저장소에서 `pnpm install --frozen-lockfile`로 의존성 설치를 완료한 후 다음
 명령을 사용한다. macOS 알파는 사전에 준비된 Colima `docker2u` 프로파일이
 필요하며 앱이 Runtime을 설치하거나 시작하지 않는다.

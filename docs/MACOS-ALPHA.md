@@ -254,6 +254,30 @@ DOCKER2U_REAL_SMOKE=1 node scripts/with-toolchain.mjs cargo test --manifest-path
 DOCKER2U_REAL_PROBE=1 node scripts/with-toolchain.mjs cargo test --manifest-path src-tauri/Cargo.toml --locked real_environment_probe -- --ignored --nocapture
 ```
 
+## 지속적 통합
+
+`.github/workflows/ci.yml`은 `main` 대상 PR, `main` push와 수동 실행을 지원한다.
+동일 PR의 새 실행이 시작되면 이전 실행을 취소하며, Actions 권한은 `contents: read`로
+제한한다. 외부 Action은 전체 commit SHA로 고정한다.
+
+- `Frontend checks`: Ubuntu에서 고정 pnpm·frozen lockfile 설치, React/IPC 테스트,
+  TypeScript strict 검사와 frontend build를 실행한다.
+- `macOS ARM64 build`: macOS 15 ARM64 runner에서 architecture·Python·Xcode와
+  `rust-toolchain.toml`을 확인하고 frontend 생성, Rust format·기본 테스트,
+  Cargo `--locked` 앱 빌드를 실행한다. 초기 checkout에 없는 `dist`와 아이콘은
+  Rust 컴파일 전에 생성한다.
+- Node는 26.5.1, pnpm은 `package.json`, Rust는 `rust-toolchain.toml`의 버전을 사용한다.
+  pnpm store와 Cargo 의존성·target을 캐시하며 lockfile 변경 여부를 검사한다.
+- 빌드 성공 시 ARM64 실행 파일을 확인하고 `.app`을 `ditto` ZIP으로 묶어 파일 권한과
+  bundle 구조를 보존한다. 서명하지 않은 ZIP과 SHA-256 checksum은 해당 실행의
+  artifact로 7일간 보관하며 release로 게시하지 않는다.
+
+CI에는 개발 장비의 도구 디렉터리·native runtime 설정·Colima VM·서명 credential이
+필요하지 않다. 실제 Colima 검사 두 개는 기본 실행의 ignored 상태를 유지한다.
+CI의 macOS 빌드·fake CLI 검사 성공은 실제 Colima 연결, Finder GUI, 서명 배포 또는
+macOS 지원 범위 확대의 증거가 아니다. 각 원격 실행 결과는 PR의 checks와 Actions에서
+확인하며, workflow 추가 자체를 검사 통과로 기록하지 않는다.
+
 ## 이전 중단과 재개
 
 이전 작업에서는 `workspace-write` 실행 환경에서 Rust의 임시 디렉터리 제거가
