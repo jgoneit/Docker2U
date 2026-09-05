@@ -11,13 +11,16 @@ Docker2U는 Windows와 macOS에서 이미 설치된 조직 승인 로컬 컨테�
 ```text
 사용자 문제 검증 완료
 macOS 로컬 알파 기능 구현 및 Docker2U.app 빌드 완료
-Rust 22개 · React/IPC 41개 · 실제 Colima 검사 2개 통과
+Rust 27개 · React/IPC 44개 통과
+초기 알파의 실제 Colima 검사 2개 · Finder GUI 검증 완료
 Finder 실행 · 실제 GUI 조회·복구·정상 Quit 확인
 ```
 
 현재 구현 목표는 Apple Silicon Mac에서 개발 전용 Colima 환경에 연결되는
 `Docker2U.app`이다. Windows와 외부 배포용 서명·notarization은 후속 단계이며,
 이 로컬 알파를 두 플랫폼의 공식 지원 또는 외부 배포 완료로 표현하지 않는다.
+현재 조작 허용 Host는 macOS `26.5.2` / ARM64로 제한한다. Core가 실제 Host
+버전을 확인하며, 다른 버전 또는 확인 실패 시 세션과 조작 권한을 발급하지 않는다.
 
 환경 진단, Container 목록·Health·최근 로그, 수동 Refresh와 Start·Stop·Restart를
 구현했다. 테스트가 생성한 Container는 정확한 ID와 label을 확인해 정리했고,
@@ -56,11 +59,17 @@ Computer Use 권한 허용 후 Finder에서 재빌드한 앱을 실행해 실제
 - 로컬 알파는 Rust Core가 `colima-docker2u` context의 검증된 Unix socket에
   대상을 고정한다. 전역 Docker 기본 context를 변경하거나 따라가지 않는다.
 
-현재 알파는 Seal과 Ward를 사용하지 않는다. Rust·React 자동 검사, 실제
-Colima 연동과 네이티브 앱 실행을 각각 검증한다. 빌드나 mock 성공은
-실제 Docker 조작 또는 Finder에서의 화면 확인을 대신하지 않는다.
+초기 알파는 Seal과 Ward 없이 검증했다. PR #1 리뷰 수정에는 사용자 요청으로
+Seal Basic Acceptance와 기존 검사 catalog를 추가하며 Ward는 사용하지 않는다.
+Rust·React 자동 검사, 실제 Colima 연동과 네이티브 앱 실행은 각각 검증한다.
+빌드나 mock 성공은 실제 Docker 조작 또는 Finder에서의 화면 확인을 대신하지 않는다.
 
 ## 로컬 개발
+
+`.seal/checks.json`은 기존 `pnpm test`, `pnpm build`, `pnpm rust:fmt`,
+`pnpm rust:test`를 필수 검사로 등록한다. 앞의 세 검사는 각각 120초, Rust 테스트는
+300초 제한이다. Seal Task와 Evidence는 로컬 ignored 상태이며 PR에 포함하지 않는다.
+Native 앱 빌드와 실제 Colima 검사는 별도로 실행한다.
 
 PR과 `main` push는 [CI](.github/workflows/ci.yml)에서 React/IPC 테스트·TypeScript·
 frontend build와 macOS ARM64 Rust 검사·앱 빌드를 실행한다. 성공한 실행은 서명하지

@@ -10,6 +10,7 @@ Colima Container를 조회하고 복구할 수 있는 `Docker2U.app`을 만드�
 | --- | --- |
 | Stack | React + TypeScript strict + Tauri 2 + Rust |
 | Host 검증 대상 | 현재 macOS 26.5.2 / Apple Silicon |
+| Host 조작 허용 범위 | macOS `26.5.2` / ARM64만 허용하며 Core에서 실제 버전 검사 |
 | Runtime | Colima `docker2u` 개발 프로파일, Docker runtime |
 | VM 기본값 | ARM64, VZ, CPU 2개, 메모리 4 GiB, `--activate=false` |
 | 대상 context | Core가 지정한 `colima-docker2u` |
@@ -32,10 +33,14 @@ DMG·공개 GitHub Release는 후속 검증이다.
 
 ## 준비와 작업 경계
 
-2026-09-05 재개 요청에 따라 Seal과 Ward를 사용하지 않는다. 초기 도구 준비부터
+2026-09-05 최초 재개에서는 Seal과 Ward를 사용하지 않았다. 초기 도구 준비부터
 기능 구현·자동 검사·실환경 확인까지 직접 수행한다. 개발 환경에 필요한 Rust는 공식
 custom-home 설치와 task-local toolchain wrapper를 사용할 수 있다. 이 개발용
 경로를 앱의 Docker CLI 기본 경로나 배포 의존성으로 넣지 않는다.
+
+이후 PR #1 리뷰 수정에서는 사용자가 Seal을 명시적으로 선택하고 설정 추가를
+승인했다. `.seal/checks.json`에 기존 React 테스트·frontend 빌드·Rust 포맷 검사·
+Rust 테스트를 등록하여 Basic Acceptance에 사용한다. Ward는 사용하지 않는다.
 
 저장소의 `scripts/with-toolchain.mjs`가 준비한 Rust 도구체인을 선택한다.
 로컬 앱 개발 명령은 `pnpm native:dev`, native build는 `pnpm native:build`다.
@@ -66,6 +71,17 @@ UI는 typed IPC로 session ID와 opaque handle만 전달한다. Shell을 사용�
 버전을 대조해 현재 profile을 고정한다. 다른 환경은 진단만 허용한다. 목록은
 전체 조회 성공 시에만 새 generation으로 교체하고 실패하면 마지막 목록을
 Stale로 표시한다. 이전 session·generation의 결과가 최신 상태를 덮지 않는다.
+
+세션을 발급하기 전에 Core가 `/usr/bin/sw_vers -productVersion`을 Shell 없이
+기존 실행 계층으로 호출하며 제한 시간은 5초다. macOS `26.5.2` / ARM64만
+허용하고, 다른 정상 OS·버전·architecture는 `unsupported`, 탐지 실패나 잘못된
+출력은 `unavailable`로 반환한다. 두 경우 모두 세션이 없고 `mutationAllowed=false`다.
+앱의 `minimumSystemVersion: 14.0`은 실행 최소 조건이며 조작 허용 범위가 아니다.
+OS 업데이트 후 허용 범위를 넓히려면 해당 조합 검증과 profile 변경이 필요하다.
+
+Refresh 중 Reconnect는 UI와 Core에서 차단한다. Core는 기존 세션·epoch·목록
+generation을 보존하고 `Busy`를 반환한다. 기존 Refresh가 성공하거나 실패한 뒤
+재연결할 수 있으며, UI 함수의 ref 검사로 화면 재렌더링 전 연속 클릭도 차단한다.
 
 Mutation 직전에 full ID, session, generation, endpoint, profile, Engine
 fingerprint를 확인한다. Stop·Restart는 대상과 연결 환경의 확인창을 표시한다.
@@ -278,14 +294,32 @@ CI의 macOS 빌드·fake CLI 검사 성공은 실제 Colima 연결, Finder GUI, 
 macOS 지원 범위 확대의 증거가 아니다. 각 원격 실행 결과는 PR의 checks와 Actions에서
 확인하며, workflow 추가 자체를 검사 통과로 기록하지 않는다.
 
+## PR #1 리뷰 회귀 검사
+
+- React/IPC 테스트 44건과 TypeScript strict 검사를 통과했다. Refresh 중 목록 유지와
+  재연결 차단, 렌더링 전 연속 클릭, 성공·일반 오류·timeout 후 재연결을 검사한다.
+- Rust 기본 검사 27건을 통과했다(실제 Colima 검사 2건은 기본 실행에서 ignored).
+  Fixture의 inspect를 명시적으로 대기·해제하여 `Busy` 시 세션 보존과 성공·실패 후
+  재연결을 검사한다. 승인 Host, 다른 OS·버전·architecture, 탐지 실패·잘못된 출력과
+  이전 세션 조작 거절도 포함한다.
+- Fake Fixture에서만 Host 결과를 주입한다. 실제 버전 파서·허용 정책은 같은 코드로
+  검사하며 `Core::default()`와 두 실제 Colima 검사는 native Host 탐지를 수행한다.
+- 현재 macOS `26.5.2`에서 읽기 전용 `real_environment_probe`를 별도로 통과했다.
+  실제 Host 검사 후 `ready`, `mutationAllowed=true`, 기존 Colima의 빈 목록과
+  generation 1을 확인했다. 이번 리뷰 수정에서는 실제 Container 조작을 재실행하지 않았다.
+- `pnpm native:build --ci --no-sign -- --locked`로 TypeScript/frontend 및 unsigned
+  ARM64 앱 빌드를 통과했다. 앞선 Finder GUI 검증은 초기 알파 기록이며 이번 변경의
+  GUI 수동 재검증으로 간주하지 않는다.
+
 ## 이전 중단과 재개
 
 이전 작업에서는 `workspace-write` 실행 환경에서 Rust의 임시 디렉터리 제거가
 `Operation not permitted`로 실패했고, Colima는 VZ 초기화와 network 파일 정리
 오류로 중단됐다. 당시 기능 구현과 native/runtime 검증은 수행하지 못했다.
 
-현재 재개 작업은 전체 접근 실행 환경이며 같은 의존성·Rust target·Colima
-프로파일을 재사용한다. Seal·Ward 설정이나 lifecycle 작업은 수행하지 않는다.
+초기 재개 작업은 전체 접근 실행 환경에서 같은 의존성·Rust target·Colima
+프로파일을 재사용했고 Seal·Ward 설정이나 lifecycle 작업은 수행하지 않았다.
+이후 Seal 사용 결정은 위 PR 리뷰 수정 범위에 별도로 기록한다.
 이전 중단 기록을 현재의 검증 성공으로 취급하지 않는다.
 
 Windows 실환경, Apple Developer ID 서명, notarization·stapling, DMG,
