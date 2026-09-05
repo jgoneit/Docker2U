@@ -67,7 +67,7 @@ export default function App() {
     }
   }, []);
   const connect = useCallback(async () => {
-    if (busy.current) return;
+    if (busy.current || refreshBusy.current) return;
     const requestEpoch = ++epoch.current;
     session.current = null;
     currentSnapshot.current = null;
@@ -181,7 +181,7 @@ export default function App() {
   return <div className="app-shell">
     <div className="main-content" inert={!!confirmation}>
       <header className="app-header"><div className="brand"><span className="brand-icon" aria-hidden="true"><Boxes size={22} /></span><div><h1>Docker2U</h1><p>Docker CLI, without the CLI friction.</p></div></div><div className="header-right"><span className="platform-badge"><Monitor size={14} aria-hidden="true" /> macOS local alpha</span><button className="icon-button" aria-label="환경 진단 보기" aria-expanded={showDiagnostics} onClick={() => setShowDiagnostics(!showDiagnostics)}><Info size={18} aria-hidden="true" /></button></div></header>
-      <section className="connection-bar" aria-label="연결 환경"><div className="connection-label"><span className={`connection-dot ${ready ? 'connected' : ''}`} /><strong>colima-docker2u</strong><span className="muted">{connecting ? '환경 확인 중' : ready ? 'Local · 연결됨' : '연결되지 않음'}</span></div><div className="connection-actions"><button onClick={() => void connect()} disabled={connecting || mutating}><Cable size={14} aria-hidden="true" />Reconnect</button><button className="primary-button" disabled={!ready || refreshing || mutating} onClick={() => { if (session.current && !refreshBusy.current) void refresh(session.current); }}><RefreshCw size={14} className={refreshing ? 'spin' : ''} aria-hidden="true" />{refreshing ? '갱신 중…' : 'Refresh'}</button></div></section>
+      <section className="connection-bar" aria-label="연결 환경"><div className="connection-label"><span className={`connection-dot ${ready ? 'connected' : ''}`} /><strong>colima-docker2u</strong><span className="muted">{connecting ? '환경 확인 중' : ready ? 'Local · 연결됨' : '연결되지 않음'}</span></div><div className="connection-actions"><button onClick={() => void connect()} disabled={connecting || refreshing || mutating}><Cable size={14} aria-hidden="true" />Reconnect</button><button className="primary-button" disabled={!ready || refreshing || mutating} onClick={() => { if (session.current && !refreshBusy.current) void refresh(session.current); }}><RefreshCw size={14} className={refreshing ? 'spin' : ''} aria-hidden="true" />{refreshing ? '갱신 중…' : 'Refresh'}</button></div></section>
       {showDiagnostics && <Diagnostics environment={environment} close={() => setShowDiagnostics(false)} copy={copy} />}
       <main className="workspace">
         <aside className="inventory-panel" aria-labelledby="inventory-title">

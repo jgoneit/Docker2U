@@ -554,7 +554,7 @@ impl Core {
     pub fn get_environment(&self) -> Result<Environment> {
         let epoch = {
             let mut state = self.state.lock().unwrap();
-            if !state.mutations.is_empty() || state.diagnosing {
+            if !state.mutations.is_empty() || state.diagnosing || state.refreshing {
                 return Err(ApiError::new("Busy", "An operation is still in progress"));
             }
             state.epoch += 1;
