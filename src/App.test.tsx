@@ -124,25 +124,95 @@ describe('environment and inventory', () => {
     await waitFor(() => expect(screen.queryByText('Stale · 마지막 정상 목록입니다.')).not.toBeInTheDocument());
     expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
   });
-  it('coalesces refresh clicks and ignores an older session list after reconnect', async () => {
+  it('blocks reconnect during a pending refresh and reconnects after it succeeds', async () => {
     const user = userEvent.setup();
     render(<App />);
     await connected();
-    const old = deferred<ContainerList>();
-    mock.listContainers.mockImplementationOnce(() => old.promise);
+    const pending = deferred<ContainerList>();
+    mock.listContainers.mockReturnValueOnce(pending.promise);
     const refreshButton = screen.getByRole('button', { name: 'Refresh' });
-    fireEvent.click(refreshButton);
-    fireEvent.click(refreshButton);
+    const reconnectButton = screen.getByRole('button', { name: 'Reconnect' });
+    await user.click(refreshButton);
+    expect(refreshButton).toBeDisabled();
+    expect(reconnectButton).toBeDisabled();
+    await user.click(refreshButton);
+    await user.click(reconnectButton);
+    expect(mock.getEnvironment).toHaveBeenCalledTimes(1);
     expect(mock.listContainers).toHaveBeenCalledTimes(2);
     expect(screen.getAllByRole('option')).toHaveLength(2);
+    expect(screen.getByRole('option', { name: /backend/ })).toBeVisible();
+    expect(screen.getByRole('option', { name: /redis/ })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Stop' })).toBeDisabled();
+    await act(async () => { pending.resolve(list(2, [{ ...backend, name: 'refreshed-container' }])); });
+    expect(screen.getByRole('option', { name: /refreshed-container/ })).toBeVisible();
+    expect(reconnectButton).toBeEnabled();
     mock.getEnvironment.mockResolvedValueOnce({ ...environment, sessionId: 'session-2' });
     mock.listContainers.mockResolvedValueOnce(list(1, [{ ...redis, name: 'new-session-container' }], 'session-2'));
-    await user.click(screen.getByRole('button', { name: 'Reconnect' }));
-    await screen.findByRole('option', { name: /new-session-container/ });
-    await act(async () => { old.resolve(list(99, [{ ...backend, name: 'stale-session-container' }])); });
-    expect(screen.queryByRole('option', { name: /stale-session-container/ })).not.toBeInTheDocument();
-    expect(screen.getByRole('option', { name: /new-session-container/ })).toBeVisible();
+    await user.click(reconnectButton);
+    expect(await screen.findByRole('option', { name: /new-session-container/ })).toBeVisible();
+    expect(mock.getEnvironment).toHaveBeenCalledTimes(2);
+    expect(mock.listContainers).toHaveBeenCalledTimes(3);
+    expect(mock.listContainers).toHaveBeenLastCalledWith('session-2');
+  });
+  it.each([
+    { code: 'MalformedOutput', message: '전체 목록을 해석하지 못했습니다.' },
+    { code: 'TimedOut', message: '목록 조회 시간이 초과되었습니다.' },
+  ])('reenables reconnect after a pending refresh rejects with $code', async failure => {
+    const user = userEvent.setup();
+    render(<App />);
+    await connected();
+    const pending = deferred<ContainerList>();
+    mock.listContainers.mockReturnValueOnce(pending.promise);
+    const refreshButton = screen.getByRole('button', { name: 'Refresh' });
+    const reconnectButton = screen.getByRole('button', { name: 'Reconnect' });
+    await user.click(refreshButton);
+    expect(refreshButton).toBeDisabled();
+    expect(reconnectButton).toBeDisabled();
+    await user.click(refreshButton);
+    await user.click(reconnectButton);
+    expect(mock.getEnvironment).toHaveBeenCalledTimes(1);
+    expect(mock.listContainers).toHaveBeenCalledTimes(2);
+    expect(screen.getAllByRole('option')).toHaveLength(2);
+    expect(screen.getByRole('option', { name: /backend/ })).toBeVisible();
+    expect(screen.getByRole('option', { name: /redis/ })).toBeVisible();
+    await act(async () => { pending.reject(failure); });
+    expect(screen.getByText(failure.message)).toBeVisible();
+    expect(screen.getByText('Stale · 마지막 정상 목록입니다.')).toBeVisible();
+    expect(screen.getAllByRole('option')).toHaveLength(2);
+    expect(refreshButton).toBeEnabled();
+    expect(reconnectButton).toBeEnabled();
+    mock.getEnvironment.mockResolvedValueOnce({ ...environment, sessionId: 'session-2' });
+    mock.listContainers.mockResolvedValueOnce(list(1, [{ ...redis, name: 'new-session-container' }], 'session-2'));
+    await user.click(reconnectButton);
+    expect(await screen.findByRole('option', { name: /new-session-container/ })).toBeVisible();
+    expect(mock.getEnvironment).toHaveBeenCalledTimes(2);
+    expect(mock.listContainers).toHaveBeenCalledTimes(3);
+    expect(mock.listContainers).toHaveBeenLastCalledWith('session-2');
+    expect(screen.queryByText('Stale · 마지막 정상 목록입니다.')).not.toBeInTheDocument();
+  });
+  it('guards immediate reconnect and duplicate refresh clicks before React disables the buttons', async () => {
+    render(<App />);
+    await connected();
+    const pending = deferred<ContainerList>();
+    mock.listContainers.mockReturnValueOnce(pending.promise);
+    const refreshButton = screen.getByRole<HTMLButtonElement>('button', { name: 'Refresh' });
+    const reconnectButton = screen.getByRole<HTMLButtonElement>('button', { name: 'Reconnect' });
+    act(() => {
+      refreshButton.click();
+      // Native clicks share one React batch, so only the refs can stop these requests.
+      expect(refreshButton).toBeEnabled();
+      expect(reconnectButton).toBeEnabled();
+      reconnectButton.click();
+      refreshButton.click();
+    });
+    expect(mock.getEnvironment).toHaveBeenCalledTimes(1);
+    expect(mock.listContainers).toHaveBeenCalledTimes(2);
+    expect(screen.getAllByRole('option')).toHaveLength(2);
+    expect(screen.getByRole('option', { name: /backend/ })).toBeVisible();
+    expect(screen.getByRole('option', { name: /redis/ })).toBeVisible();
+    expect(reconnectButton).toBeDisabled();
+    await act(async () => { pending.resolve(list(2)); });
+    expect(reconnectButton).toBeEnabled();
   });
   it('rejects stale generations without replacing the last successful snapshot', async () => {
     const user = userEvent.setup();

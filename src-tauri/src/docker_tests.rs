@@ -40,6 +40,11 @@ impl Fixture {
                 // Allow interpreter startup under the parallel process suite;
                 // timeout fixtures then block for ten seconds deterministically.
                 mutation_timeout: Some(Duration::from_secs(2)),
+                host: Some(Ok(HostInfo {
+                    os: "macos".into(),
+                    architecture: "aarch64".into(),
+                    version: Some(APPROVED_MACOS_VERSION.into()),
+                })),
                 ..Core::default()
             },
             _socket: socket,
@@ -106,7 +111,13 @@ if a[1]=='ls':
     sys.exit()
 if a[1]=='inspect':
     if mode=='reconcile_fail' and (p/'mutated').exists(): print('cannot connect',file=sys.stderr);sys.exit(1)
-    if mode=='slow_inspect': (p/'inspecting').write_text('1');time.sleep(.3)
+    if mode in ['held_inspect','held_inspect_failure']:
+        (p/'inspecting').write_text('1')
+        deadline=time.monotonic()+10
+        while not (p/'release-inspect').exists():
+            if time.monotonic()>deadline: print('fixture release timed out',file=sys.stderr);sys.exit(1)
+            time.sleep(.005)
+        if mode=='held_inspect_failure': print('inspect failed',file=sys.stderr);sys.exit(1)
     state=(p/'state').read_text() if (p/'state').exists() else 'exited'
     for ident in a[4:]:
         print(json.dumps({'Id':'f'*64 if mode=='wrong_id' else ident,'Name':"/test;$(touch forbidden)",'Image':'busybox:test','Created':'2026-09-05T08:00:00Z','State':state,'Health':None,'Ports':None}))
@@ -322,21 +333,184 @@ fn duplicate_mutation_and_reconnect_are_busy() {
 }
 
 #[test]
-fn reconnect_discards_old_refresh_result() {
-    let fixture = Fixture::new();
-    let id = fixture.connect();
-    fixture.mode("slow_inspect");
-    let core = fixture.core.clone();
-    let old = id.clone();
-    let child = thread::spawn(move || core.list_containers(&old));
-    let started = Instant::now();
-    while !fixture.dir.join("inspecting").exists() {
-        assert!(started.elapsed() < Duration::from_secs(10));
-        thread::sleep(Duration::from_millis(5));
+fn reconnect_preserves_active_refresh_until_success_or_failure() {
+    for mode in ["held_inspect", "held_inspect_failure"] {
+        let fixture = Fixture::new();
+        let id = fixture.connect();
+        let first = fixture.core.list_containers(&id).unwrap();
+        let epoch = fixture.core.state.lock().unwrap().epoch;
+        fixture.mode(mode);
+        let core = fixture.core.clone();
+        let old = id.clone();
+        let child = thread::spawn(move || core.list_containers(&old));
+        let started = Instant::now();
+        while !fixture.dir.join("inspecting").exists() {
+            assert!(started.elapsed() < Duration::from_secs(10));
+            thread::sleep(Duration::from_millis(5));
+        }
+        let trace = fixture.trace();
+        assert_eq!(fixture.core.get_environment().unwrap_err().code, "Busy");
+        assert_eq!(fixture.core.list_containers(&id).unwrap_err().code, "Busy");
+        {
+            let state = fixture.core.state.lock().unwrap();
+            let session = state.session.as_ref().unwrap();
+            assert_eq!(state.epoch, epoch);
+            assert!(state.refreshing);
+            assert!(!state.diagnosing);
+            assert_eq!(session.id, id);
+            assert_eq!(session.generation, first.generation);
+            assert!(session.handles.contains_key(&first.containers[0].handle));
+            assert!(!session.stale);
+        }
+        assert_eq!(fixture.trace(), trace);
+        fs::write(fixture.dir.join("release-inspect"), "1").unwrap();
+        let refreshed = child.join().unwrap();
+        if mode == "held_inspect" {
+            let refreshed = refreshed.unwrap();
+            assert_eq!(refreshed.session_id, id);
+            assert_eq!(refreshed.generation, first.generation + 1);
+        } else {
+            assert_eq!(refreshed.unwrap_err().code, "CommandFailed");
+            let active = fixture.core.active(&id).unwrap();
+            assert_eq!(active.generation, first.generation);
+            assert!(active.stale);
+        }
+        assert!(!fixture.core.state.lock().unwrap().refreshing);
+        fixture.mode("");
+        let new_id = fixture.connect();
+        assert_ne!(new_id, id);
+        assert_eq!(fixture.core.active(&new_id).unwrap().generation, 0);
+        assert_eq!(fixture.core.list_containers(&new_id).unwrap().generation, 1);
+        assert_eq!(fixture.mutations(), 0);
     }
-    let new_id = fixture.connect();
-    assert_eq!(child.join().unwrap().unwrap_err().code, "StaleSession");
-    assert_eq!(fixture.core.active(&new_id).unwrap().generation, 0);
+}
+
+#[test]
+fn macos_version_parser_requires_one_numeric_version() {
+    for (output, expected) in [
+        (b"26.5.2\n".as_slice(), "26.5.2"),
+        (b" 26.5.2\r\n".as_slice(), "26.5.2"),
+        (b"14.0\n".as_slice(), "14.0"),
+        (b"26.5.3".as_slice(), "26.5.3"),
+    ] {
+        assert_eq!(parse_macos_version(output).unwrap(), expected);
+    }
+    for output in [
+        b"".as_slice(),
+        b" \n",
+        b"26.5.2\n26.5.2",
+        b"macOS 26.5.2",
+        b"26.5.2beta",
+        b"26..2",
+        b"26.5.2.1",
+        b"26",
+        b"\xff",
+    ] {
+        assert_eq!(
+            parse_macos_version(output).unwrap_err().code,
+            "MalformedOutput"
+        );
+    }
+}
+
+#[test]
+fn approved_host_receives_a_session_and_mutation_permission() {
+    let fixture = Fixture::new();
+    let env = fixture.core.get_environment().unwrap();
+    assert_eq!(env.status, "ready");
+    assert!(env.mutation_allowed);
+    assert!(env.session_id.is_some());
+    assert_eq!(fixture.mutations(), 0);
+}
+
+#[test]
+fn unapproved_hosts_cannot_replace_an_active_session() {
+    for (os, architecture, version) in [
+        ("macos", "aarch64", Some("14.0")),
+        ("macos", "aarch64", Some("15.0")),
+        ("macos", "aarch64", Some("26.5.1")),
+        ("macos", "aarch64", Some("26.5.3")),
+        ("macos", "aarch64", Some("27.0")),
+        ("macos", "x86_64", Some("26.5.2")),
+        ("linux", "aarch64", None),
+    ] {
+        let mut fixture = Fixture::new();
+        let old_id = fixture.connect();
+        let list = fixture.core.list_containers(&old_id).unwrap();
+        fixture.core.host = Some(Ok(HostInfo {
+            os: os.into(),
+            architecture: architecture.into(),
+            version: version.map(str::to_owned),
+        }));
+        let env = fixture.core.get_environment().unwrap();
+        assert_eq!(env.status, "unsupported", "{env:?}");
+        assert!(!env.mutation_allowed);
+        assert!(env.session_id.is_none());
+        assert!(env.diagnostics[0].contains(APPROVED_MACOS_VERSION));
+        assert!(env.diagnostics[0].contains(architecture));
+        assert_eq!(
+            fixture
+                .core
+                .mutate_container(&old_id, &list.containers[0].handle, Action::Start)
+                .unwrap_err()
+                .code,
+            "StaleSession"
+        );
+        assert_eq!(fixture.mutations(), 0);
+    }
+}
+
+#[test]
+fn host_detection_failures_never_grant_a_session() {
+    let malformed = parse_macos_version(b"invalid host version").unwrap_err();
+    for error in [
+        ApiError::new(
+            "StartFailed",
+            "Cannot determine host macOS version: cannot start sw_vers",
+        ),
+        ApiError::new(
+            "TimedOut",
+            "Cannot determine host macOS version: command timed out",
+        ),
+        ApiError::new(
+            "CommandFailed",
+            "Cannot determine host macOS version: nonzero exit",
+        ),
+        malformed,
+    ] {
+        let mut fixture = Fixture::new();
+        let reason = error.message.clone();
+        fixture.core.host = Some(Err(error));
+        let env = fixture.core.get_environment().unwrap();
+        assert_eq!(env.status, "unavailable");
+        assert!(!env.mutation_allowed);
+        assert!(env.session_id.is_none());
+        assert_eq!(env.diagnostics, vec![reason]);
+        assert_eq!(fixture.mutations(), 0);
+    }
+    assert_eq!(
+        validate_host(&HostInfo {
+            os: "macos".into(),
+            architecture: "aarch64".into(),
+            version: None,
+        })
+        .unwrap_err()
+        .code,
+        "HostDetection"
+    );
+}
+
+#[test]
+fn default_core_detects_the_native_host() {
+    let core = Core::default();
+    assert!(core.host.is_none());
+    let host = core.detect_host().unwrap();
+    assert_eq!(host.os, std::env::consts::OS);
+    assert_eq!(host.architecture, std::env::consts::ARCH);
+    if host.os == "macos" && host.architecture == "aarch64" {
+        let version = host.version.unwrap();
+        assert_eq!(parse_macos_version(version.as_bytes()).unwrap(), version);
+    }
 }
 
 #[test]
@@ -384,6 +558,7 @@ fn real_environment_probe() {
     let env = core.get_environment().unwrap();
     eprintln!("environment: {}", serde_json::to_string(&env).unwrap());
     assert_eq!(env.status, "ready", "{env:?}");
+    assert!(env.mutation_allowed);
     let list = core
         .list_containers(env.session_id.as_deref().unwrap())
         .unwrap();
@@ -403,6 +578,7 @@ fn real_runtime_smoke() {
     let env = core.get_environment().unwrap();
     eprintln!("environment: {}", serde_json::to_string(&env).unwrap());
     assert_eq!(env.status, "ready", "{env:?}");
+    assert!(env.mutation_allowed);
     let session = core.active(env.session_id.as_deref().unwrap()).unwrap();
     let id = session.id.clone();
     let nonce = uuid::Uuid::new_v4().simple().to_string();
