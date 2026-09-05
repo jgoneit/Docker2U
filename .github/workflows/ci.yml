@@ -86,7 +86,7 @@ jobs:
         run: git diff --exit-code -- pnpm-lock.yaml src-tauri/Cargo.lock
       - name: Verify ARM64 binary and archive app
         run: |
-          lipo -verify_arch arm64 src-tauri/target/release/bundle/macos/Docker2U.app/Contents/MacOS/docker2u
+          lipo src-tauri/target/release/bundle/macos/Docker2U.app/Contents/MacOS/docker2u -verify_arch arm64
           ditto -c -k --sequesterRsrc --keepParent src-tauri/target/release/bundle/macos/Docker2U.app "$RUNNER_TEMP/Docker2U-macos-arm64-unsigned.zip"
           cd "$RUNNER_TEMP"
           shasum -a 256 Docker2U-macos-arm64-unsigned.zip > Docker2U-macos-arm64-unsigned.zip.sha256
