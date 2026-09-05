@@ -4,13 +4,13 @@
 
 | 항목 | 내용 |
 | --- | --- |
-| 문서 상태 | Draft |
-| 문서 버전 | 1.0 |
+| 문서 상태 | macOS 로컬 알파 구현 기준, 외부 v0.1 출시 기준 병기 |
+| 문서 버전 | 1.1 |
 | 작성일 | 2026-09-01 |
 | 제품 목표 버전 | Docker2U v0.1 |
-| 대상 플랫폼 | Windows, macOS |
-| 기술 방향 | Rust + Tauri 2 + TypeScript + Svelte |
-| 구현 상태 | 미착수 — 본 문서는 개발 정의만 다룬다 |
+| 대상 플랫폼 | 현재 macOS 26.5.2 Apple Silicon 로컬 알파, Windows 후속 |
+| 기술 방향 | Rust + Tauri 2 + React + TypeScript strict |
+| 구현 상태 | macOS 로컬 알파 구현·실환경 검증 완료, 외부 v0.1 검증은 후속 |
 
 ---
 
@@ -23,6 +23,28 @@ Docker2U v0.1의 개발과 리뷰는 이 문서를 기준으로 수행한다. �
 기능은 기본적으로 v0.1 범위가 아니다.
 
 이 문서는 애플리케이션 구현을 포함하지 않는다.
+
+### 1.1 현재 구현 단계: macOS 로컬 알파
+
+사용자 문제 검증은 완료되었다. 현재 승인된 구현 범위와 단계별 완료 기준은
+[macOS 로컬 알파 기준](MACOS-ALPHA.md)을 함께 적용한다. 이 절은 아래의
+두 OS 동시 검증, Phase 0 재조사, 서명 배포 gate보다 현재 로컬 알파에 우선한다.
+
+- 현재 Mac의 macOS 26.5.2 / Apple Silicon과 실제 준비·검증한 Colima 조합을
+  대상으로 한다. 설치 버전과 검증 결과는 확인 후 기록하며 미확인 성공을 가정하지 않는다.
+- Windows, Intel Mac, macOS 14+ 전 범위와 외부 배포 서명·notarization은 후속이다.
+  아래 두 OS 지원 matrix와 signed release gate는 외부 v0.1 출시 요건으로 유지한다.
+- UI는 제공된 React 패널을 기반으로 한다. 기본 창은 1280×800, 최소는
+  1024×680이며 어두운 테마의 왼쪽 목록·오른쪽 상세 구조를 사용한다.
+- Rust Core가 `colima-docker2u` context만 선택하고 검증한 local Unix socket을
+  session에 고정한다. 전역 기본 context와 `DOCKER_HOST` / `DOCKER_CONTEXT`는
+  앱 대상 선택에 영향을 주지 않는다. Reconnect도 같은 이름의 context를 재검증한다.
+- Colima 개발 프로파일 `docker2u`는 Docker runtime, ARM64, VZ, CPU 2개,
+  메모리 4 GiB, `--activate=false`로 준비한다. Runtime 설치·시작은 개발 준비이며
+  앱 기능이나 배포물에 포함하지 않는다. 기존 Docker Desktop 자원은 유지한다.
+- 현재 알파는 Seal과 Ward를 사용하지 않고 구현·검증한다. 환경 진단·실행 계층,
+  목록·로그, 복구·재조회 순서로 기능을 연결하며 Rust·React 테스트, 실제 Colima
+  연동과 네이티브 앱 실행 결과를 각각 기록한다.
 
 ---
 
@@ -310,6 +332,12 @@ provider를 표준으로 사용한다면 Phase 0에서 같은 contract suite를 
 그 조합으로 교체하거나 호환 대상으로 추가한다. 테스트하지 않은 provider를
 공식 지원 대상으로 표현하지 않는다.
 
+현재 로컬 알파에는 위 두 profile의 인증을 요구하지 않는다. 현재 Mac과
+`colima-docker2u`의 실제 CLI·Colima·Server/API 버전 및 판별 signal을 먼저
+기록하고 해당 조합만 검증한다. Windows profile은 mutation 지원을 주장하지
+않는 후속 대상이며, macOS 알파 결과로 `mac14-arm64-colima-v0_1`의 전체
+버전 범위를 인증하지 않는다.
+
 각 profile은 다음 값을 release 전에 고정한다.
 
 ```text
@@ -324,8 +352,9 @@ Server/API version 범위
 Contract suite revision과 마지막 통과일
 ```
 
-초기 exact version 범위는 Phase 0의 실환경 조사와 contract test에서 확정한다.
-범위가 채워지지 않은 profile로 구현 Phase 1에 진입하지 않는다. Profile catalog는
+외부 출시 exact version 범위는 실환경 contract test에서 확정한다.
+알파 skeleton과 검사 기반 준비는 version 조사와 병행할 수 있지만, 실제 알파
+mutation은 확인한 macOS/Colima 조합을 profile로 고정한 뒤 허용한다. Profile catalog는
 앱 release에 read-only로 포함하고 사용자가 임의로 추가하거나 수정할 수 없게 한다.
 
 ### 7.3 Provider 정책
@@ -341,6 +370,9 @@ Contract suite revision과 마지막 통과일
 | containerd / nerdctl | 지원하지 않음 |
 | Remote Docker Engine | 차단 |
 | Unknown provider | 진단 정보만 표시하고 mutation 차단 |
+
+위 표는 외부 v0.1 목표 정책이다. 현재 알파의 조회·mutation 대상은 검증된
+`colima-docker2u` 조합 하나이며 다른 local provider는 진단 정보만 표시한다.
 
 Podman을 Docker Engine으로 표현하지 않는다. 호환 provider는 공급자 이름과
 지원 수준을 정확히 표시한다.
@@ -416,7 +448,7 @@ Docker CLI 탐색
         ↓
 CLI 절대경로와 Client 버전 확인
         ↓
-Docker context 확인
+Core가 지정한 colima-docker2u context 확인
         ↓
 실제 endpoint와 scheme 확인
         ↓
@@ -429,11 +461,13 @@ Engine 연결 확인
 Provider / Server Version / OSType 확인
 ```
 
-Target resolver는 Docker CLI의 선택 우선순위를 해석한다. `DOCKER_CONTEXT`가
-지정되면 `DOCKER_HOST`와 기본 context보다 우선하고, 그렇지 않으면 명시된 host와
-기본 context를 구분해 실제 endpoint를 확인한다. 프런트엔드는 context 이름이나
-endpoint 문자열을 직접 지정할 수 없다. 허용된 endpoint는 새로운
-`EnvironmentSessionId`와 함께 고정한다.
+현재 알파의 Target resolver는 Core 소유 상수 `colima-docker2u`만 해석한다.
+Docker CLI를 통해 해당 context의 endpoint를 확인하고 Colima 개발 프로파일
+`docker2u`의 상태·버전과 대조한다. 외부 기본 context를 읽어 자동 선택하거나
+변경하지 않으며 `DOCKER_HOST`와 `DOCKER_CONTEXT`를 대상 선택에 사용하지 않는다.
+프런트엔드는 context 이름이나 endpoint 문자열을 직접 지정할 수 없다.
+허용된 endpoint는 새로운 `EnvironmentSessionId`와 함께 고정한다. 해당 context가
+없거나 미지원·원격 endpoint이면 진단 상태를 반환하고 다른 context로 fallback하지 않는다.
 
 같은 socket 또는 named pipe 뒤의 Engine instance가 교체되는 상황을 구분하기 위해
 session 생성 시 `EngineFingerprint`도 고정한다.
@@ -746,6 +780,10 @@ Docker 버전별 stderr 문자열에 강하게 의존하는 세밀한 오류 분
 
 ### 9.1 Main Window
 
+macOS 알파는 사용자가 제공한 React 패널의 어두운 테마와 검색·필터를 유지한다.
+기본 창 1280×800, 최소 1024×680에서 왼쪽 Container 목록과 오른쪽 상세·로그를
+배치한다. 아래는 정보 구성 참고이며 하단 상세 배치를 강제하지 않는다.
+
 ```text
 ┌───────────────────────────────────────────────────────────────────┐
 │ Docker2U                 Colima/Moby ● Connected                  │
@@ -777,6 +815,12 @@ Docker 버전별 stderr 문자열에 강하게 의존하는 세밀한 오류 분
 - Loading, Empty, Disconnected, Busy, Error 상태를 기능과 함께 구현한다.
 - 목록 선택이 바뀌어도 이미 시작된 작업의 대상은 full ID로 고정한다.
 - 키보드 탐색과 스크린 리더용 레이블을 제공한다.
+- 상세는 State, Health, 최근 갱신 시각, 최근 로그, 복구 Action 순으로 읽히게 한다.
+- 목록의 검색 결과 없음과 실제 Container 0개를 구분한다.
+- Refresh 실패는 기존 목록에 Stale을 표시하고, 작업 결과 불확실과 재조회 실패를
+  일반 실패와 구분한다. 확인창의 focus 이동·복원과 Escape 동작을 구현한다.
+- UX 시뮬레이터와 mock은 개발·테스트에서만 사용한다. 외부 폰트 요청,
+  환경 변수 표시, Local-only 해제 설정은 알파에 포함하지 않는다.
 
 ### 9.3 Empty State
 
@@ -817,7 +861,7 @@ Docker2U는 Container 생성 기능을 제공하지 않습니다.
 ```text
 Desktop Framework   Tauri 2
 Backend             Rust stable + Tokio
-Frontend            TypeScript strict + Svelte
+Frontend            React + TypeScript strict
 Bundler             Vite
 Package Manager     pnpm
 Serialization       Serde-compatible typed payloads
@@ -841,6 +885,9 @@ Rust toolchain과 Rust·frontend dependency는 저장소의 toolchain 및 lockfi
 Windows는 WebView2, macOS는 WKWebView를 사용한다. 같은 HTML/CSS라도 렌더링,
 키보드, 스크롤, 폰트 동작에 차이가 있을 수 있으므로 두 플랫폼의 실제 장비에서
 UI 검증을 수행한다.
+
+현재 알파는 macOS WKWebView와 Finder에서 실행한 `.app`만 검증한다. React와
+브라우저 테스트 성공을 Windows WebView2 검증으로 기록하지 않는다.
 
 ### 10.3 Rust + Tauri 결정
 
@@ -869,7 +916,7 @@ Docker2U v0.1은 `.NET` 계열 데스크톱 stack 대신 Rust + Tauri 2를 채�
 ```text
 Docker2U
 │
-├─ src/                         # Svelte frontend
+├─ src/                         # React frontend
 │  ├─ routes/
 │  ├─ components/
 │  ├─ stores/
@@ -1277,6 +1324,10 @@ Docker2U 자체는 제품 서버와 통신하지 않는다. Docker CLI가 Engine
 
 Docker2U는 하나의 코드베이스에서 플랫폼별 산출물을 만든다.
 
+현재 macOS 로컬 알파의 산출물은 로컬 실행용 `Docker2U.app`, 소스, 검사 결과다.
+아래 서명·notarized DMG·Windows installer 요구는 외부 출시 단계에 적용한다.
+로컬 빌드 성공만으로 Gatekeeper·서명·clean-machine 설치 검증을 완료하지 않는다.
+
 ### 17.1 Windows
 
 초기 대상:
@@ -1392,7 +1443,12 @@ Signed and notarized DMG
 
 ### 18.3 Real Runtime Integration Test
 
-다음 native host 조합에서 동일한 contract suite를 검증한다.
+현재 알파는 현재 Mac의 `colima-docker2u` context에서 수행한다. 테스트 전용
+label이 붙은 임시 Container를 생성하고 생성 시 확보한 정확한 full ID만 정리한다.
+기존 Container·Volume은 수정하지 않는다. 외부 default context 변경 검증은
+기존 context를 보존·복원하며 앱이 고정 대상을 유지하는지 확인한다.
+
+외부 v0.1 출시 전에는 다음 native host 조합에서 동일한 contract suite를 검증한다.
 
 ```text
 Windows 11 x64 + Rancher Desktop dockerd (moby)
@@ -1410,7 +1466,7 @@ macOS 14+ arm64 + Colima Docker runtime
 - Engine 중지와 재연결
 - 외부에서 active context를 바꿔도 현재 session target이 변하지 않음
 - 같은 socket/npipe 뒤 Engine ID 교체 시 mutation 차단과 session 폐기
-- Reconnect 후에만 새 target을 다시 해석함
+- Reconnect 후에만 Core가 지정한 context의 endpoint를 다시 해석함
 - 앱 종료 시 read·mutation을 포함한 Docker2U child process가 남지 않음
 
 ### 18.4 Security Test
@@ -1443,6 +1499,10 @@ macOS 14+ arm64 + Colima Docker runtime
 
 ### 18.6 Packaging Test
 
+현재 알파에서는 개발 실행과 Finder의 `.app` 실행을 각각 확인하고, Finder의
+제한된 PATH에서도 CLI 탐색이 가능한지 검사한다. 아래 서명 및 clean-machine
+배포 검증은 후속으로 남기며 수행하지 않은 항목은 미검증으로 기록한다.
+
 - Windows 서명 검증
 - macOS signature 검증
 - macOS notarization 검증
@@ -1456,9 +1516,15 @@ macOS 14+ arm64 + Colima Docker runtime
 
 ## 19. 개발 단계
 
+현재 알파의 실행 순서는 초기 준비 → 직접 검사 기반 확립 → 환경 진단·실행 계층
+→ 목록·로그 → 복구·재조회다. Seal과 Ward를 사용하지 않으며 각 기능은
+선택한 자동 검사와 실제 Mac 검증으로 확인한다.
+상세 순서와 완료 표는 [macOS 로컬 알파 기준](MACOS-ALPHA.md)을 따른다.
+아래 Phase는 외부 v0.1 출시 로드맵이며 현재 알파에 Windows·서명 gate를 적용하지 않는다.
+
 ### Phase 0 — 제품·호환성 확정
 
-- 대상 조직 2곳 이상 또는 사용자 8~12명 인터뷰
+- 사용자 문제 검증 완료: 인터뷰를 구현 전 조건으로 반복하지 않음
 - Windows와 macOS에서 실제 사용 중인 Runtime 조사
 - 개별 Container 작업과 Compose 작업 비율 확인
 - 공식 지원 Runtime 조합을 OS별 최소 1개 확정
@@ -1541,6 +1607,11 @@ mutation 기능 없이도 사용자가 문제 Container를 찾고 최근 로그�
 ---
 
 ## 20. v0.1 Acceptance Criteria
+
+이 절은 두 OS 외부 출시의 전체 기준이다. 현재 로컬 알파의 완료 여부는
+[알파 완료 체크리스트](MACOS-ALPHA.md#완료-체크리스트)로 별도 판정한다.
+실제 검증 자료가 없는 항목은 체크하지 않는다. 초기 문제 검증 완료와 완성 앱의
+Pilot 성과 측정도 별개이며 후자의 수치를 추정하여 채우지 않는다.
 
 ### 20.1 기능
 
@@ -1756,6 +1827,9 @@ Compose 작업이 실제 사용자 작업의 대부분이라면 단순 기능 �
 ---
 
 ## 24. Go / Revise / Stop 기준
+
+아래 Go의 양 플랫폼·Pilot 조건은 외부 출시 결정에 적용한다. 현재 macOS
+알파 구현은 사용자 문제 검증 완료를 전제로 진행하며 Windows 부재만으로 중단하지 않는다.
 
 ### Go
 
