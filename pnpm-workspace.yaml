@@ -1,0 +1,3 @@
+minimumReleaseAgeStrict: true
+storeDir: .cache/pnpm/store
+cacheDir: .cache/pnpm/cache
