@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.cache/
+.DS_Store
+src-tauri/target/
+src-tauri/gen/
+.seal/tasks/
+.seal/evidence/

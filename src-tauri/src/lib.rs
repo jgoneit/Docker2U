@@ -1,0 +1,72 @@
+mod docker;
+mod process;
+
+use docker::{Action, ApiError, ContainerList, Core, Environment, Logs, Mutation};
+use tauri::Manager;
+
+async fn worker<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, ApiError> + Send + 'static,
+) -> Result<T, ApiError> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|e| ApiError {
+            code: "WorkerFailed".into(),
+            message: format!("Native worker interrupted: {e}"),
+            command: None,
+            stderr: None,
+        })?
+}
+
+#[tauri::command]
+async fn get_environment(core: tauri::State<'_, Core>) -> Result<Environment, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.get_environment()).await
+}
+#[tauri::command]
+async fn list_containers(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+) -> Result<ContainerList, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.list_containers(&session_id)).await
+}
+#[tauri::command]
+async fn get_recent_logs(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    handle: String,
+) -> Result<Logs, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.get_recent_logs(&session_id, &handle)).await
+}
+#[tauri::command]
+async fn mutate_container(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    handle: String,
+    action: Action,
+) -> Result<Mutation, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.mutate_container(&session_id, &handle, action)).await
+}
+
+pub fn run() {
+    tauri::Builder::default()
+        .manage(Core::default())
+        .invoke_handler(tauri::generate_handler![
+            get_environment,
+            list_containers,
+            get_recent_logs,
+            mutate_container
+        ])
+        .build(tauri::generate_context!())
+        .expect("Docker2U could not start")
+        .run(|app, event| {
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                app.state::<Core>().shutdown();
+            }
+        });
+}
