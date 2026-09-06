@@ -6,3 +6,5 @@ src-tauri/target/
 src-tauri/gen/
 .seal/tasks/
 .seal/evidence/
+playwright-report/
+test-results/

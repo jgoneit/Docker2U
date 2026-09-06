@@ -1,36 +1,56 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent, MouseEvent } from 'react';
-import { AlertTriangle, Boxes, CheckCircle2, Copy, FileText, LoaderCircle, Play, RefreshCw, Square, X } from 'lucide-react';
-import type { Action, ConnectionTarget, Container, ContainerList, CoreError, Environment, MutationResult, RecentLogs } from './api';
+import { AlertTriangle, Boxes, CheckCircle2, Copy, LoaderCircle, Play, RefreshCw, Square, X } from 'lucide-react';
+import type { Action, ConnectionTarget, Container, ContainerList, CoreError, Environment, MutationResult } from './api';
 import { diagnosticsText } from './api';
+import { displayErrorMessage, type FrontendErrorDescriptor } from './frontendErrors';
+import { LogPanel } from './LogPanel';
+import type { LogSnapshot } from './logSnapshot';
+import { translate, useI18n } from './i18n';
+import { componentMessages } from './messages/components';
+import { usePreferences, type Language } from './preferences';
 
+export function stateLabel(state: string, language: Language) {
+  const key = (['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead'] as const).find(key => key === state) ?? 'unknown';
+  return translate(componentMessages, language, key);
+}
+export function actionLabel(action: Action, language: Language) { return translate(componentMessages, language, action); }
+// Retained for consumers that explicitly require the Docker/English labels.
 export const stateLabels: Record<string, string> = { created: 'Created', running: 'Running', paused: 'Paused', restarting: 'Restarting', removing: 'Removing', exited: 'Stopped', dead: 'Error', unknown: 'Unknown' };
 export const actionLabels: Record<Action, string> = { start: 'Start', stop: 'Stop', restart: 'Restart' };
 export const readableStates = new Set(['created', 'running', 'paused', 'restarting', 'exited', 'dead']);
-export type Operation = MutationResult & ConnectionTarget & { fullId: string; name: string; action: Action };
+export type Operation = MutationResult & ConnectionTarget & { fullId: string; name: string; action: Action; frontendError?: FrontendErrorDescriptor };
 export type Confirmation = ConnectionTarget & { action: 'stop' | 'restart'; sessionId: string; generation: number; returnFocus?: HTMLElement }
   & ({ container: Container; containers?: never } | { containers: Container[]; container?: never });
-export type CopyText = (text: string, label: string) => Promise<void>;
+export type CopyLabel = 'logs' | 'fullId' | 'diagnostics' | 'command';
+export type CopyText = (text: string, label: CopyLabel) => Promise<void>;
 
-export function formatTime(value?: string) {
-  if (!value) return '아직 갱신하지 않음';
+export function formatTime(value?: string, language: Language = 'ko') {
+  if (!value) return translate(componentMessages, language, 'notUpdated');
   const parsed = new Date(value);
-  return Number.isNaN(parsed.valueOf()) ? value : parsed.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return Number.isNaN(parsed.valueOf()) ? value : parsed.toLocaleTimeString(language === 'ko' ? 'ko-KR' : 'en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 export function Health({ value }: { value: string | null }) {
-  const label = !value || value === 'none' ? 'Healthcheck 없음' : value === 'healthy' ? 'Healthy' : value === 'unhealthy' ? 'Unhealthy' : value === 'starting' ? 'Health starting' : 'Health unknown';
-  return <span className={`health health-${value ?? 'none'}`}>{label}</span>;
+  const t = useI18n(componentMessages);
+  const key = !value || value === 'none' ? 'noHealth' : value === 'healthy' ? 'healthy' : value === 'unhealthy' ? 'unhealthy' : value === 'starting' ? 'healthStarting' : 'healthUnknown';
+  return <span className={`health health-${value ?? 'none'}`}>{t(key)}</span>;
 }
 export function State({ value }: { value: string }) {
-  return <span className={`state state-${value}`}><span className="state-dot" />{stateLabels[value] ?? 'Unknown'}</span>;
+  const { language } = usePreferences();
+  return <span className={`state state-${value}`}><span className="state-dot" />{stateLabel(value, language)}</span>;
 }
 export function ErrorDetails({ error }: { error: CoreError }) {
-  return <details className="technical-details"><summary>진단 상세 · {error.code}</summary>{error.command && <pre>{error.command}</pre>}{error.stderr && <pre>{error.stderr}</pre>}</details>;
+  const t = useI18n(componentMessages);
+  const { language } = usePreferences();
+  return <details className="technical-details"><summary>{t('diagnosticDetails', { code: error.code })}</summary><pre tabIndex={0}>{displayErrorMessage(error, language)}</pre>{error.command && <pre tabIndex={0}>{error.command}</pre>}{error.stderr && <pre tabIndex={0}>{error.stderr}</pre>}</details>;
 }
 export function ConnectionFacts({ target }: { target: ConnectionTarget }) {
-  return <dl className="connection-facts"><dt>Context</dt><dd>{target.contextName ?? '확인되지 않음'}</dd><dt>Endpoint</dt><dd>{target.endpoint ?? '확인되지 않음'}</dd><dt>Engine ID</dt><dd>{target.engineId ?? '확인되지 않음'}</dd></dl>;
+  const t = useI18n(componentMessages);
+  return <dl className="connection-facts"><dt>{t('context')}</dt><dd>{target.contextName ?? t('unverified')}</dd><dt>{t('endpoint')}</dt><dd>{target.endpoint ?? t('unverified')}</dd><dt>{t('engine')}</dt><dd>{target.engineId ?? t('unverified')}</dd></dl>;
 }
 export function ConfirmDialog({ confirmation, onCancel, onConfirm }: { confirmation: Confirmation; onCancel: () => void; onConfirm: () => void }) {
+  const t = useI18n(componentMessages);
+  const { language } = usePreferences();
   const dialog = useRef<HTMLDivElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
   const restoreOnClose = useRef(true);
@@ -41,10 +61,7 @@ export function ConfirmDialog({ confirmation, onCancel, onConfirm }: { confirmat
     cancel.current?.focus();
     return () => { if (restoreOnClose.current) previousFocus?.focus(); };
   }, [confirmation.returnFocus]);
-  function cancelConfirmation() {
-    restoreOnClose.current = true;
-    onCancel();
-  }
+  function cancelConfirmation() { restoreOnClose.current = true; onCancel(); }
   function confirm() {
     // Confirmed bulk actions restore focus after the operation and final refresh.
     restoreOnClose.current = !confirmation.containers;
@@ -62,51 +79,83 @@ export function ConfirmDialog({ confirmation, onCancel, onConfirm }: { confirmat
   return <div className="modal-backdrop">
     <div ref={dialog} role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-description" className="confirm-dialog" onKeyDown={keyDown}>
       <div className="dialog-icon"><AlertTriangle size={24} aria-hidden="true" /></div>
-      <h2 id="confirm-title">{actionLabels[confirmation.action]} {targets ? `${targets.length}개 Container` : confirmation.container?.name}?</h2>
-      <p id="confirm-description">{confirmation.action === 'stop' ? '서비스가 중단됩니다. 종료 대기 시간이 지나면 강제로 종료될 수 있습니다.' : '서비스가 잠시 중단됩니다. 진행 중인 요청에 영향을 줄 수 있습니다.'}</p>
-      <div className="confirm-target">{confirmation.container && <dl className="connection-facts"><dt>Container</dt><dd>{confirmation.container.name}</dd><dt>ID</dt><dd>{confirmation.container.shortId}</dd></dl>}<ConnectionFacts target={confirmation} /></div>
-      {targets && <div className="confirm-bulk-targets"><h3>실행 대상 · {targets.length}개</h3><ul>{targets.map(container => <li key={container.handle}><strong>{container.name}</strong><code>{container.fullId}</code></li>)}</ul><h3>제외 대상 · {excluded?.length ?? 0}개</h3>{excluded?.length ? <ul>{excluded.map(container => <li key={container.handle}><strong>{container.name}</strong><code>{container.fullId}</code><p>{stateLabels[container.state] ?? 'Unknown'} 상태 · Running에서만 {actionLabels[confirmation.action]} 가능</p></li>)}</ul> : <p>제외되는 대상이 없습니다.</p>}</div>}
-      <div className="dialog-actions"><button ref={cancel} onClick={cancelConfirmation}>취소</button><button className="danger-button" onClick={confirm}>{actionLabels[confirmation.action]} 확인</button></div>
+      <h2 id="confirm-title">{t('confirmTitle', { action: t(confirmation.action), target: targets ? t('containers', { count: targets.length }) : confirmation.container?.name ?? '' })}</h2>
+      <p id="confirm-description">{t(confirmation.action === 'stop' ? 'stopWarning' : 'restartWarning')}</p>
+      <div className="confirm-target">{confirmation.container && <dl className="connection-facts"><dt>{t('container')}</dt><dd>{confirmation.container.name}</dd><dt>ID</dt><dd>{confirmation.container.shortId}</dd></dl>}<ConnectionFacts target={confirmation} /></div>
+      {targets && <div className="confirm-bulk-targets"><h3>{t('included', { count: targets.length })}</h3><ul>{targets.map(container => <li key={container.handle}><strong>{container.name}</strong><code>{container.fullId}</code></li>)}</ul><h3>{t('excluded', { count: excluded?.length ?? 0 })}</h3>{excluded?.length ? <ul>{excluded.map(container => <li key={container.handle}><strong>{container.name}</strong><code>{container.fullId}</code><p>{t('runningOnly', { state: stateLabel(container.state, language), action: t(confirmation.action) })}</p></li>)}</ul> : <p>{t('noExcluded')}</p>}</div>}
+      <div className="dialog-actions"><button ref={cancel} onClick={cancelConfirmation}>{t('cancel')}</button><button className={`action-button action-${confirmation.action}`} onClick={confirm}>{t('confirm', { action: t(confirmation.action) })}</button></div>
     </div>
   </div>;
 }
 export function Diagnostics({ environment, close, copy }: { environment: Environment | null; close: () => void; copy: CopyText }) {
-  return <section className="diagnostics-panel" aria-label="환경 진단 상세">
-    <div className="section-heading"><h2>환경 진단</h2><button className="icon-button" aria-label="환경 진단 닫기" onClick={close}><X size={16} aria-hidden="true" /></button></div>
-    {environment ? <><dl className="diagnostics-grid">{[['Context', environment.contextName], ['Endpoint', environment.endpoint], ['Docker CLI', environment.dockerPath], ['Docker config', environment.dockerConfigPath], ['Client', environment.clientVersion], ['Server / API', `${environment.serverVersion ?? '—'} / ${environment.apiVersion ?? '—'}`], ['Engine', environment.engineId], ['OS / Architecture', `${environment.osType ?? '—'} / ${environment.architecture ?? '—'}`]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value ?? '확인되지 않음'}</dd></div>)}</dl>{environment.diagnostics.map((message, index) => <p className="diagnostic-message" key={index}>{message}</p>)}{environment.error && <div role="alert"><p>{environment.error.message}</p><ErrorDetails error={environment.error} /></div>}<button onClick={() => void copy(diagnosticsText(environment), '진단 정보')}><Copy size={14} aria-hidden="true" />Copy diagnostics</button><p className="muted small">버전·경로·연결 정보와 오류 코드만 복사합니다. 로그·원문 진단·환경 변수는 포함하지 않습니다.</p></> : <p className="muted">환경 진단 결과가 아직 없습니다.</p>}
+  const t = useI18n(componentMessages);
+  return <section className="diagnostics-panel" aria-label={t('diagnosticsRegion')}>
+    <div className="section-heading"><h2>{t('diagnostics')}</h2><button className="icon-button" aria-label={t('closeDiagnostics')} onClick={close}><X size={16} aria-hidden="true" /></button></div>
+    {environment ? <><dl className="diagnostics-grid">{[[t('context'), environment.contextName], [t('endpoint'), environment.endpoint], [t('dockerCli'), environment.dockerPath], [t('dockerConfig'), environment.dockerConfigPath], [t('client'), environment.clientVersion], [t('serverApi'), `${environment.serverVersion ?? '—'} / ${environment.apiVersion ?? '—'}`], [t('engine'), environment.engineId], [t('osArch'), `${environment.osType ?? '—'} / ${environment.architecture ?? '—'}`]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value ?? t('unverified')}</dd></div>)}</dl>
+      {environment.diagnostics.length > 0 && <details className="technical-details"><summary>{t('nativeDiagnostics')}</summary>{environment.diagnostics.map((message, index) => <pre key={index}>{message}</pre>)}</details>}
+      {environment.error && <div role="alert"><p>{t('diagnosticsFailed')}</p><ErrorDetails error={environment.error} /></div>}
+      <button onClick={() => void copy(diagnosticsText(environment), 'diagnostics')}><Copy size={14} aria-hidden="true" />{t('diagnosticsCopy')}</button><p className="muted small">{t('copyAllowlist')}</p></> : <p className="muted">{t('noDiagnostics')}</p>}
   </section>;
 }
-export function ContainerDetail({ container, snapshot, logs, logsError, loadingLogs, refreshing, mutating, mutationBlocked, mutationAllowed, operation, loadLogs, clearLogs, requestAction, copy }: {
-  container: Container; snapshot: ContainerList; logs: RecentLogs | null; logsError: CoreError | null;
-  loadingLogs: boolean; refreshing: boolean; mutating: boolean; mutationBlocked: boolean; mutationAllowed: boolean;
-  operation: Operation | null; loadLogs: () => void; clearLogs: () => void; requestAction: (action: Action, returnFocus?: HTMLElement) => void; copy: CopyText;
+export function ContainerSummary({ container, snapshot, copy, mutating, mutationBlocked, mutationAllowed }: {
+  container: Container; snapshot: ContainerList; copy: CopyText; mutating: boolean; mutationBlocked: boolean; mutationAllowed: boolean;
 }) {
+  const t = useI18n(componentMessages);
+  const { language } = usePreferences();
+  return <div className="container-summary">
+    <div className="detail-title"><div className="container-icon"><Boxes size={25} aria-hidden="true" /></div><div><span className="eyebrow">{t('container')}</span><h3>{container.name}</h3><p>{container.image}</p></div></div>
+    <div className="status-grid"><div><span className="field-label">{t('state')}</span><State value={container.state} /></div><div><span className="field-label">{t('health')}</span><Health value={container.health} /></div><div><span className="field-label">{t('updated')}</span><span className="updated-time">{formatTime(snapshot.refreshedAt, language)}{snapshot.stale && <span className="stale-tag">{t('stale')}</span>}</span></div></div>
+    <dl className="container-facts"><div><dt>{t('containerId')}</dt><dd><code title={container.fullId}>{container.shortId}</code><button className="icon-button" aria-label={t('copyFullId')} onClick={() => void copy(container.fullId, 'fullId')}><Copy size={13} aria-hidden="true" /></button></dd></div><div><dt>{t('ports')}</dt><dd>{container.ports.length ? container.ports.join(' · ') : t('noPorts')}</dd></div></dl>
+    {mutating && <p className="operation-notice" role="status"><LoaderCircle size={16} className="spin" aria-hidden="true" />{t('operating')}</p>}
+    {mutationBlocked && mutationAllowed && <div className="operation-warning" role="alert">{t('blocked')}</div>}
+    {snapshot.stale && <p className="operation-warning">{t('staleActions')}</p>}
+  </div>;
+}
+export function ContainerDetail({ container, snapshot, logs, logsError, loadingLogs, logRequestPending = false, refreshing, mutating, mutationBlocked, mutationAllowed, loadLogs, clearLogs, requestAction, copy, copyFeedback, logsExpanded, onLogsExpandedChange }: {
+  container: Container; snapshot: ContainerList; logs: LogSnapshot | null; logsError: CoreError | null;
+  loadingLogs: boolean; logRequestPending?: boolean; refreshing: boolean; mutating: boolean; mutationBlocked: boolean; mutationAllowed: boolean;
+  loadLogs: () => void; clearLogs: () => void; requestAction: (action: Action, returnFocus?: HTMLElement) => void; copy: CopyText;
+  copyFeedback?: string; logsExpanded?: boolean; onLogsExpandedChange?: (expanded: boolean) => void;
+}) {
+  const t = useI18n(componentMessages);
+  const [localExpanded, setLocalExpanded] = useState(false);
+  const expanded = logsExpanded ?? localExpanded;
+  const setExpanded = onLogsExpandedChange ?? setLocalExpanded;
+  useEffect(() => { setLocalExpanded(false); }, [container.handle, snapshot.sessionId]);
   const actionsDisabled = !mutationAllowed || mutationBlocked || snapshot.stale || refreshing || mutating;
   function requestConfirmation(event: MouseEvent<HTMLButtonElement>, action: 'stop' | 'restart') {
-    // Preserve the trigger even if WebKit leaves focus elsewhere or inert later clears it.
     event.currentTarget.focus();
     requestAction(action, event.currentTarget);
   }
   return <div className="container-detail">
-    <div className="detail-title"><div className="container-icon"><Boxes size={25} aria-hidden="true" /></div><div><span className="eyebrow">CONTAINER</span><h3>{container.name}</h3><p>{container.image}</p></div></div>
-    <div className="status-grid"><div><span className="field-label">STATE</span><State value={container.state} /></div><div><span className="field-label">HEALTH</span><Health value={container.health} /></div><div><span className="field-label">LAST UPDATED</span><span className="updated-time">{formatTime(snapshot.refreshedAt)}{snapshot.stale && <span className="stale-tag">Stale</span>}</span></div></div>
-    <dl className="container-facts"><div><dt>Container ID</dt><dd><code title={container.fullId}>{container.shortId}</code><button className="icon-button" aria-label="Full ID 복사" onClick={() => void copy(container.fullId, 'Full ID')}><Copy size={13} aria-hidden="true" /></button></dd></div><div><dt>Ports</dt><dd>{container.ports.length ? container.ports.join(' · ') : '게시된 포트 없음'}</dd></div></dl>
-    <section className="logs-panel" aria-labelledby="logs-title">
-      <div className="section-heading"><h3 id="logs-title"><FileText size={16} aria-hidden="true" />최근 로그</h3><div className="compact-actions"><button disabled={snapshot.stale || loadingLogs || refreshing || mutating || !readableStates.has(container.state)} onClick={loadLogs}><RefreshCw size={13} className={loadingLogs ? 'spin' : ''} aria-hidden="true" />Recent Logs</button><button disabled={!logs?.text} onClick={() => { if (logs) void copy(logs.text, '표시된 로그'); }} aria-label="표시된 로그 복사"><Copy size={13} aria-hidden="true" /></button><button disabled={!logs} onClick={clearLogs} aria-label="로그 화면 비우기"><X size={13} aria-hidden="true" /></button></div></div>
-      <div className="log-meta"><span>최근 300줄 · 최대 2 MiB · Snapshot</span><span>로그에 민감정보가 포함될 수 있습니다.</span></div>
-      {logs?.truncated && <p className="truncation-notice" role="status">로그 앞부분이 잘렸습니다. 마지막 2 MiB만 표시·복사합니다.</p>}
-      {logsError ? <div className="log-error" role="alert"><p>최근 로그를 읽지 못했습니다.</p><p>{logsError.message}</p><ErrorDetails error={logsError} /></div> : <pre className={`log-content ${!logs?.text ? 'log-placeholder' : ''}`} aria-label="최근 로그 내용" aria-busy={loadingLogs}>{loadingLogs ? '최근 로그를 불러오는 중…' : logs?.text || (snapshot.stale ? '목록을 갱신한 뒤 로그를 조회하세요.' : !readableStates.has(container.state) ? '현재 상태에서는 로그를 조회할 수 없습니다.' : logs ? '최근 로그가 없습니다.' : 'Recent Logs를 눌러 로그를 조회하세요.')}</pre>}
-    </section>
-    <section className="recovery-panel" aria-labelledby="recovery-title"><div><h3 id="recovery-title">서비스 복구</h3><p>현재 상태를 확인한 뒤 필요한 작업을 실행하세요.</p></div><div className="recovery-actions"><button className="primary-button" disabled={actionsDisabled || !['created', 'exited'].includes(container.state)} onClick={() => requestAction('start')}><Play size={14} aria-hidden="true" />Start</button><button disabled={actionsDisabled || container.state !== 'running'} onClick={event => requestConfirmation(event, 'stop')}><Square size={13} aria-hidden="true" />Stop</button><button disabled={actionsDisabled || container.state !== 'running'} onClick={event => requestConfirmation(event, 'restart')}><RefreshCw size={14} aria-hidden="true" />Restart</button></div></section>
-    {mutating && <p className="operation-notice" role="status"><LoaderCircle size={16} className="spin" aria-hidden="true" />작업 실행 및 상태 재조회 중입니다.</p>}
-    {mutationBlocked && <div className="operation-warning" role="alert">추가 복구 작업이 차단되었습니다. Reconnect로 환경을 다시 검증하세요.</div>}
-    {snapshot.stale && <p className="operation-warning">최신 상태를 확인할 수 없어 복구 작업을 잠시 사용할 수 없습니다. Refresh를 실행하세요.</p>}
-    {operation && <section className={`operation-result outcome-${operation.outcome}`} aria-label="최근 작업 결과">
-      <h3>{operation.outcome === 'succeeded' ? <CheckCircle2 size={16} aria-hidden="true" /> : <AlertTriangle size={16} aria-hidden="true" />}{operation.outcome === 'succeeded' ? 'Succeeded' : operation.outcome === 'failed' ? 'Failed' : 'ResultUnknown · 결과 불확실'}</h3>
-      <p>{operation.action} · {operation.name}</p><ConnectionFacts target={operation} /><p>{operation.message}</p>
-      {operation.outcome === 'resultUnknown' && <p>명령 결과를 확정할 수 없습니다. 자동 재시도하지 않았습니다. 현재 상태가 같더라도 성공을 의미하지 않습니다.</p>}
-      {operation.reconciliation !== 'notNeeded' && <p>{operation.reconciliation === 'succeeded' ? `대상 상태 재조회 완료${operation.observedState ? ` · ${stateLabels[operation.observedState] ?? operation.observedState}` : ''}. 원래 작업 결과는 유지됩니다.` : '대상 상태 재조회 실패. Reconnect가 필요합니다.'}</p>}
-      {(operation.command || operation.stderr) && <details className="technical-details"><summary>실행 상세 · Equivalent command</summary>{operation.command && <><pre>{operation.command}</pre><button onClick={() => void copy(operation.command, 'Equivalent command')}><Copy size={13} aria-hidden="true" />명령 복사</button></>}{operation.exitCode != null && <p>Exit code: {operation.exitCode}</p>}{operation.durationMs != null && <p>경과 시간: {operation.durationMs} ms</p>}{operation.stderr && <pre>{operation.stderr}</pre>}</details>}
-    </section>}
+    <section className="recovery-panel" aria-labelledby="recovery-title"><div><h3 id="recovery-title">{t('recovery')}</h3><p>{t('recoveryHint')}</p></div><div className="recovery-actions"><button className="action-button action-start" disabled={actionsDisabled || !['created', 'exited'].includes(container.state)} onClick={() => requestAction('start')}><Play size={14} aria-hidden="true" />{t('start')}</button><button className="action-button action-stop" disabled={actionsDisabled || container.state !== 'running'} onClick={event => requestConfirmation(event, 'stop')}><Square size={13} aria-hidden="true" />{t('stop')}</button><button className="action-button action-restart" disabled={actionsDisabled || container.state !== 'running'} onClick={event => requestConfirmation(event, 'restart')}><RefreshCw size={14} aria-hidden="true" />{t('restart')}</button></div></section>
+    <LogPanel container={container} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} loadLogs={loadLogs} clearLogs={clearLogs} copy={copy} copyFeedback={copyFeedback} expanded={expanded} onExpandedChange={setExpanded} />
   </div>;
+}
+
+// Warnings remain visible; only definitive outcomes use the compact disclosure.
+export function ResultDisclosure({ identity, children }: { identity: object; children: React.ReactNode }) {
+  const t = useI18n(componentMessages);
+  const id = useId();
+  const [open, setOpen] = useState(false);
+  useEffect(() => { setOpen(false); }, [identity]);
+  return <><button className="result-toggle" aria-expanded={open} aria-controls={id} onClick={() => setOpen(value => !value)}>{t(open ? 'hideResult' : 'showResult')}</button><div id={id} hidden={!open}>{children}</div></>;
+}
+export function OperationResult({ operation, copy }: { operation: Operation; copy: CopyText }) {
+  const t = useI18n(componentMessages);
+  const { language } = usePreferences();
+  const warning = operation.outcome === 'resultUnknown' || operation.mutationBlocked || operation.reconciliation === 'failed';
+  const content = <>
+    <p>{t(operation.outcome === 'succeeded' ? 'succeededMessage' : operation.outcome === 'failed' ? 'failedMessage' : 'unknownMessage')}</p>
+    {operation.reconciliation !== 'notNeeded' && <p>{operation.reconciliation === 'succeeded' ? t('reconciled', { state: operation.observedState ? ` · ${stateLabel(operation.observedState, language)}` : '' }) : t('resultReconcileFailed')}</p>}
+    {operation.mutationBlocked && operation.reconciliation !== 'failed' && <p>{t('resultBlocked')}</p>}
+    <details className="technical-details operation-details"><summary>{t('executionDetails')}</summary><ConnectionFacts target={operation} /><pre tabIndex={0}>{displayErrorMessage(operation, language, operation.frontendError)}</pre>
+      {operation.command && <><pre tabIndex={0}>{operation.command}</pre><button onClick={() => void copy(operation.command, 'command')}><Copy size={13} aria-hidden="true" />{t('copyCommand')}</button></>}
+      {operation.exitCode != null && <p>{t('exitCode', { code: operation.exitCode })}</p>}{operation.durationMs != null && <p>{t('duration', { duration: operation.durationMs })}</p>}{operation.stderr && <pre tabIndex={0}>{operation.stderr}</pre>}
+    </details>
+  </>;
+  return <section className={`operation-result outcome-${warning ? 'resultUnknown' : operation.outcome}`} aria-label={t('operationRegion')}>
+    <h3 className="operation-summary">{warning || operation.outcome !== 'succeeded' ? <AlertTriangle size={16} aria-hidden="true" /> : <CheckCircle2 size={16} aria-hidden="true" />}{t(operation.outcome)} · {actionLabel(operation.action, language)} · {operation.name}</h3>
+    {warning ? content : <ResultDisclosure identity={operation}>{content}</ResultDisclosure>}
+  </section>;
 }
