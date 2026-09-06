@@ -9,6 +9,8 @@ import type { Confirmation, Operation, CopyLabel } from './components';
 import { BulkResult, BulkSelection, canApply, isBoundBulkResult } from './bulk';
 import type { BulkOperation } from './bulk';
 import type { LogSnapshot } from './logSnapshot';
+import { RefreshAge } from './RefreshAge';
+import { bulkResultIssue, errorIssue, resultIssue, retainSessionIssue, type FrontendSession, type SessionIssue } from './frontendSession';
 
 import { PreferencesProvider } from './preferences';
 import { SettingsDialog } from './SettingsDialog';
@@ -58,6 +60,7 @@ function AppContent() {
   const [mutating, setMutating] = useState(false);
   const [reconnectRequired, setReconnectRequired] = useState(false);
   const [mutationBlocked, setMutationBlocked] = useState(false);
+  const [sessionIssue, setSessionIssue] = useState<SessionIssue | null>(null);
   const [operation, setOperation] = useState<Operation | null>(null);
   const [bulkOperation, setBulkOperation] = useState<BulkOperation | null>(null);
   const [bulkPending, setBulkPending] = useState<{ action: Action; count: number } | null>(null);
@@ -67,6 +70,7 @@ function AppContent() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [logsExpanded, setLogsExpanded] = useState(false);
   const settingsTrigger = useRef<HTMLButtonElement>(null);
+  const reconnectTrigger = useRef<HTMLButtonElement>(null);
   const session = useRef<string | null>(null);
   const currentSnapshot = useRef<ContainerList | null>(null);
   const epoch = useRef(0);
@@ -86,6 +90,9 @@ function AppContent() {
   const bulkSelectAll = useRef<HTMLInputElement>(null);
   const bulkRegion = useRef<HTMLElement>(null);
   const pendingBulkFocus = useRef<{ epoch: number } | null>(null);
+  const recordIssue = useCallback((issue: SessionIssue) => {
+    setSessionIssue(previous => retainSessionIssue(previous, issue));
+  }, []);
   useEffect(() => {
     function preserveUserFocus(event: FocusEvent) {
       const target = event.target;
@@ -176,6 +183,7 @@ function AppContent() {
       if (epoch.current !== requestEpoch || session.current !== sessionId || request !== listSequence.current) return;
       const failure = coreError(error);
       setListError(failure);
+      recordIssue(errorIssue('list', error, failure, connectionInvalidatingErrors.has(failure.code)));
       if (connectionInvalidatingErrors.has(failure.code)) {
         blocked.current = true;
         setMutationBlocked(true);
@@ -188,7 +196,7 @@ function AppContent() {
     } finally {
       if (epoch.current === requestEpoch && request === listSequence.current) { refreshBusy.current = false; setRefreshing(false); }
     }
-  }, [invalidateLogs, selectContainer]);
+  }, [invalidateLogs, selectContainer, recordIssue]);
   const connect = useCallback(async () => {
     if (busy.current || refreshBusy.current) return;
     pendingBulkFocus.current = null;
@@ -199,6 +207,7 @@ function AppContent() {
     invalidateLogs();
     refreshBusy.current = false;
     setConnecting(true);
+    setSessionIssue(previous => previous ? { ...previous, scope: 'previous' } : null);
     setEnvironment(null);
     setEnvironmentError(null);
     setSnapshot(null);
@@ -222,14 +231,22 @@ function AppContent() {
       setEnvironment(result);
       if (result.status === 'ready' && result.sessionId) {
         session.current = result.sessionId;
+        setSessionIssue(null);
         setReconnectRequired(false);
         blocked.current = !result.mutationAllowed;
         setMutationBlocked(blocked.current);
         setConnecting(false);
         await refresh(result.sessionId);
+      } else {
+        // A completed connection attempt replaces evidence from the previous session.
+        setSessionIssue(result.error ? errorIssue('connect', result.error, result.error, true) : resultIssue('connect', true));
       }
     } catch (error) {
-      if (epoch.current === requestEpoch) setEnvironmentError(coreError(error));
+      if (epoch.current === requestEpoch) {
+        const failure = coreError(error);
+        setEnvironmentError(failure);
+        setSessionIssue(errorIssue('connect', error, failure, true));
+      }
     } finally {
       if (epoch.current === requestEpoch) setConnecting(false);
     }
@@ -271,14 +288,17 @@ function AppContent() {
     } catch (error) {
       const failure = coreError(error);
       if (epoch.current !== requestEpoch || session.current !== list.sessionId) return;
+      const invalidatesConnection = connectionInvalidatingErrors.has(failure.code);
       // The session can need revalidation even after this log display was invalidated.
-      if (connectionInvalidatingErrors.has(failure.code)) {
+      if (invalidatesConnection) {
         blocked.current = true;
         setMutationBlocked(true);
         setReconnectRequired(true);
+        recordIssue(errorIssue('logs', error, failure, true));
       }
       if (request === logSequence.current && canReadLogs(container, list, requestEpoch)) {
         setLogsError(failure);
+        if (!invalidatesConnection) recordIssue(errorIssue('logs', error, failure, false));
       }
     } finally {
       if (epoch.current === requestEpoch && request === logSequence.current) setLoadingLogs(false);
@@ -289,7 +309,7 @@ function AppContent() {
         void drain();
       }
     }
-  }, [canReadLogs]);
+  }, [canReadLogs, recordIssue]);
   const loadLogs = useCallback((container: Container, list: ContainerList) => {
     if (!canReadLogs(container, list, epoch.current)) return;
     const current = queuedLogRequest.current ?? activeLogRequest.current;
@@ -319,17 +339,21 @@ function AppContent() {
     const target = connectionTarget(environment);
     let result: MutationResult;
     let frontendFailure: FrontendErrorDescriptor | undefined;
+    let issue: SessionIssue | null = null;
     try { result = await api.mutateContainer(targetSession, container.handle, action); }
     catch (error) {
       const failure = coreError(error);
       frontendFailure = frontendErrorDescriptor(failure);
       const uncertain = failure.code === 'IPC_FAILURE' || failure.code === 'WorkerFailed';
       result = { outcome: uncertain ? 'resultUnknown' : 'failed', message: failure.message, command: failure.command ?? '', stderr: failure.stderr ?? '', reconciliation: uncertain ? 'failed' : 'notNeeded', mutationBlocked: true };
+      issue = errorIssue('singleAction', error, failure, true);
     }
     if (epoch.current !== requestEpoch) return;
     blocked.current = blocked.current || result.mutationBlocked || result.reconciliation === 'failed';
     setMutationBlocked(blocked.current);
     if (blocked.current) setReconnectRequired(true);
+    if (issue) recordIssue(issue);
+    else if (result.outcome !== 'succeeded' || result.mutationBlocked || result.reconciliation === 'failed') recordIssue(resultIssue('singleAction', blocked.current, result));
     setOperation({ ...result, frontendError: frontendFailure, fullId: container.fullId, name: container.name, action, ...target });
     await refresh(targetSession);
     if (epoch.current === requestEpoch) { busy.current = false; setMutating(false); }
@@ -358,6 +382,8 @@ function AppContent() {
       if (epoch.current !== requestEpoch) return;
       if (!isBoundBulkResult(result, targetSession, generation, containers, action)) throw frontendError('invalidBulkResponse');
       blocked.current = blocked.current || result.mutationBlocked || result.items.some(item => item.result?.mutationBlocked || item.result?.reconciliation === 'failed');
+      const issue = bulkResultIssue(result, blocked.current);
+      if (issue) recordIssue(issue);
       setBulkOperation({ ...context, result, needsReconnect: blocked.current });
     } catch (error) {
       if (epoch.current !== requestEpoch) return;
@@ -366,6 +392,7 @@ function AppContent() {
       const preflightRejection = ['Busy', 'StaleSession', 'NeedsValidation', 'StaleHandle', 'InvalidSelection'].includes(failure.code);
       const recoverableRejection = ['Busy', 'StaleHandle', 'InvalidSelection'].includes(failure.code);
       blocked.current = blocked.current || !recoverableRejection;
+      recordIssue(errorIssue('bulkAction', error, failure, !recoverableRejection));
       setBulkOperation({ ...context, error: failure, uncertain: !preflightRejection, needsReconnect: blocked.current });
     } finally {
       if (epoch.current === requestEpoch) {
@@ -403,6 +430,13 @@ function AppContent() {
   const ready = environment?.status === 'ready' && !!environment.sessionId;
   const connectionStatus = connecting ? t('checking') : reconnectRequired ? t('reconnectRequired') : ready ? t('connected') : t('disconnected');
   const connectionClass = connecting ? 'checking' : reconnectRequired ? 'reconnect-required' : ready ? 'connected' : '';
+  const frontendSession: FrontendSession = {
+    currentStatus: connecting ? 'checking' : reconnectRequired ? 'reconnectRequired' : ready ? 'connected' : 'disconnected',
+    effectiveMutationBlocked: connecting || !ready || !environment?.mutationAllowed || !snapshot || snapshot.stale || refreshing || mutating || mutationBlocked,
+    reconnectRequired,
+    inventoryStale: snapshot?.stale ?? null, inventoryRefreshedAt: snapshot?.refreshedAt ?? null,
+    issue: sessionIssue,
+  };
   const connectionError = environmentError ?? environment?.error ?? null;
   const [connectionTitle, connectionHelp] = connectionIssue(connectionError, environment?.status === 'unsupported');
   const copyFeedback = clipboardMessage ? clipboardMessage.key === 'copied' ? t('copied', { label: t(clipboardMessage.label) }) : t('copyFailure') : '';
@@ -417,13 +451,13 @@ function AppContent() {
       </header>
       <section className="connection-bar" aria-label={t('connection')}>
         <div className="connection-label"><span className={`connection-dot ${connectionClass}`} /><div className="connection-target"><strong>{environment?.contextName ?? t('contextPending')}</strong><code title={environment?.endpoint ?? undefined}>{environment?.endpoint ?? t('endpointPending')}</code></div><span className="connection-status" role="status">{connectionStatus}</span></div>
-        <div className="connection-actions"><button title={t('reconnectHint')} onClick={() => void connect()} disabled={connecting || refreshing || mutating}><Cable size={14} aria-hidden="true" />{t('reconnect')}</button><button title={t('refreshHint')} className="primary-button" disabled={!ready || refreshing || mutating} onClick={() => { if (session.current && !busy.current && !refreshBusy.current) void refresh(session.current); }}><RefreshCw size={14} className={refreshing ? 'spin' : ''} aria-hidden="true" />{t(refreshing ? 'refreshing' : 'refresh')}</button></div>
+        <div className="connection-actions"><button ref={reconnectTrigger} title={t('reconnectHint')} onClick={() => void connect()} disabled={connecting || refreshing || mutating}><Cable size={14} aria-hidden="true" />{t('reconnect')}</button><button title={t('refreshHint')} className="primary-button" disabled={!ready || refreshing || mutating} onClick={() => { if (session.current && !busy.current && !refreshBusy.current) void refresh(session.current); }}><RefreshCw size={14} className={refreshing ? 'spin' : ''} aria-hidden="true" />{t(refreshing ? 'refreshing' : 'refresh')}</button></div>
       </section>
       <p className="connection-help">{t('connectionHelp')}</p>
-      {showDiagnostics && <Diagnostics environment={environment} close={() => setShowDiagnostics(false)} copy={copy} />}
+      {showDiagnostics && <Diagnostics environment={environment} frontendSession={frontendSession} close={() => setShowDiagnostics(false)} copy={copy} />}
       <main className="workspace">
         <aside className="inventory-panel" aria-labelledby="inventory-title">
-          <div className="panel-heading"><h2 id="inventory-title">{t('containers')} <span className="count-badge">{snapshot?.containers.length ?? '—'}</span></h2><span className="muted small">{t('manual')}</span></div>
+          <div className="panel-heading"><h2 id="inventory-title">{t('containers')} <span className="count-badge">{snapshot?.containers.length ?? '—'}</span></h2><RefreshAge refreshedAt={snapshot?.refreshedAt} /></div>
           <div className="inventory-controls"><div className="search-field"><Search size={16} aria-hidden="true" /><input ref={searchInput} aria-label={t('search')} placeholder={t('searchHint')} value={query} disabled={mutating} onChange={event => updateSearch(event.target.value, filter)} />{query && <button className="search-clear" aria-label={t('clearSearch')} title={t('clearSearch')} disabled={mutating} onClick={() => { updateSearch('', filter); searchInput.current?.focus(); }}><X size={14} aria-hidden="true" /></button>}</div><div className="filter-group" aria-label={t('filters')}>{(['all', 'running', 'stopped', 'attention'] as const).map(value => <button key={value} aria-pressed={filter === value} disabled={mutating} onClick={() => updateSearch(query, value)}>{t(value)}</button>)}</div></div>
           <BulkSelection visible={visible} checked={checked} disabled={mutating || refreshing || connecting || !snapshot || snapshot.stale} actionsDisabled={mutating || refreshing || mutationBlocked || !environment?.mutationAllowed || !snapshot || snapshot.stale} pending={bulkPending} selectAllRef={bulkSelectAll} regionRef={bulkRegion} onToggleAll={() => changeSelection(() => checked.length === visible.length ? new Set() : new Set(visible.map(container => container.handle)))} onClear={() => changeSelection(() => new Set())} onAction={requestBulkAction} />
           {snapshot?.stale && <div className="stale-notice" role="status"><AlertTriangle size={14} aria-hidden="true" /><span>{t('stale')}</span></div>}
@@ -442,6 +476,6 @@ function AppContent() {
       <footer className="app-footer"><span><span className="footer-dot" />{t('footer')}</span><span className="clipboard-feedback" role="status" aria-live="polite">{copyFeedback}</span><span className="footer-connection" role="status">{connectionStatus}</span></footer>
     </div>
     {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} returnFocus={settingsTrigger.current ?? undefined} />}
-    {confirmation && <ConfirmDialog confirmation={confirmation} onCancel={() => setConfirmation(null)} onConfirm={() => { if (confirmation.containers) void mutateBulk(confirmation.containers, confirmation.action, confirmation.sessionId, confirmation.generation); else void mutate(confirmation.container, confirmation.action, confirmation.sessionId, confirmation.generation); }} />}
+    {confirmation && <ConfirmDialog confirmation={confirmation} blocked={reconnectRequired} reconnectFocus={reconnectTrigger} onCancel={() => setConfirmation(null)} onConfirm={() => { if (confirmation.containers) void mutateBulk(confirmation.containers, confirmation.action, confirmation.sessionId, confirmation.generation); else void mutate(confirmation.container, confirmation.action, confirmation.sessionId, confirmation.generation); }} />}
   </div>;
 }

@@ -1,5 +1,6 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { frontendError } from './frontendErrors';
+import { sessionDiagnostics, type FrontendSession } from './frontendSession';
 
 export type Action = 'start' | 'stop' | 'restart';
 export interface Environment {
@@ -93,12 +94,13 @@ export const api = {
   mutateContainers: (sessionId: string, generation: number, handles: string[], action: Action) => call<BulkMutationResult>('mutate_containers', { sessionId, generation, handles, action }),
 };
 // Explicit allowlist: no output, logs, credentials, or ambient environment.
-export function diagnosticsText(environment: Environment): string {
+export function diagnosticsText(environment: Environment | null, frontendSession?: FrontendSession): string {
   return JSON.stringify({
-    app: 'Docker2U', version: '0.1.0-alpha.1', status: environment.status, contextName: environment.contextName,
-    endpoint: environment.endpoint, dockerPath: environment.dockerPath, dockerConfigPath: environment.dockerConfigPath,
-    clientVersion: environment.clientVersion, errorCode: environment.error?.code ?? null,
-    serverVersion: environment.serverVersion, apiVersion: environment.apiVersion, engineId: environment.engineId,
-    osType: environment.osType, architecture: environment.architecture, mutationAllowed: environment.mutationAllowed,
+    app: 'Docker2U', version: '0.1.0-alpha.1', status: environment?.status ?? null, contextName: environment?.contextName ?? null,
+    endpoint: environment?.endpoint ?? null, dockerPath: environment?.dockerPath ?? null, dockerConfigPath: environment?.dockerConfigPath ?? null,
+    clientVersion: environment?.clientVersion ?? null, errorCode: environment?.error?.code ?? null,
+    serverVersion: environment?.serverVersion ?? null, apiVersion: environment?.apiVersion ?? null, engineId: environment?.engineId ?? null,
+    osType: environment?.osType ?? null, architecture: environment?.architecture ?? null, mutationAllowed: environment?.mutationAllowed ?? null,
+    ...(frontendSession ? { frontendSession: sessionDiagnostics(frontendSession) } : {}),
   }, null, 2);
 }

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { api, coreError, diagnosticsText } from './api';
 import type { Environment } from './api';
+import type { FrontendSession, SessionIssue } from './frontendSession';
 
 const native = vi.hoisted(() => ({ invoke: vi.fn(), isTauri: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => native);
@@ -60,6 +61,26 @@ describe('native IPC boundary', () => {
 });
 
 describe('diagnostics export', () => {
+  it('exports frontend evidence without an environment and strips unknown nested fields', () => {
+    const issue: SessionIssue & { message: string; stderr: string; sessionId: string } = {
+      stage: 'connect', origin: 'exception', code: 'IPC_FAILURE', occurredAt: '2026-09-06T01:00:00Z', requiresReconnect: true, scope: 'current',
+      message: 'message-secret', stderr: 'stderr-secret', sessionId: 'private-session',
+    };
+    const frontendSession: FrontendSession & { credentials: string } = {
+      currentStatus: 'disconnected', effectiveMutationBlocked: true, reconnectRequired: false,
+      inventoryStale: null, inventoryRefreshedAt: null, issue, credentials: 'credential-secret',
+    };
+    const exported = diagnosticsText(null, frontendSession);
+    const parsed = JSON.parse(exported);
+    expect(parsed).toMatchObject({ status: null, mutationAllowed: null, frontendSession: {
+      currentStatus: 'disconnected', effectiveMutationBlocked: true, inventoryStale: null,
+      issue: { code: 'IPC_FAILURE', origin: 'exception', occurredAt: issue.occurredAt },
+    } });
+    expect(Object.keys(parsed.frontendSession).sort()).toEqual(['currentStatus', 'effectiveMutationBlocked', 'reconnectRequired', 'inventoryStale', 'inventoryRefreshedAt', 'issue'].sort());
+    expect(Object.keys(parsed.frontendSession.issue).sort()).toEqual(['stage', 'origin', 'code', 'occurredAt', 'requiresReconnect', 'scope'].sort());
+    expect(exported).not.toMatch(/secret|private-session|credentials|stderr/);
+  });
+
   it('copies the connection allowlist and excludes raw diagnostics and extra sensitive fields', () => {
     const environment: Environment & { credentials: string; logs: string } = {
       status: 'ready', sessionId: 'private-session', contextName: 'colima-docker2u',

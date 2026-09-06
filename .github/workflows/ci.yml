@@ -35,6 +35,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: React and IPC tests
         run: pnpm test
+      - name: Isolated native fixture tests
+        run: pnpm test:native-fixture
       - name: TypeScript and frontend build
         run: pnpm build
       - name: Install Chromium for synthetic browser tests

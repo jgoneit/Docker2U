@@ -4,6 +4,8 @@
 선택한 로컬 Linux Engine의 Container를 조회하고 복구할 수 있는 `Docker2U.app`이다.
 이 문서는 [개발 정의서](DEVELOPMENT-DEFINITION.md)의 현재 단계별 적용 기준이다.
 2026-09-06 연결 정책 개정과 2026-09-05의 Colima 고정 알파 검증 이력을 구분한다.
+PR #4 이후의 복구 안내·현재 세션 진단·목록 확인 시각과 재사용 가능한 네이티브
+검증 도구는 [별도 검증 기록](RECOVERY-DIAGNOSTICS.md)에 정리한다.
 
 ## 구현 범위
 

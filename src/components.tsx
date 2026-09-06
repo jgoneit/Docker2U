@@ -1,14 +1,16 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import type { KeyboardEvent, MouseEvent } from 'react';
+import type { KeyboardEvent, MouseEvent, RefObject } from 'react';
 import { AlertTriangle, Boxes, CheckCircle2, Copy, LoaderCircle, Play, RefreshCw, Square, X } from 'lucide-react';
 import type { Action, ConnectionTarget, Container, ContainerList, CoreError, Environment, MutationResult } from './api';
 import { diagnosticsText } from './api';
 import { displayErrorMessage, type FrontendErrorDescriptor } from './frontendErrors';
 import { LogPanel } from './LogPanel';
 import type { LogSnapshot } from './logSnapshot';
+import type { FrontendSession, SessionIssue } from './frontendSession';
 import { translate, useI18n } from './i18n';
 import { componentMessages } from './messages/components';
 import { usePreferences, type Language } from './preferences';
+import { formatDisplayTime, parseTimestamp } from './time';
 
 export function stateLabel(state: string, language: Language) {
   const key = (['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead'] as const).find(key => key === state) ?? 'unknown';
@@ -27,8 +29,8 @@ export type CopyText = (text: string, label: CopyLabel) => Promise<void>;
 
 export function formatTime(value?: string, language: Language = 'ko') {
   if (!value) return translate(componentMessages, language, 'notUpdated');
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.valueOf()) ? value : parsed.toLocaleTimeString(language === 'ko' ? 'ko-KR' : 'en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const parsed = parseTimestamp(value);
+  return parsed ? formatDisplayTime(parsed, language) : value;
 }
 export function Health({ value }: { value: string | null }) {
   const t = useI18n(componentMessages);
@@ -48,21 +50,35 @@ export function ConnectionFacts({ target }: { target: ConnectionTarget }) {
   const t = useI18n(componentMessages);
   return <dl className="connection-facts"><dt>{t('context')}</dt><dd>{target.contextName ?? t('unverified')}</dd><dt>{t('endpoint')}</dt><dd>{target.endpoint ?? t('unverified')}</dd><dt>{t('engine')}</dt><dd>{target.engineId ?? t('unverified')}</dd></dl>;
 }
-export function ConfirmDialog({ confirmation, onCancel, onConfirm }: { confirmation: Confirmation; onCancel: () => void; onConfirm: () => void }) {
+export function ConfirmDialog({ confirmation, blocked = false, reconnectFocus, onCancel, onConfirm }: {
+  confirmation: Confirmation; blocked?: boolean; reconnectFocus?: RefObject<HTMLButtonElement | null>; onCancel: () => void; onConfirm: () => void;
+}) {
   const t = useI18n(componentMessages);
   const { language } = usePreferences();
   const dialog = useRef<HTMLDivElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
+  const execute = useRef<HTMLButtonElement>(null);
   const restoreOnClose = useRef(true);
+  const recoveryFocus = useRef({ blocked, reconnectFocus });
+  recoveryFocus.current = { blocked, reconnectFocus };
   const targets = confirmation.containers?.filter(container => container.state === 'running');
   const excluded = confirmation.containers?.filter(container => container.state !== 'running');
   useEffect(() => {
     const previousFocus = confirmation.returnFocus ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     cancel.current?.focus();
-    return () => { if (restoreOnClose.current) previousFocus?.focus(); };
+    return () => {
+      if (!restoreOnClose.current) return;
+      const recovery = recoveryFocus.current;
+      (recovery.blocked ? recovery.reconnectFocus?.current ?? previousFocus : previousFocus)?.focus();
+    };
   }, [confirmation.returnFocus]);
+  useEffect(() => {
+    // Disabling the focused execute button can leave focus on the WebView body.
+    if (blocked && (document.activeElement === execute.current || !dialog.current?.contains(document.activeElement))) cancel.current?.focus();
+  }, [blocked]);
   function cancelConfirmation() { restoreOnClose.current = true; onCancel(); }
   function confirm() {
+    if (blocked) return;
     // Confirmed bulk actions restore focus after the operation and final refresh.
     restoreOnClose.current = !confirmation.containers;
     onConfirm();
@@ -73,28 +89,57 @@ export function ConfirmDialog({ confirmation, onCancel, onConfirm }: { confirmat
     const elements = dialog.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)');
     const first = elements?.[0];
     const last = elements?.[elements.length - 1];
-    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    if (event.shiftKey && (document.activeElement === first || !dialog.current?.contains(document.activeElement))) { event.preventDefault(); last?.focus(); }
+    else if (!event.shiftKey && (document.activeElement === last || !dialog.current?.contains(document.activeElement))) { event.preventDefault(); first?.focus(); }
   }
   return <div className="modal-backdrop">
-    <div ref={dialog} role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-description" className="confirm-dialog" onKeyDown={keyDown}>
+    <div ref={dialog} role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby={blocked ? 'confirm-description confirm-blocked' : 'confirm-description'} className="confirm-dialog" onKeyDown={keyDown}>
       <div className="dialog-icon"><AlertTriangle size={24} aria-hidden="true" /></div>
       <h2 id="confirm-title">{t('confirmTitle', { action: t(confirmation.action), target: targets ? t('containers', { count: targets.length }) : confirmation.container?.name ?? '' })}</h2>
       <p id="confirm-description">{t(confirmation.action === 'stop' ? 'stopWarning' : 'restartWarning')}</p>
+      {blocked && <p id="confirm-blocked" className="confirm-blocked" role="alert">{t('confirmBlocked')}</p>}
       <div className="confirm-target">{confirmation.container && <dl className="connection-facts"><dt>{t('container')}</dt><dd>{confirmation.container.name}</dd><dt>ID</dt><dd>{confirmation.container.shortId}</dd></dl>}<ConnectionFacts target={confirmation} /></div>
       {targets && <div className="confirm-bulk-targets"><h3>{t('included', { count: targets.length })}</h3><ul>{targets.map(container => <li key={container.handle}><strong>{container.name}</strong><code>{container.fullId}</code></li>)}</ul><h3>{t('excluded', { count: excluded?.length ?? 0 })}</h3>{excluded?.length ? <ul>{excluded.map(container => <li key={container.handle}><strong>{container.name}</strong><code>{container.fullId}</code><p>{t('runningOnly', { state: stateLabel(container.state, language), action: t(confirmation.action) })}</p></li>)}</ul> : <p>{t('noExcluded')}</p>}</div>}
-      <div className="dialog-actions"><button ref={cancel} onClick={cancelConfirmation}>{t('cancel')}</button><button className={`action-button action-${confirmation.action}`} onClick={confirm}>{t('confirm', { action: t(confirmation.action) })}</button></div>
+      <div className="dialog-actions"><button ref={cancel} onClick={cancelConfirmation}>{t('cancel')}</button><button ref={execute} className={`action-button action-${confirmation.action}`} disabled={blocked} onClick={confirm}>{t('confirm', { action: t(confirmation.action) })}</button></div>
     </div>
   </div>;
 }
-export function Diagnostics({ environment, close, copy }: { environment: Environment | null; close: () => void; copy: CopyText }) {
+function DiagnosticIssue({ issue }: { issue: SessionIssue }) {
   const t = useI18n(componentMessages);
+  const { language } = usePreferences();
+  const stageKeys = { connect: 'stageConnect', list: 'stageList', logs: 'stageLogs', singleAction: 'stageSingleAction', bulkAction: 'stageBulkAction' } as const;
+  const originKeys = { frontendError: 'originFrontendError', nativeError: 'originNativeError', exception: 'originException', nativeResult: 'originNativeResult' } as const;
+  return <div className="diagnostic-issue">
+    <h3>{t(issue.requiresReconnect ? 'reconnectCause' : 'latestIssue')}</h3>
+    {issue.scope === 'previous' && <p className="muted small">{t('previousIssue')}</p>}
+    {issue.scope === 'current' && <p className="muted small">{t(issue.requiresReconnect ? 'issueReconnectHelp' : 'issueRefreshHelp')}</p>}
+    <dl className="diagnostics-grid">
+      <div><dt>{t('issueStage')}</dt><dd>{t(stageKeys[issue.stage])}</dd></div>
+      <div><dt>{t('issueOrigin')}</dt><dd>{t(originKeys[issue.origin])}</dd></div>
+      <div><dt>{t('issueCode')}</dt><dd>{issue.code ?? t('noErrorCode')}</dd></div>
+      <div><dt>{t('issueTime')}</dt><dd><time dateTime={issue.occurredAt}>{formatTime(issue.occurredAt, language)}</time></dd></div>
+      {issue.outcome && <div><dt>{t('issueOutcome')}</dt><dd>{t(issue.outcome)}</dd></div>}
+      {issue.reconciliation && <div><dt>{t('issueReconciliation')}</dt><dd>{t(issue.reconciliation === 'notNeeded' ? 'notNeeded' : issue.reconciliation)}</dd></div>}
+    </dl>
+  </div>;
+}
+export function Diagnostics({ environment, frontendSession, close, copy }: { environment: Environment | null; frontendSession?: FrontendSession; close: () => void; copy: CopyText }) {
+  const t = useI18n(componentMessages);
+  const { language } = usePreferences();
   return <section className="diagnostics-panel" aria-label={t('diagnosticsRegion')}>
     <div className="section-heading"><h2>{t('diagnostics')}</h2><button className="icon-button" aria-label={t('closeDiagnostics')} onClick={close}><X size={16} aria-hidden="true" /></button></div>
-    {environment ? <><dl className="diagnostics-grid">{[[t('context'), environment.contextName], [t('endpoint'), environment.endpoint], [t('dockerCli'), environment.dockerPath], [t('dockerConfig'), environment.dockerConfigPath], [t('client'), environment.clientVersion], [t('serverApi'), `${environment.serverVersion ?? '—'} / ${environment.apiVersion ?? '—'}`], [t('engine'), environment.engineId], [t('osArch'), `${environment.osType ?? '—'} / ${environment.architecture ?? '—'}`]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value ?? t('unverified')}</dd></div>)}</dl>
+    {frontendSession && <div className="diagnostic-session"><h3>{t('currentSession')}</h3><dl className="diagnostics-grid">
+      <div><dt>{t('connectionStatus')}</dt><dd>{t(frontendSession.currentStatus)}</dd></div>
+      <div><dt>{t('effectiveBlocked')}</dt><dd>{t(frontendSession.effectiveMutationBlocked ? 'actionsBlocked' : 'actionsAllowed')}</dd></div>
+      <div><dt>{t('reconnectNeeded')}</dt><dd>{t(frontendSession.reconnectRequired ? 'yes' : 'no')}</dd></div>
+      <div><dt>{t('inventoryValidity')}</dt><dd>{t(frontendSession.inventoryStale === null ? 'noInventory' : frontendSession.inventoryStale ? 'staleInventory' : 'acceptedInventory')}</dd></div>
+      <div><dt>{t('updated')}</dt><dd>{frontendSession.inventoryRefreshedAt ? <time dateTime={frontendSession.inventoryRefreshedAt}>{formatTime(frontendSession.inventoryRefreshedAt, language)}</time> : t('notUpdated')}</dd></div>
+    </dl>{frontendSession.issue && <DiagnosticIssue issue={frontendSession.issue} />}</div>}
+    {environment ? <div className="diagnostic-environment"><h3>{t('environmentSnapshot')}</h3><dl className="diagnostics-grid">{[[t('context'), environment.contextName], [t('endpoint'), environment.endpoint], [t('dockerCli'), environment.dockerPath], [t('dockerConfig'), environment.dockerConfigPath], [t('client'), environment.clientVersion], [t('serverApi'), `${environment.serverVersion ?? '—'} / ${environment.apiVersion ?? '—'}`], [t('engine'), environment.engineId], [t('osArch'), `${environment.osType ?? '—'} / ${environment.architecture ?? '—'}`]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value ?? t('unverified')}</dd></div>)}</dl>
       {environment.diagnostics.length > 0 && <details className="technical-details"><summary>{t('nativeDiagnostics')}</summary>{environment.diagnostics.map((message, index) => <pre key={index}>{message}</pre>)}</details>}
       {environment.error && <div role="alert"><p>{t('diagnosticsFailed')}</p><ErrorDetails error={environment.error} /></div>}
-      <button onClick={() => void copy(diagnosticsText(environment), 'diagnostics')}><Copy size={14} aria-hidden="true" />{t('diagnosticsCopy')}</button><p className="muted small">{t('copyAllowlist')}</p></> : <p className="muted">{t('noDiagnostics')}</p>}
+      </div> : <p className="muted">{t('noDiagnostics')}</p>}
+    {(environment || frontendSession) && <><button onClick={() => void copy(diagnosticsText(environment, frontendSession), 'diagnostics')}><Copy size={14} aria-hidden="true" />{t('diagnosticsCopy')}</button><p className="muted small">{t('copyAllowlist')}</p></>}
   </section>;
 }
 export function ContainerSummary({ container, snapshot, copy, mutating, mutationBlocked, mutationAllowed }: {

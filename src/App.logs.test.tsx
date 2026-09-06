@@ -299,6 +299,7 @@ describe('native log request lifetime', () => {
       await user.click(screen.getByRole('button', { name: '중지 (3)' }));
     } else await user.click(within(screen.getByRole('region', { name: '서비스 복구' })).getByRole('button', { name: '중지' }));
     const confirm = within(screen.getByRole('dialog')).getByRole<HTMLButtonElement>('button', { name: '중지 확인' });
+    confirm.focus();
 
     await act(async () => {
       pending.reject({ code: 'EnvironmentChanged', message: 'invalidated request detected an engine change' });
@@ -309,7 +310,14 @@ describe('native log request lifetime', () => {
     });
     expect(mock.mutateContainer).not.toHaveBeenCalled();
     expect(mock.mutateContainers).not.toHaveBeenCalled();
-    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '취소' }));
+    expect(confirm).toBeDisabled();
+    const dialog = within(screen.getByRole('dialog'));
+    expect(dialog.getByRole('alert')).toHaveTextContent('취소한 뒤 다시 연결하세요.');
+    expect(dialog.getByRole('button', { name: '취소' })).toHaveFocus();
+    await user.tab();
+    expect(dialog.getByRole('button', { name: '취소' })).toHaveFocus();
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('button', { name: '다시 연결' })).toHaveFocus();
     expectConnection(true);
     expectRecoveryBlocked();
     expect(output()).toHaveTextContent('로그 조회를 눌러 로그를 확인하세요.');

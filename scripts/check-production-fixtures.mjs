@@ -2,7 +2,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 const dist = resolve('dist');
-const markers = ['LAST_LINE_300', 'visual-fixture-local', 'fixture.invalid', 'SIMULATED ONLY'];
+const markers = ['LAST_LINE_300', 'visual-fixture-local', 'fixture.invalid', 'SIMULATED ONLY', 'NATIVE_SMOKE_HARNESS', 'NATIVE_SMOKE_END', 'Docker2U Native Smoke', '__docker2uRejectLogs'];
 async function inspect(directory) {
   let checked = 0;
   for (const entry of await readdir(directory, { withFileTypes: true })) {
