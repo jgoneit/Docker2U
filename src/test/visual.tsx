@@ -9,6 +9,7 @@ if (import.meta.env.DEV) {
     'long-metadata': 'Long container name, image and 24 published ports',
     'empty-logs': 'Empty logs',
     'loading-logs': 'Logs loading (held pending)',
+    'held-connection-error': 'Held log connection failure — confirmation feedback',
     'log-error': 'Log read error',
     truncated: 'Truncated logs',
     'empty-inventory': 'Empty container list',
@@ -99,6 +100,15 @@ if (import.meta.env.DEV) {
   let generation = 0;
   let containers = structuredClone(baseContainers);
   let snapshot: ContainerList | null = null;
+  let heldLogFailure: ((error: CoreError) => void) | undefined;
+  let holdNextLogs = scenario === 'held-connection-error';
+  if (holdNextLogs) Object.assign(window, {
+    __docker2uRejectLogs: () => {
+      if (!heldLogFailure) throw new Error('No synthetic log request is waiting.');
+      heldLogFailure({ code: 'SocketMissing', message: 'Synthetic socket disappeared after log view invalidation.' });
+      heldLogFailure = undefined;
+    },
+  });
   function reject(code: string, message: string): never {
     throw { code, message } satisfies CoreError;
   }
@@ -160,6 +170,10 @@ if (import.meta.env.DEV) {
     getRecentLogs: async (id, handle): Promise<RecentLogs> => {
       requireSession(id);
       targetFor(handle);
+      if (holdNextLogs) {
+        holdNextLogs = false;
+        return new Promise<RecentLogs>((_resolve, reject) => { heldLogFailure = reject; });
+      }
       if (scenario === 'loading-logs') return new Promise<RecentLogs>(() => {});
       if (scenario === 'log-error') throw {
         code: 'LogsUnavailable',

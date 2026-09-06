@@ -87,13 +87,71 @@ async function expectNoHorizontalOverflow(page: Page) {
 }
 
 async function expectReadableSmallText(page: Page) {
-  const undersized = await page.locator('.log-meta, .field-label, .app-footer, .health, .log-search label, .log-search-input, .log-search-count, .compact-actions button').evaluateAll(elements =>
+  const undersized = await page.locator('.log-meta, .field-label, .app-footer, .health, .refresh-age, .confirm-blocked, .log-search label, .log-search-input, .log-search-count, .compact-actions button').evaluateAll(elements =>
     elements.filter(element => element.getBoundingClientRect().width > 0)
       .map(element => ({ name: element.className || element.tagName, size: parseFloat(getComputedStyle(element).fontSize) }))
       .filter(value => value.size < 12),
   );
   expect(undersized).toEqual([]);
 }
+
+test('shows inventory age without selection and advances it without Docker calls', async ({ page }, testInfo) => {
+  const lang = language(testInfo);
+  await page.clock.install({ time: new Date('2026-09-06T00:14:34Z') });
+  await openFixture(page);
+  const age = page.locator('.refresh-age');
+  await expect(age).toContainText(lang === 'ko' ? '2분 전' : '2 minutes ago');
+  await expect(age).toHaveAttribute('datetime', '2026-09-06T00:12:34.000Z');
+  await expect(age).toHaveAttribute('title', /2026/);
+  await expect(age).toBeInViewport();
+  await expectLogFits(page);
+  const readCalls = () => page.evaluate(() => structuredClone((window as Window & { __docker2uFixtureCalls: Record<string, number> }).__docker2uFixtureCalls));
+  const before = await readCalls();
+  await page.clock.fastForward(120_000);
+  await expect(age).toContainText(lang === 'ko' ? '4분 전' : '4 minutes ago');
+  await page.getByRole('textbox', { name: words[lang].containerSearch, exact: true }).fill('no matching fixture');
+  await expect(page.locator('.log-content')).toHaveCount(0);
+  await expect(age).toBeVisible();
+  expect(await readCalls()).toEqual(before);
+  await expectNoHorizontalOverflow(page);
+  await page.goto('/src/test/visual.html?toolbar=hidden&scenario=empty-inventory');
+  await expect(page.locator('.container-row')).toHaveCount(0);
+  await expect(age).toHaveAttribute('datetime', '2026-09-06T00:12:34.000Z');
+  await expect(age).toBeInViewport();
+});
+
+test('explains and disables blocked single and bulk confirmations while retaining cancel focus', async ({ page }, testInfo) => {
+  const lang = language(testInfo);
+  const t = words[lang];
+  for (const mode of ['single', 'bulk']) {
+    await page.goto('/src/test/visual.html?toolbar=hidden&scenario=held-connection-error');
+    await expect(page.locator('.container-row')).toHaveCount(4);
+    await expect(page.locator('.log-content')).toHaveAttribute('aria-busy', 'true');
+    await page.getByRole('button', { name: lang === 'ko' ? '로그 화면 비우기' : 'Clear displayed logs', exact: true }).click();
+    if (mode === 'bulk') {
+      await page.getByRole('checkbox', { name: t.selectVisible }).check();
+      await page.locator('.bulk-actions').getByRole('button', { name: new RegExp(`^${t.stop}`) }).click();
+    } else await page.locator('.recovery-panel').getByRole('button', { name: t.stop, exact: true }).click();
+    const modal = page.getByRole('dialog');
+    const confirm = modal.getByRole('button', { name: t.confirmStop, exact: true });
+    await confirm.focus();
+    await page.evaluate(() => (window as Window & { __docker2uRejectLogs: () => void }).__docker2uRejectLogs());
+    await expect(confirm).toBeDisabled();
+    await expect(modal.getByRole('alert')).toContainText(lang === 'ko' ? '연결' : /[Rr]econnect/);
+    await expect(modal.getByRole('button', { name: t.cancel, exact: true })).toBeFocused();
+    await expect(modal.getByRole('button', { name: t.cancel, exact: true })).toBeInViewport();
+    await expectNoHorizontalOverflow(page);
+    if (mode === 'single') await page.keyboard.press('Escape');
+    else await modal.getByRole('button', { name: t.cancel, exact: true }).click();
+    await expect(modal).toHaveCount(0);
+    await expect(page.getByRole('button', { name: lang === 'ko' ? '다시 연결' : 'Reconnect', exact: true })).toBeFocused();
+    const calls = await page.evaluate(() => (window as Window & { __docker2uFixtureCalls: Record<string, number> }).__docker2uFixtureCalls);
+    expect(calls.mutateContainer).toBe(0);
+    expect(calls.mutateContainers).toBe(0);
+    expect(calls.getRecentLogs).toBe(1);
+    await expectLogFits(page);
+  }
+});
 
 async function expectLogFits(page: Page, minimumLines = 0) {
   // Measurements do not scroll or focus anything: clipping must be absent before interaction.
