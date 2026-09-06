@@ -16,7 +16,7 @@
     "check:production-fixtures": "node scripts/check-production-fixtures.mjs",
     "build": "pnpm typecheck && vite build && pnpm check:production-fixtures",
     "preview": "vite preview --host 127.0.0.1",
-    "icons": "tauri icon assets/app-icon.svg --output src-tauri/gen/icons",
+    "icons": "tauri icon assets/app-icon.png --output src-tauri/gen/icons",
     "rust:fmt": "node scripts/with-toolchain.mjs cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
     "rust:test": "pnpm icons && node scripts/with-toolchain.mjs cargo test --manifest-path src-tauri/Cargo.toml --locked",
     "tauri": "tauri",

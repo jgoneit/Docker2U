@@ -95,7 +95,7 @@ pnpm native:dev
 pnpm native:build
 ```
 
-native 명령은 `assets/app-icon.svg`에서 ignored `src-tauri/gen/icons` 아래에
+native 명령은 승인된 `assets/app-icon.png`에서 ignored `src-tauri/gen/icons` 아래에
 앱 아이콘을 생성한다. 검사·재개 명령과 현재 제한은
 [알파 검증 기록](docs/MACOS-ALPHA.md)을 참고한다.
 
