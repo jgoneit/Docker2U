@@ -62,18 +62,18 @@ describe('native IPC boundary', () => {
 describe('diagnostics export', () => {
   it('copies the connection allowlist and excludes raw diagnostics and extra sensitive fields', () => {
     const environment: Environment & { credentials: string; logs: string } = {
-      status: 'ready', sessionId: 'private-session', profile: 'colima-docker2u',
-      endpoint: 'unix:///local/docker.sock', dockerPath: '/tools/docker', colimaPath: '/tools/colima',
-      clientVersion: '29.8.0', runtimeVersion: '0.10.3', serverVersion: '29.5.2', apiVersion: '1.54',
+      status: 'ready', sessionId: 'private-session', contextName: 'colima-docker2u',
+      endpoint: 'unix:///local/docker.sock', dockerPath: '/tools/docker', dockerConfigPath: '/local/.docker',
+      clientVersion: '29.8.0', serverVersion: '29.5.2', apiVersion: '1.54',
       engineId: 'engine-id', osType: 'linux', architecture: 'arm64', mutationAllowed: true,
-      diagnostics: ['token=diagnostic-secret'], credentials: 'credential-secret', logs: 'application-secret',
+      error: { code: 'Configuration', message: 'token=message-secret', command: 'command-secret', stderr: 'stderr-secret' }, diagnostics: ['token=diagnostic-secret'], credentials: 'credential-secret', logs: 'application-secret',
     };
     const exported = diagnosticsText(environment);
     const parsed: Record<string, unknown> = JSON.parse(exported);
-    expect(parsed).toMatchObject({ app: 'Docker2U', profile: 'colima-docker2u', serverVersion: '29.5.2', mutationAllowed: true });
+    expect(parsed).toMatchObject({ app: 'Docker2U', contextName: 'colima-docker2u', serverVersion: '29.5.2', mutationAllowed: true });
     expect(Object.keys(parsed).sort()).toEqual([
-      'app', 'version', 'status', 'profile', 'endpoint', 'dockerPath', 'colimaPath',
-      'clientVersion', 'runtimeVersion', 'serverVersion', 'apiVersion', 'engineId',
+      'app', 'version', 'status', 'contextName', 'endpoint', 'dockerPath', 'dockerConfigPath',
+      'clientVersion', 'errorCode', 'serverVersion', 'apiVersion', 'engineId',
       'osType', 'architecture', 'mutationAllowed',
     ].sort());
     expect(exported).not.toMatch(/secret|private-session|credentials|diagnostics|logs/);

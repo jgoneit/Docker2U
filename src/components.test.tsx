@@ -28,7 +28,7 @@ function ConfirmationHarness({ simulateInertFocusLoss = false }: { simulateInert
         requestAction={(action, returnFocus) => {
           if (action === 'start') return;
           setConfirmation({ container, action, sessionId: snapshot.sessionId, generation: snapshot.generation,
-            profile: 'colima-docker2u', endpoint: 'unix:///fixed/docker.sock', returnFocus });
+            contextName: 'colima-docker2u', endpoint: 'unix:///fixed/docker.sock', engineId: 'engine-1', returnFocus });
         }} />
     </div>
     {confirmation && <ConfirmDialog confirmation={confirmation} onCancel={() => setConfirmation(null)} onConfirm={() => {}} />}

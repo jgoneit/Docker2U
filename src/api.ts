@@ -4,20 +4,21 @@ export type Action = 'start' | 'stop' | 'restart';
 export interface Environment {
   status: 'ready' | 'unavailable' | 'unsupported';
   sessionId: string | null;
-  profile: string;
+  contextName: string | null;
   endpoint: string | null;
   dockerPath: string | null;
-  colimaPath: string | null;
+  dockerConfigPath: string | null;
   clientVersion: string | null;
-  runtimeVersion: string | null;
   serverVersion: string | null;
   apiVersion: string | null;
   engineId: string | null;
   osType: string | null;
   architecture: string | null;
   mutationAllowed: boolean;
+  error: CoreError | null;
   diagnostics: string[];
 }
+export type ConnectionTarget = Pick<Environment, 'contextName' | 'endpoint' | 'engineId'>;
 export interface Container {
   handle: string;
   fullId: string;
@@ -93,9 +94,9 @@ export const api = {
 // Explicit allowlist: no output, logs, credentials, or ambient environment.
 export function diagnosticsText(environment: Environment): string {
   return JSON.stringify({
-    app: 'Docker2U', version: '0.1.0-alpha.1', status: environment.status, profile: environment.profile,
-    endpoint: environment.endpoint, dockerPath: environment.dockerPath, colimaPath: environment.colimaPath,
-    clientVersion: environment.clientVersion, runtimeVersion: environment.runtimeVersion,
+    app: 'Docker2U', version: '0.1.0-alpha.1', status: environment.status, contextName: environment.contextName,
+    endpoint: environment.endpoint, dockerPath: environment.dockerPath, dockerConfigPath: environment.dockerConfigPath,
+    clientVersion: environment.clientVersion, errorCode: environment.error?.code ?? null,
     serverVersion: environment.serverVersion, apiVersion: environment.apiVersion, engineId: environment.engineId,
     osType: environment.osType, architecture: environment.architecture, mutationAllowed: environment.mutationAllowed,
   }, null, 2);

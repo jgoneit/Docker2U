@@ -2,13 +2,32 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { AlertTriangle, Boxes, Cable, ChevronRight, Info, LoaderCircle, Monitor, RefreshCw, Search } from 'lucide-react';
 import { api, coreError } from './api';
-import type { Action, Container, ContainerList, CoreError, Environment, MutationResult, RecentLogs } from './api';
+import type { Action, ConnectionTarget, Container, ContainerList, CoreError, Environment, MutationResult, RecentLogs } from './api';
 import { ConfirmDialog, ContainerDetail, Diagnostics, ErrorDetails, Health, State, formatTime, readableStates } from './components';
 import type { Confirmation, Operation } from './components';
 import { BulkResult, BulkSelection, canApply, isBoundBulkResult } from './bulk';
 import type { BulkOperation } from './bulk';
 
 type Filter = 'all' | 'running' | 'stopped' | 'attention';
+const connectionInvalidatingErrors = new Set(['EnvironmentChanged', 'Disconnected', 'SocketMissing', 'PermissionDenied', 'Configuration', 'EndpointMismatch', 'RemoteEndpoint']);
+function connectionIssue(error: CoreError | null, unsupported: boolean) {
+  const issues: Record<string, [string, string]> = {
+    CliNotFound: ['Docker CLI를 확인할 수 없습니다.', 'Docker CLI 실행 파일 설정과 설치 경로를 확인한 뒤 Reconnect하세요.'],
+    Configuration: ['Docker 설정을 읽지 못했습니다.', '앱 실행 환경의 Docker config와 runtime.json 설정을 확인한 뒤 Reconnect하세요.'],
+    ContextSelection: ['Docker 연결 대상을 해석하지 못했습니다.', 'Docker CLI의 context 설정과 앱이 상속한 환경 변수를 확인한 뒤 Reconnect하세요.'],
+    SocketMissing: ['로컬 Docker 소켓을 확인할 수 없습니다.', '표시된 endpoint의 소켓과 해당 런타임 상태를 확인한 뒤 Reconnect하세요.'],
+    PermissionDenied: ['Docker 연결 권한이 부족합니다.', '표시된 경로와 소켓의 접근 권한을 확인한 뒤 Reconnect하세요.'],
+    RemoteEndpoint: ['원격 Docker 연결은 지원하지 않습니다.', 'Docker CLI에서 로컬 Unix socket 연결을 선택한 뒤 Reconnect하세요.'],
+    EndpointMismatch: ['안전한 로컬 Docker 소켓이 아닙니다.', '절대 경로의 실제 Unix socket을 사용하는 Docker 연결을 확인하세요.'],
+    UnsupportedRuntime: ['지원하는 로컬 환경이 아닙니다.', 'macOS 14 이상 ARM64와 Linux Docker Engine이 필요합니다. 진단에서 호환성 검사 결과를 확인하세요.'],
+    MalformedOutput: ['Docker 응답 형식이 호환되지 않습니다.', '진단에서 실패한 명령과 응답 오류를 확인한 뒤 Reconnect하세요.'],
+    EnvironmentChanged: ['연결 환경이 변경되었습니다.', 'Reconnect로 Docker CLI 설정을 다시 적용하고 Engine을 확인하세요.'],
+  };
+  return (error && issues[error.code]) || (unsupported ? issues.UnsupportedRuntime : null) || ['로컬 환경에 연결하지 못했습니다.', '진단에서 명령과 오류 내용을 확인한 뒤 Reconnect하세요.'];
+}
+function connectionTarget(environment: Environment | null): ConnectionTarget {
+  return { contextName: environment?.contextName ?? null, endpoint: environment?.endpoint ?? null, engineId: environment?.engineId ?? null };
+}
 export default function App() {
   const [environment, setEnvironment] = useState<Environment | null>(null);
   const [connecting, setConnecting] = useState(true);
@@ -65,7 +84,12 @@ export default function App() {
       setSelectedId(previous => result.containers.some(container => container.fullId === previous) ? previous : result.containers[0]?.fullId ?? null);
     } catch (error) {
       if (epoch.current !== requestEpoch || session.current !== sessionId || request !== listSequence.current) return;
-      setListError(coreError(error));
+      const failure = coreError(error);
+      setListError(failure);
+      if (connectionInvalidatingErrors.has(failure.code)) {
+        blocked.current = true;
+        setMutationBlocked(true);
+      }
       if (currentSnapshot.current) {
         currentSnapshot.current = { ...currentSnapshot.current, stale: true };
         setSnapshot(currentSnapshot.current);
@@ -94,6 +118,10 @@ export default function App() {
     setConfirmation(null);
     setOperation(null);
     setBulkOperation(null);
+    setBulkPending(null);
+    blocked.current = true;
+    setMutationBlocked(true);
+    setClipboardMessage('');
     setCheckedHandles(new Set());
     setSelectedId(null);
     try {
@@ -132,7 +160,14 @@ export default function App() {
       if (result.sessionId !== list.sessionId || result.generation !== list.generation || result.handle !== container.handle) throw { code: 'STALE_RESPONSE', message: '이전 로그 응답입니다. Recent Logs로 다시 조회하세요.' };
       setLogs(result);
     } catch (error) {
-      if (epoch.current === requestEpoch && request === logSequence.current) setLogsError(coreError(error));
+      if (epoch.current === requestEpoch && request === logSequence.current) {
+        const failure = coreError(error);
+        setLogsError(failure);
+        if (connectionInvalidatingErrors.has(failure.code)) {
+          blocked.current = true;
+          setMutationBlocked(true);
+        }
+      }
     } finally {
       if (epoch.current === requestEpoch && request === logSequence.current) setLoadingLogs(false);
     }
@@ -153,6 +188,7 @@ export default function App() {
     setOperation(null);
     setConfirmation(null);
     const requestEpoch = epoch.current;
+    const target = connectionTarget(environment);
     let result: MutationResult;
     try { result = await api.mutateContainer(targetSession, container.handle, action); }
     catch (error) {
@@ -163,14 +199,14 @@ export default function App() {
     if (epoch.current !== requestEpoch) return;
     blocked.current = blocked.current || result.mutationBlocked || result.reconciliation === 'failed';
     setMutationBlocked(blocked.current);
-    setOperation({ ...result, fullId: container.fullId, name: container.name, action, profile: environment?.profile ?? 'colima-docker2u' });
+    setOperation({ ...result, fullId: container.fullId, name: container.name, action, ...target });
     await refresh(targetSession);
     if (epoch.current === requestEpoch) { busy.current = false; setMutating(false); }
   }
   function requestAction(action: Action, returnFocus?: HTMLElement) {
     if (busy.current || refreshBusy.current || blocked.current || !selected || !snapshot || snapshot.stale || !environment?.mutationAllowed || !session.current || !canApply(selected, action)) return;
     if (action === 'start') void mutate(selected, action, session.current, snapshot.generation);
-    else setConfirmation({ container: selected, action, sessionId: session.current, generation: snapshot.generation, profile: environment.profile, endpoint: environment.endpoint ?? '—', returnFocus });
+    else setConfirmation({ container: selected, action, sessionId: session.current, generation: snapshot.generation, ...connectionTarget(environment), returnFocus });
   }
   async function mutateBulk(containers: Container[], action: Action, targetSession: string, generation: number) {
     const current = currentSnapshot.current;
@@ -182,7 +218,7 @@ export default function App() {
     setOperation(null);
     setConfirmation(null);
     const requestEpoch = epoch.current;
-    const context = { action, profile: environment?.profile ?? 'colima-docker2u', containers };
+    const context = { action, ...connectionTarget(environment), containers };
     try {
       const result = await api.mutateContainers(targetSession, generation, containers.map(container => container.handle), action);
       if (epoch.current !== requestEpoch) return;
@@ -207,7 +243,7 @@ export default function App() {
   function requestBulkAction(action: Action, returnFocus?: HTMLElement) {
     if (busy.current || refreshBusy.current || blocked.current || !checked.length || !checked.some(container => canApply(container, action)) || !snapshot || snapshot.stale || !environment?.mutationAllowed || !session.current) return;
     if (action === 'start') void mutateBulk(checked, action, session.current, snapshot.generation);
-    else setConfirmation({ containers: checked, action, sessionId: session.current, generation: snapshot.generation, profile: environment.profile, endpoint: environment.endpoint ?? '—', returnFocus });
+    else setConfirmation({ containers: checked, action, sessionId: session.current, generation: snapshot.generation, ...connectionTarget(environment), returnFocus });
   }
   function changeSelection(next: (previous: Set<string>) => Set<string>) {
     if (busy.current || refreshBusy.current || !currentSnapshot.current || currentSnapshot.current.stale) return;
@@ -229,10 +265,13 @@ export default function App() {
     if (item) { setSelectedId(item.fullId); inventory.current?.querySelectorAll<HTMLButtonElement>('.container-row')[next]?.focus(); }
   }
   const ready = environment?.status === 'ready' && !!environment.sessionId;
+  const connectionError = environmentError ?? environment?.error ?? null;
+  const [connectionTitle, connectionHelp] = connectionIssue(connectionError, environment?.status === 'unsupported');
   return <div className="app-shell">
     <div className="main-content" inert={!!confirmation}>
       <header className="app-header"><div className="brand"><span className="brand-icon" aria-hidden="true"><Boxes size={22} /></span><div><h1>Docker2U</h1><p>Docker CLI, without the CLI friction.</p></div></div><div className="header-right"><span className="platform-badge"><Monitor size={14} aria-hidden="true" /> macOS local alpha</span><button className="icon-button" aria-label="환경 진단 보기" aria-expanded={showDiagnostics} onClick={() => setShowDiagnostics(!showDiagnostics)}><Info size={18} aria-hidden="true" /></button></div></header>
-      <section className="connection-bar" aria-label="연결 환경"><div className="connection-label"><span className={`connection-dot ${ready ? 'connected' : ''}`} /><strong>colima-docker2u</strong><span className="muted">{connecting ? '환경 확인 중' : ready ? 'Local · 연결됨' : '연결되지 않음'}</span></div><div className="connection-actions"><button onClick={() => void connect()} disabled={connecting || refreshing || mutating}><Cable size={14} aria-hidden="true" />Reconnect</button><button className="primary-button" disabled={!ready || refreshing || mutating} onClick={() => { if (session.current && !busy.current && !refreshBusy.current) void refresh(session.current); }}><RefreshCw size={14} className={refreshing ? 'spin' : ''} aria-hidden="true" />{refreshing ? '갱신 중…' : 'Refresh'}</button></div></section>
+      <section className="connection-bar" aria-label="연결 환경"><div className="connection-label"><span className={`connection-dot ${ready ? 'connected' : ''}`} /><div className="connection-target"><strong>{environment?.contextName ?? 'Context 확인 전'}</strong><code title={environment?.endpoint ?? undefined}>{environment?.endpoint ?? 'Endpoint 확인 전'}</code></div><span className="muted">{connecting ? '환경 확인 중' : ready ? 'Local · 연결됨' : '연결되지 않음'}</span></div><div className="connection-actions"><button title="Docker CLI 설정을 다시 적용합니다" onClick={() => void connect()} disabled={connecting || refreshing || mutating}><Cable size={14} aria-hidden="true" />Reconnect</button><button title="현재 연결의 목록을 갱신합니다" className="primary-button" disabled={!ready || refreshing || mutating} onClick={() => { if (session.current && !busy.current && !refreshBusy.current) void refresh(session.current); }}><RefreshCw size={14} className={refreshing ? 'spin' : ''} aria-hidden="true" />{refreshing ? '갱신 중…' : 'Refresh'}</button></div></section>
+      <p className="connection-help">Refresh는 현재 연결 갱신 · Reconnect는 CLI 설정 다시 적용</p>
       {showDiagnostics && <Diagnostics environment={environment} close={() => setShowDiagnostics(false)} copy={copy} />}
       <main className="workspace">
         <aside className="inventory-panel" aria-labelledby="inventory-title">
@@ -240,17 +279,17 @@ export default function App() {
           <div className="inventory-controls"><label className="search-field"><Search size={16} aria-hidden="true" /><input aria-label="Container 검색" placeholder="이름, 이미지 또는 ID 검색" value={query} disabled={mutating} onChange={event => { if (!busy.current) { setQuery(event.target.value); setCheckedHandles(new Set()); } }} /></label><div className="filter-group" aria-label="Container 필터">{([['all', '전체'], ['running', '실행 중'], ['stopped', '중지'], ['attention', '확인 필요']] as const).map(([value, label]) => <button key={value} aria-pressed={filter === value} disabled={mutating} onClick={() => { if (!busy.current) { setFilter(value); setCheckedHandles(new Set()); } }}>{label}</button>)}</div></div>
           <BulkSelection visible={visible} checked={checked} disabled={mutating || refreshing || connecting || !snapshot || snapshot.stale} actionsDisabled={mutating || refreshing || mutationBlocked || !environment?.mutationAllowed || !snapshot || snapshot.stale} pending={bulkPending} onToggleAll={() => changeSelection(() => checked.length === visible.length ? new Set() : new Set(visible.map(container => container.handle)))} onClear={() => changeSelection(() => new Set())} onAction={requestBulkAction} />
           {snapshot?.stale && <div className="stale-notice" role="status"><AlertTriangle size={14} aria-hidden="true" /><span>Stale · 마지막 정상 목록입니다.</span></div>}
-          {listError && <div className="inline-error" role="alert"><p>목록을 갱신하지 못했습니다.</p><p>{listError.message}</p><ErrorDetails error={listError} /></div>}
+          {listError && <div className="inline-error" role="alert"><p>목록을 갱신하지 못했습니다.</p><p>{listError.message}</p>{connectionInvalidatingErrors.has(listError.code) && <p>연결을 다시 검증해야 합니다. Reconnect를 실행하세요.</p>}<ErrorDetails error={listError} /></div>}
           <ul ref={inventory} aria-label="Container 목록" aria-busy={refreshing || mutating} className="container-list">{visible.map((container, index) => <li key={container.fullId} className="container-list-item"><input type="checkbox" className="container-checkbox" aria-label={`${container.name} 작업 대상으로 선택`} checked={checkedHandles.has(container.handle)} disabled={mutating || refreshing || !!snapshot?.stale} onChange={() => changeSelection(previous => { const next = new Set(previous); if (next.has(container.handle)) next.delete(container.handle); else next.add(container.handle); return next; })} /><button aria-label={`${container.name} 상세`} aria-current={selectedId === container.fullId ? 'true' : undefined} tabIndex={selectedId === container.fullId || (!visible.some(item => item.fullId === selectedId) && index === 0) ? 0 : -1} className="container-row" onClick={() => setSelectedId(container.fullId)} onKeyDown={event => selectWithKeyboard(event, index)}><span className="container-row-title"><strong>{container.name}</strong><ChevronRight size={15} aria-hidden="true" /></span><span className="container-image">{container.image}</span><span className="container-statuses"><State value={container.state} /><Health value={container.health} /></span></button></li>)}</ul>
           {!visible.length && <div className="inventory-placeholder"><Boxes size={28} aria-hidden="true" /><p>{connecting || (refreshing && !snapshot) ? 'Container를 확인하고 있습니다.' : !ready ? '로컬 환경을 연결하면 목록이 표시됩니다.' : !snapshot ? 'Refresh로 목록을 다시 조회하세요.' : snapshot.containers.length === 0 ? '현재 Engine에 Container가 없습니다.' : '검색 결과가 없습니다.'}</p>{snapshot && snapshot.containers.length > 0 && <button className="text-button" disabled={mutating} onClick={() => { if (!busy.current) { setQuery(''); setFilter('all'); setCheckedHandles(new Set()); } }}>검색·필터 초기화</button>}</div>}
         </aside>
         <section className="detail-panel" aria-labelledby="detail-title">
           <div className="panel-heading"><h2 id="detail-title">{selected ? 'Container 상세' : '환경 연결'}</h2><span className="muted small">{snapshot ? `최근 갱신 ${formatTime(snapshot.refreshedAt)}` : '환경 진단'}</span></div>
           {bulkOperation && <BulkResult operation={bulkOperation} />}
-          {connecting ? <div className="startup-panel"><div className="startup-icon"><LoaderCircle className="spin" size={30} aria-hidden="true" /></div><h3>로컬 환경을 확인하고 있습니다.</h3><p>Colima 프로파일과 Engine 연결 정보를 확인합니다.</p></div> : !ready ? <div className="startup-panel"><div className="startup-icon"><Cable size={32} aria-hidden="true" /></div><span className="eyebrow">LOCAL ENVIRONMENT</span><h3>{environment?.status === 'unsupported' ? '지원하는 로컬 환경이 아닙니다.' : environment?.dockerPath === null ? 'Docker CLI를 확인할 수 없습니다.' : '로컬 환경에 연결하지 못했습니다.'}</h3><p>Colima의 docker2u 프로파일과 Docker CLI가 준비되어 있는지 확인한 뒤 다시 연결하세요.</p>{environmentError && <div role="alert"><p>{environmentError.message}</p><ErrorDetails error={environmentError} /></div>}{environment?.diagnostics.map((message, index) => <p key={index} className="diagnostic-message">{message}</p>)}<button className="primary-button" onClick={() => void connect()}><RefreshCw size={14} aria-hidden="true" />다시 연결</button></div> : selected && snapshot ? <ContainerDetail container={selected} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} refreshing={refreshing} mutating={mutating} mutationBlocked={mutationBlocked} mutationAllowed={!!environment?.mutationAllowed} operation={operation?.fullId === selected.fullId ? operation : null} loadLogs={() => void loadLogs(selected, snapshot)} clearLogs={() => { ++logSequence.current; setLogs(null); }} requestAction={requestAction} copy={copy} /> : <div className="startup-panel"><div className="startup-icon"><Boxes size={32} aria-hidden="true" /></div><h3>{refreshing ? 'Container 목록을 불러오고 있습니다.' : snapshot?.containers.length === 0 ? '아직 Container가 없습니다.' : 'Container를 선택하세요.'}</h3><p>{snapshot?.containers.length === 0 ? '현재 Engine에 생성된 Container가 없습니다. 준비된 개발 서비스를 실행한 뒤 Refresh를 눌러주세요.' : '왼쪽 목록에서 상태와 최근 로그를 확인할 대상을 선택하세요.'}</p></div>}
+          {connecting ? <div className="startup-panel"><div className="startup-icon"><LoaderCircle className="spin" size={30} aria-hidden="true" /></div><h3>로컬 환경을 확인하고 있습니다.</h3><p>Docker CLI가 선택한 context와 Engine 연결 정보를 확인합니다.</p></div> : !ready ? <div className="startup-panel"><div className="startup-icon"><Cable size={32} aria-hidden="true" /></div><span className="eyebrow">LOCAL ENVIRONMENT</span><h3>{connectionTitle}</h3><p>{connectionHelp}</p>{connectionError && <div role="alert"><p>{connectionError.message}</p><ErrorDetails error={connectionError} /></div>}{environment?.diagnostics.map((message, index) => <p key={index} className="diagnostic-message">{message}</p>)}<button className="primary-button" onClick={() => void connect()}><RefreshCw size={14} aria-hidden="true" />다시 연결</button></div> : selected && snapshot ? <ContainerDetail container={selected} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} refreshing={refreshing} mutating={mutating} mutationBlocked={mutationBlocked} mutationAllowed={!!environment?.mutationAllowed} operation={operation?.fullId === selected.fullId ? operation : null} loadLogs={() => void loadLogs(selected, snapshot)} clearLogs={() => { ++logSequence.current; setLogs(null); }} requestAction={requestAction} copy={copy} /> : <div className="startup-panel"><div className="startup-icon"><Boxes size={32} aria-hidden="true" /></div><h3>{refreshing ? 'Container 목록을 불러오고 있습니다.' : snapshot?.containers.length === 0 ? '아직 Container가 없습니다.' : 'Container를 선택하세요.'}</h3><p>{snapshot?.containers.length === 0 ? '현재 Engine에 생성된 Container가 없습니다. 준비된 개발 서비스를 실행한 뒤 Refresh를 눌러주세요.' : '왼쪽 목록에서 상태와 최근 로그를 확인할 대상을 선택하세요.'}</p></div>}
         </section>
       </main>
-      <footer className="app-footer"><span><span className="footer-dot" />LOCAL ALPHA · COLIMA</span><span role="status" aria-live="polite">{clipboardMessage || (ready ? `연결 대상 고정 · ${environment.profile}` : '로컬 환경 연결 대기')}</span></footer>
+      <footer className="app-footer"><span><span className="footer-dot" />LOCAL ALPHA · DOCKER</span><span role="status" aria-live="polite">{clipboardMessage || (ready ? `연결 대상 고정 · ${environment.contextName ?? 'Context 확인되지 않음'}` : '로컬 환경 연결 대기')}</span></footer>
     </div>
     {confirmation && <ConfirmDialog confirmation={confirmation} onCancel={() => setConfirmation(null)} onConfirm={() => { if (confirmation.containers) void mutateBulk(confirmation.containers, confirmation.action, confirmation.sessionId, confirmation.generation); else void mutate(confirmation.container, confirmation.action, confirmation.sessionId, confirmation.generation); }} />}
   </div>;

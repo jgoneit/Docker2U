@@ -12,9 +12,9 @@ vi.mock('./api', async importOriginal => ({
 }));
 const mock = vi.mocked(api);
 const environment: Environment = {
-  status: 'ready', sessionId: 'session-1', profile: 'colima-docker2u', endpoint: 'unix:///Users/test/.colima/docker2u/docker.sock',
-  dockerPath: '/opt/homebrew/bin/docker', colimaPath: '/opt/homebrew/bin/colima', clientVersion: '29.8.0', runtimeVersion: '0.10.3',
-  serverVersion: '29.8.0', apiVersion: '1.54', engineId: 'engine-1', osType: 'linux', architecture: 'aarch64', mutationAllowed: true, diagnostics: [],
+  status: 'ready', sessionId: 'session-1', contextName: 'colima-docker2u', endpoint: 'unix:///Users/test/.colima/docker2u/docker.sock',
+  dockerPath: '/opt/homebrew/bin/docker', dockerConfigPath: '/Users/test/.docker', clientVersion: '29.8.0',
+  serverVersion: '29.8.0', apiVersion: '1.54', engineId: 'engine-1', osType: 'linux', architecture: 'aarch64', mutationAllowed: true, error: null, diagnostics: [],
 };
 const backend: Container = { handle: 'handle-1', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'backend', image: 'company-api:1', state: 'running', health: 'healthy', ports: ['127.0.0.1:8080->8080/tcp'], createdAt: '2026-09-05T03:00:00Z' };
 const redis: Container = { ...backend, handle: 'handle-2', fullId: 'b'.repeat(64), shortId: 'b'.repeat(12), name: 'redis', image: 'redis:7', state: 'exited', health: 'none', ports: [] };
@@ -147,6 +147,7 @@ describe('bulk selection and recovery', () => {
     expect(dialog.getByText(redis.fullId)).toBeVisible();
     expect(dialog.getByText('colima-docker2u')).toBeVisible();
     expect(dialog.getByText(environment.endpoint!)).toBeVisible();
+    expect(dialog.getByText(environment.engineId!)).toBeVisible();
     const cancel = dialog.getByRole('button', { name: '취소' });
     expect(cancel).toHaveFocus();
     await user.tab({ shift: true });
@@ -302,16 +303,45 @@ describe('environment and inventory', () => {
     expect(within(screen.getByRole('complementary')).queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument();
   });
   it.each([
-    ['unavailable', null, 'Docker CLI를 확인할 수 없습니다.'],
-    ['unsupported', '/opt/homebrew/bin/docker', '지원하는 로컬 환경이 아닙니다.'],
-    ['unavailable', '/opt/homebrew/bin/docker', '로컬 환경에 연결하지 못했습니다.'],
-  ] as const)('distinguishes %s environment with Docker path %s', async (status, dockerPath, title) => {
-    mock.getEnvironment.mockResolvedValue({ ...environment, status, dockerPath, sessionId: null, mutationAllowed: false, diagnostics: ['환경을 준비한 뒤 다시 시도하세요.'] });
+    ['CliNotFound', 'Docker CLI를 확인할 수 없습니다.'],
+    ['Configuration', 'Docker 설정을 읽지 못했습니다.'],
+    ['ContextSelection', 'Docker 연결 대상을 해석하지 못했습니다.'],
+    ['SocketMissing', '로컬 Docker 소켓을 확인할 수 없습니다.'],
+    ['PermissionDenied', 'Docker 연결 권한이 부족합니다.'],
+    ['RemoteEndpoint', '원격 Docker 연결은 지원하지 않습니다.'],
+    ['EndpointMismatch', '안전한 로컬 Docker 소켓이 아닙니다.'],
+    ['UnsupportedRuntime', '지원하는 로컬 환경이 아닙니다.'],
+    ['MalformedOutput', 'Docker 응답 형식이 호환되지 않습니다.'],
+    ['EnvironmentChanged', '연결 환경이 변경되었습니다.'],
+    ['CommandFailed', '로컬 환경에 연결하지 못했습니다.'],
+  ] as const)('uses structured %s errors even before the Docker path is available', async (code, title) => {
+    mock.getEnvironment.mockResolvedValue({ ...environment, status: 'unavailable', dockerPath: null, sessionId: null, mutationAllowed: false, error: { code, message: '실패한 검사 내용', command: 'docker context inspect', stderr: 'context error detail' }, diagnostics: ['환경을 준비한 뒤 다시 시도하세요.'] });
     render(<App />);
     expect(await screen.findByRole('heading', { name: title })).toBeVisible();
     expect(mock.listContainers).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Refresh' })).toBeDisabled();
     expect(screen.getByText('환경을 준비한 뒤 다시 시도하세요.')).toBeVisible();
+    expect(screen.getByText('실패한 검사 내용')).toBeVisible();
+    fireEvent.click(screen.getByText(`진단 상세 · ${code}`));
+    expect(screen.getByText('docker context inspect')).toBeVisible();
+    expect(screen.getByText('context error detail')).toBeVisible();
+    expect(screen.queryByText(/daemon.*중지|Colima의 docker2u/)).not.toBeInTheDocument();
+  });
+  it('keeps unknown connection failures generic when no structured cause exists', async () => {
+    mock.getEnvironment.mockResolvedValue({ ...environment, status: 'unavailable', dockerPath: null, sessionId: null, mutationAllowed: false, error: null });
+    render(<App />);
+    expect(await screen.findByRole('heading', { name: '로컬 환경에 연결하지 못했습니다.' })).toBeVisible();
+    expect(screen.queryByRole('heading', { name: 'Docker CLI를 확인할 수 없습니다.' })).not.toBeInTheDocument();
+  });
+  it.each(['default', 'desktop-linux', null])('shows the CLI context %s and selected endpoint without a runtime fallback', async contextName => {
+    mock.getEnvironment.mockResolvedValueOnce({ ...environment, contextName, endpoint: 'unix:///Users/test/.docker/run/docker.sock' });
+    render(<App />);
+    await connected();
+    const connection = within(screen.getByRole('region', { name: '연결 환경' }));
+    expect(connection.getByText(contextName ?? 'Context 확인 전')).toBeVisible();
+    expect(connection.getByText('unix:///Users/test/.docker/run/docker.sock')).toBeVisible();
+    expect(screen.getByText('Refresh는 현재 연결 갱신 · Reconnect는 CLI 설정 다시 적용')).toBeVisible();
+    expect(screen.queryByText('colima-docker2u')).not.toBeInTheDocument();
   });
   it('renders a recoverable transport failure and reconnects', async () => {
     const user = userEvent.setup();
@@ -495,6 +525,7 @@ describe('container recovery policy and confirmation', () => {
     const dialog = screen.getByRole('dialog', { name: `${action} backend?` });
     expect(within(dialog).getByText('colima-docker2u')).toBeVisible();
     expect(within(dialog).getByText(environment.endpoint!)).toBeVisible();
+    expect(within(dialog).getByText(environment.engineId!)).toBeVisible();
     expect(within(dialog).getByText(backend.shortId)).toBeVisible();
     const cancel = within(dialog).getByRole('button', { name: '취소' });
     const confirm = within(dialog).getByRole('button', { name: `${action} 확인` });
@@ -656,5 +687,164 @@ describe('recent log snapshots and diagnostics', () => {
     expect(copied).not.toContain('session-1');
     expect(copied).not.toContain('service ready');
     expect(await screen.findByText('진단 정보 복사됨')).toBeVisible();
+  });
+  it('shows the effective config and ignored configuration diagnostics without copying raw details', async () => {
+    const user = userEvent.setup();
+    const write = vi.spyOn(navigator.clipboard, 'writeText');
+    mock.getEnvironment.mockResolvedValueOnce({ ...environment, diagnostics: ['runtime.json dockerConfig 적용 제외 · private-setting-detail'] });
+    render(<App />);
+    await connected();
+    await user.click(screen.getByRole('button', { name: '환경 진단 보기' }));
+    expect(screen.getByText(environment.dockerConfigPath!)).toBeVisible();
+    expect(screen.getByText('runtime.json dockerConfig 적용 제외 · private-setting-detail')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Copy diagnostics' }));
+    const copied = String(write.mock.calls[0]?.[0]);
+    expect(JSON.parse(copied)).toMatchObject({ contextName: environment.contextName, dockerConfigPath: environment.dockerConfigPath, errorCode: null });
+    expect(copied).not.toContain('private-setting-detail');
+  });
+});
+
+describe('CLI connection session replacement', () => {
+  it.each(['EnvironmentChanged', 'SocketMissing'])('keeps log verification %s blocked after logs and Refresh recover until Reconnect', async code => {
+    const user = userEvent.setup();
+    render(<App />);
+    await connected();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Recent Logs' })).toBeEnabled());
+    mock.getRecentLogs.mockRejectedValueOnce({ code, message: '로그 연결 검증 실패' });
+    await user.click(screen.getByRole('button', { name: 'Recent Logs' }));
+    expect(await screen.findByText('로그 연결 검증 실패')).toBeVisible();
+    expect(screen.getByText('추가 복구 작업이 차단되었습니다. Reconnect로 환경을 다시 검증하세요.')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Recent Logs' }));
+    expect(await screen.findByText('service ready')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeDisabled();
+    await user.click(screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' }));
+    expect(screen.getByRole('button', { name: 'Start (1)' })).toBeDisabled();
+    expect(mock.mutateContainer).not.toHaveBeenCalled();
+    expect(mock.mutateContainers).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Reconnect' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled());
+  });
+  it('blocks a queued bulk request as soon as background log verification fails after a successful Refresh', async () => {
+    const user = userEvent.setup();
+    const backgroundLogs = deferred<RecentLogs>();
+    render(<App />);
+    await connected();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Recent Logs' })).toBeEnabled());
+    mock.getRecentLogs.mockReturnValueOnce(backgroundLogs.promise);
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
+    await user.click(screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' }));
+    const start = screen.getByRole<HTMLButtonElement>('button', { name: 'Start (1)' });
+    expect(start).toBeEnabled();
+    await act(async () => {
+      backgroundLogs.reject({ code: 'EnvironmentChanged', message: '백그라운드 연결 검증 실패' });
+      await Promise.resolve();
+      // The ref gate must reject this before React renders disabled controls.
+      expect(start).toBeEnabled();
+      start.click();
+    });
+    expect(screen.getByText('백그라운드 연결 검증 실패')).toBeVisible();
+    expect(start).toBeDisabled();
+    expect(mock.mutateContainers).not.toHaveBeenCalled();
+  });
+  it.each(['EnvironmentChanged', 'Disconnected', 'SocketMissing', 'PermissionDenied', 'Configuration', 'EndpointMismatch', 'RemoteEndpoint'])('keeps %s failures blocked after Refresh recovers until explicit Reconnect', async code => {
+    const user = userEvent.setup();
+    render(<App />);
+    await connected();
+    mock.listContainers.mockRejectedValueOnce({ code, message: '연결 검증 실패' });
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(await screen.findByText('연결을 다시 검증해야 합니다. Reconnect를 실행하세요.')).toBeVisible();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(screen.queryByText('Stale · 마지막 정상 목록입니다.')).not.toBeInTheDocument());
+    expect(screen.getByText('추가 복구 작업이 차단되었습니다. Reconnect로 환경을 다시 검증하세요.')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeDisabled();
+    await user.click(screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' }));
+    expect(screen.getByRole('button', { name: 'Start (1)' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Stop (1)' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Stop' }));
+    expect(mock.mutateContainer).not.toHaveBeenCalled();
+    expect(mock.mutateContainers).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Reconnect' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled());
+    expect(screen.queryByText('추가 복구 작업이 차단되었습니다. Reconnect로 환경을 다시 검증하세요.')).not.toBeInTheDocument();
+  });
+  it('clears a result, selection and confirmation before connecting B with the same full ID and ignores late A logs', async () => {
+    const user = userEvent.setup();
+    const nextConnection = deferred<Environment>();
+    const oldLogs = deferred<RecentLogs>();
+    render(<App />);
+    await connected();
+    await user.click(screen.getByRole('button', { name: 'Stop' }));
+    await user.click(screen.getByRole('button', { name: 'Stop 확인' }));
+    const result = await screen.findByRole('region', { name: '최근 작업 결과' });
+    expect(within(result).getByText(environment.contextName!)).toBeVisible();
+    expect(within(result).getByText(environment.endpoint!)).toBeVisible();
+    expect(within(result).getByText(environment.engineId!)).toBeVisible();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Recent Logs' })).toBeEnabled());
+    mock.getRecentLogs.mockReturnValueOnce(oldLogs.promise);
+    await user.click(screen.getByRole('button', { name: 'Recent Logs' }));
+    await user.click(screen.getByRole('checkbox', { name: 'backend 작업 대상으로 선택' }));
+    mock.getEnvironment.mockReturnValueOnce(nextConnection.promise);
+    const reconnect = screen.getByRole<HTMLButtonElement>('button', { name: 'Reconnect' });
+    const stop = screen.getByRole<HTMLButtonElement>('button', { name: 'Stop' });
+    // Exercise same-turn events before React applies the dialog's inert background.
+    act(() => { stop.click(); reconnect.click(); });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: '최근 작업 결과' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'backend 상세' })).not.toBeInTheDocument();
+    mock.listContainers.mockResolvedValueOnce(list(1, [{ ...backend, handle: 'engine-b-handle', name: 'backend-on-b' }], 'session-b'));
+    mock.getRecentLogs.mockImplementation(async (sessionId, handle) => log(sessionId, handle, 'Engine B logs'));
+    await act(async () => nextConnection.resolve({ ...environment, sessionId: 'session-b', contextName: 'desktop-linux', endpoint: 'unix:///Users/test/.docker/run/docker.sock', engineId: 'engine-b' }));
+    expect(await screen.findByRole('button', { name: 'backend-on-b 상세' })).toBeVisible();
+    expect(await screen.findByText('Engine B logs')).toBeVisible();
+    await act(async () => oldLogs.resolve(log('session-1', 'handle-1-g2', 'late Engine A logs')));
+    expect(screen.queryByText('late Engine A logs')).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: '최근 작업 결과' })).not.toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'backend-on-b 작업 대상으로 선택' })).not.toBeChecked();
+    expect(mock.mutateContainer).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole('button', { name: 'Restart' }));
+    const dialog = within(screen.getByRole('dialog'));
+    expect(dialog.getByText('desktop-linux')).toBeVisible();
+    expect(dialog.getByText('unix:///Users/test/.docker/run/docker.sock')).toBeVisible();
+    expect(dialog.getByText('engine-b')).toBeVisible();
+    expect(dialog.queryByText(environment.engineId!)).not.toBeInTheDocument();
+    await user.click(dialog.getByRole('button', { name: 'Restart 확인' }));
+    await waitFor(() => expect(mock.mutateContainer).toHaveBeenLastCalledWith('session-b', 'engine-b-handle-g1', 'restart'));
+  });
+  it('preserves the bulk execution target on Refresh and clears it on failed Reconnect before another Engine loads', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await connected();
+    await user.click(screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' }));
+    await user.click(screen.getByRole('button', { name: 'Start (1)' }));
+    const result = await screen.findByRole('region', { name: '최근 일괄 작업 결과' });
+    expect(within(result).getByText(environment.contextName!)).toBeVisible();
+    expect(within(result).getByText(environment.endpoint!)).toBeVisible();
+    expect(within(result).getByText(environment.engineId!)).toBeVisible();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
+    expect(screen.getByRole('region', { name: '최근 일괄 작업 결과' })).toBeVisible();
+    mock.getEnvironment.mockResolvedValueOnce({ ...environment, status: 'unavailable', sessionId: null, mutationAllowed: false, error: { code: 'SocketMissing', message: '선택한 socket 없음' } });
+    await user.click(screen.getByRole('button', { name: 'Reconnect' }));
+    expect(await screen.findByRole('heading', { name: '로컬 Docker 소켓을 확인할 수 없습니다.' })).toBeVisible();
+    expect(screen.queryByRole('region', { name: '최근 일괄 작업 결과' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'backend 상세' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('최근 로그 내용')).not.toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument();
+    mock.getEnvironment.mockResolvedValueOnce({ ...environment, sessionId: 'session-b', contextName: 'default', endpoint: 'unix:///other/docker.sock', engineId: 'engine-b' });
+    mock.listContainers.mockResolvedValueOnce(list(1, [backend, redis], 'session-b'));
+    await user.click(screen.getByRole('button', { name: '다시 연결' }));
+    await connected();
+    expect(screen.queryByRole('region', { name: '최근 일괄 작업 결과' })).not.toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' })).not.toBeChecked();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
+    expect(mock.mutateContainers).toHaveBeenCalledTimes(1);
   });
 });
