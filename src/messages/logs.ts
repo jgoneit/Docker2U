@@ -6,6 +6,7 @@ export const logMessages = {
   clearSearch: { ko: '로그 검색 지우기', en: 'Clear log search' }, bottom: { ko: '맨 아래로', en: 'Scroll to bottom' },
   matchCount: { ko: '{current} / {total}건', en: '{current} / {total} matches' }, zeroMatches: { ko: '0건', en: '0 matches' },
   searching: { ko: '검색 중…', en: 'Searching…' }, searchFailed: { ko: '검색을 완료하지 못했습니다. 검색어를 다시 입력하세요.', en: 'Search failed. Enter the query again.' },
+  requestPending: { ko: '이전 로그 요청이 끝나면 다시 조회할 수 있습니다.', en: 'Logs can be loaded after the previous request finishes.' },
   fetchedAt: { ko: '로그 조회 완료', en: 'Logs received' },
   title: { ko: '최근 로그', en: 'Recent logs' }, fetch: { ko: '로그 조회', en: 'Load logs' },
   expand: { ko: '로그 확대 보기', en: 'Expand logs' }, close: { ko: '로그 확대 보기 닫기', en: 'Close expanded logs' },

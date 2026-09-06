@@ -9,9 +9,9 @@ import type { LogSnapshot } from './logSnapshot';
 import { logMessages } from './messages/logs';
 import { usePreferences } from './preferences';
 
-export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, refreshing, mutating, loadLogs, clearLogs, copy, copyFeedback, expanded, onExpandedChange }: {
+export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, logRequestPending = false, refreshing, mutating, loadLogs, clearLogs, copy, copyFeedback, expanded, onExpandedChange }: {
   container: Container; snapshot: ContainerList; logs: LogSnapshot | null; logsError: CoreError | null;
-  loadingLogs: boolean; refreshing: boolean; mutating: boolean; loadLogs: () => void; clearLogs: () => void; copy: CopyText; copyFeedback?: string;
+  loadingLogs: boolean; logRequestPending?: boolean; refreshing: boolean; mutating: boolean; loadLogs: () => void; clearLogs: () => void; copy: CopyText; copyFeedback?: string;
   expanded: boolean; onExpandedChange: (expanded: boolean) => void;
 }) {
   const t = useI18n(logMessages);
@@ -41,6 +41,7 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, re
   // Inventory generations rotate handles; a reload of the same container keeps the search.
   const target = `${snapshot.sessionId}/${container.fullId}`;
   const text = !loadingLogs && !logsError ? logs?.text ?? '' : '';
+  const canCopy = text.length > 0;
   const { status: searchStatus, total, activeIndex, activeStart, activeLength, move } = useLogSearch({ target, text, query });
   useEffect(() => { ++copyAttempt.current; setShowCopyFeedback(false); }, [expanded, target]);
   useLayoutEffect(() => {
@@ -103,10 +104,10 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, re
     return () => document.removeEventListener('keydown', documentKeyDown);
   }, [expanded, onExpandedChange, searchOpen]);
   async function copyLogs(inModal: boolean) {
-    if (!logs) return;
+    if (!canCopy) return;
     const attempt = ++copyAttempt.current;
     setShowCopyFeedback(false);
-    await copy(logs.text, 'logs');
+    await copy(text, 'logs');
     if (inModal && copyAttempt.current === attempt) setShowCopyFeedback(true);
   }
   function expand() {
@@ -169,8 +170,8 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, re
     const mac = /mac/i.test(navigator.platform);
     return <section ref={inModal ? undefined : inlinePanel} className="logs-panel" aria-labelledby={id} hidden={!inModal && expanded}>
       <div className="section-heading"><h3 id={id}><FileText size={16} aria-hidden="true" />{t('title')}</h3><div className="compact-actions">
-        <button disabled={snapshot.stale || loadingLogs || refreshing || mutating || !readableStates.has(container.state)} onClick={loadLogs}><RefreshCw size={13} className={loadingLogs ? 'spin' : ''} aria-hidden="true" />{t('fetch')}</button>
-        <button disabled={!logs?.text} onClick={() => void copyLogs(inModal)} aria-label={t('copy')} title={t('copy')}><Copy size={13} aria-hidden="true" /></button>
+        <button title={logRequestPending ? t('requestPending') : undefined} aria-describedby={logRequestPending && !loadingLogs ? `${id}-pending` : undefined} disabled={snapshot.stale || logRequestPending || loadingLogs || refreshing || mutating || !readableStates.has(container.state)} onClick={loadLogs}><RefreshCw size={13} className={loadingLogs ? 'spin' : ''} aria-hidden="true" />{t('fetch')}</button>
+        <button disabled={!canCopy} onClick={() => void copyLogs(inModal)} aria-label={t('copy')} title={t('copy')}><Copy size={13} aria-hidden="true" /></button>
         <button disabled={!logs && !logsError && !loadingLogs} onClick={() => {
           // Clearing disables this button; keep keyboard focus on an enabled target.
           if (inModal) closeButton.current?.focus();
@@ -181,7 +182,7 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, re
         <button disabled={!text} onClick={() => bottom(inModal)}><ArrowDownToLine size={13} aria-hidden="true" />{t('bottom')}</button>
         {!inModal && <button ref={expandButton} onClick={expand} aria-label={t('expand')} title={t('expand')}><Maximize2 size={13} aria-hidden="true" /></button>}
       </div></div>
-      <div className="log-meta"><span title={t('limitDetails')}>{t('limits')}</span><span className="log-sensitive" role="img" aria-label={t('sensitive')} title={t('sensitive')}><Info size={13} aria-hidden="true" /></span>{logs && <span className="log-fetched-at">{t('fetchedAt')} <time dateTime={logs.fetchedAt}>{formatTime(logs.fetchedAt, language)}</time></span>}</div>
+      <div className="log-meta">{logRequestPending && !loadingLogs && <span id={`${id}-pending`} role="status">{t('requestPending')}</span>}<span title={t('limitDetails')}>{t('limits')}</span><span className="log-sensitive" role="img" aria-label={t('sensitive')} title={t('sensitive')}><Info size={13} aria-hidden="true" /></span>{logs && <span className="log-fetched-at">{t('fetchedAt')} <time dateTime={logs.fetchedAt}>{formatTime(logs.fetchedAt, language)}</time></span>}</div>
       <div id={inModal ? 'expanded-log-search-row' : 'log-search-row'} className="log-search" role="search" aria-label={t('searchArea')} hidden={!searchOpen}>
         <label htmlFor={searchId}>{t('search')}</label>
         <div className="log-search-field"><input ref={inModal ? modalSearch : inlineSearch} id={searchId} className="log-search-input" type="search" value={query} autoComplete="off" spellCheck={false} onChange={event => { setQuery(event.target.value); }} onKeyDown={event => {

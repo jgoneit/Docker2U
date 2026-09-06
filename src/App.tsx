@@ -15,6 +15,7 @@ import { useI18n } from './i18n';
 import { appMessages } from './messages/app';
 
 type Filter = 'all' | 'running' | 'stopped' | 'attention';
+type LogRequest = { container: Container; list: ContainerList; epoch: number; sequence: number };
 function matchesContainer(container: Container, query: string, filter: Filter) {
   const searchMatches = `${container.name} ${container.image} ${container.shortId} ${container.fullId} ${container.ports.join(' ')}`.toLowerCase().includes(query.trim().toLowerCase());
   const filterMatches = filter === 'all' || (filter === 'running' && container.state === 'running') || (filter === 'stopped' && ['created', 'exited'].includes(container.state)) || (filter === 'attention' && (container.health === 'unhealthy' || ['dead', 'paused', 'restarting', 'removing', 'unknown'].includes(container.state)));
@@ -52,6 +53,7 @@ function AppContent() {
   const [logs, setLogs] = useState<LogSnapshot | null>(null);
   const [logsError, setLogsError] = useState<CoreError | null>(null);
   const [loadingLogs, setLoadingLogs] = useState(false);
+  const [logRequestPending, setLogRequestPending] = useState(false);
   const [mutating, setMutating] = useState(false);
   const [reconnectRequired, setReconnectRequired] = useState(false);
   const [mutationBlocked, setMutationBlocked] = useState(false);
@@ -69,6 +71,8 @@ function AppContent() {
   const epoch = useRef(0);
   const listSequence = useRef(0);
   const logSequence = useRef(0);
+  const activeLogRequest = useRef<LogRequest | null>(null);
+  const queuedLogRequest = useRef<LogRequest | null>(null);
   const busy = useRef(false);
   const refreshBusy = useRef(false);
   const blocked = useRef(false);
@@ -105,16 +109,23 @@ function AppContent() {
   const visible = (snapshot?.containers ?? []).filter(container => matchesContainer(container, query, filter));
   const selected = visible.find(container => container.fullId === selectedId) ?? null;
   const checked = visible.filter(container => checkedHandles.has(container.handle));
+  const invalidateLogs = useCallback(() => {
+    ++logSequence.current;
+    queuedLogRequest.current = null;
+    setLoadingLogs(false);
+  }, []);
+  const clearLogs = useCallback(() => {
+    invalidateLogs();
+    setLogs(null);
+    setLogsError(null);
+  }, [invalidateLogs]);
   const selectContainer = useCallback((id: string | null) => {
     if (selectedIdRef.current === id) return;
     selectedIdRef.current = id;
-    ++logSequence.current;
     setSelectedId(id);
-    setLogs(null);
-    setLogsError(null);
-    setLoadingLogs(false);
+    clearLogs();
     setLogsExpanded(false);
-  }, []);
+  }, [clearLogs]);
   function updateSearch(nextQuery: string, nextFilter: Filter) {
     if (busy.current) return;
     pendingRemovedFocus.current = document.activeElement;
@@ -137,9 +148,8 @@ function AppContent() {
     const request = ++listSequence.current;
     refreshBusy.current = true;
     setCheckedHandles(new Set());
-    ++logSequence.current;
+    invalidateLogs();
     setRefreshing(true);
-    setLoadingLogs(false);
     try {
       const result = await api.listContainers(sessionId);
       if (epoch.current !== requestEpoch || session.current !== sessionId || request !== listSequence.current) return;
@@ -177,7 +187,7 @@ function AppContent() {
     } finally {
       if (epoch.current === requestEpoch && request === listSequence.current) { refreshBusy.current = false; setRefreshing(false); }
     }
-  }, [selectContainer]);
+  }, [invalidateLogs, selectContainer]);
   const connect = useCallback(async () => {
     if (busy.current || refreshBusy.current) return;
     pendingBulkFocus.current = null;
@@ -185,7 +195,7 @@ function AppContent() {
     session.current = null;
     currentSnapshot.current = null;
     ++listSequence.current;
-    ++logSequence.current;
+    invalidateLogs();
     refreshBusy.current = false;
     setConnecting(true);
     setEnvironment(null);
@@ -222,27 +232,43 @@ function AppContent() {
     } finally {
       if (epoch.current === requestEpoch) setConnecting(false);
     }
-  }, [refresh, selectContainer]);
+  }, [invalidateLogs, refresh, selectContainer]);
   useEffect(() => {
     // Defer one microtask so development StrictMode's discarded mount never opens a session.
     let active = true;
     void Promise.resolve().then(() => { if (active) void connect(); });
-    return () => { active = false; ++epoch.current; ++logSequence.current; };
+    return () => { active = false; ++epoch.current; ++logSequence.current; queuedLogRequest.current = null; };
   }, [connect]);
-  const loadLogs = useCallback(async (container: Container, list: ContainerList) => {
-    if (busy.current || list.stale || !readableStates.has(container.state) || session.current !== list.sessionId) return;
-    const requestEpoch = epoch.current;
-    const request = ++logSequence.current;
-    setLoadingLogs(true);
-    setLogsError(null);
+  const canReadLogs = useCallback((container: Container, list: ContainerList, requestEpoch: number) => {
+    const current = currentSnapshot.current;
+    const criteria = searchCriteria.current;
+    return !busy.current && !refreshBusy.current && epoch.current === requestEpoch
+      && session.current === list.sessionId && current?.sessionId === list.sessionId
+      && !list.stale && !current.stale && current.generation === list.generation
+      && selectedIdRef.current === container.fullId
+      && current.containers.some(item => item.fullId === container.fullId && item.handle === container.handle
+        && readableStates.has(item.state) && matchesContainer(item, criteria.query, criteria.filter));
+  }, []);
+  const drainLogRequests = useCallback(async function drain() {
+    // Response invalidation never releases the native request's execution slot.
+    if (activeLogRequest.current) return;
+    const next = queuedLogRequest.current;
+    queuedLogRequest.current = null;
+    if (!next) return;
+    const { container, list, epoch: requestEpoch, sequence: request } = next;
+    if (request !== logSequence.current || !canReadLogs(container, list, requestEpoch)) {
+      if (request === logSequence.current) setLoadingLogs(false);
+      return;
+    }
+    activeLogRequest.current = next;
+    setLogRequestPending(true);
     try {
       const result = await api.getRecentLogs(list.sessionId, container.handle);
-      if (epoch.current !== requestEpoch || request !== logSequence.current || currentSnapshot.current?.generation !== list.generation) return;
+      if (request !== logSequence.current || !canReadLogs(container, list, requestEpoch)) return;
       if (result.sessionId !== list.sessionId || result.generation !== list.generation || result.handle !== container.handle) throw { code: 'STALE_RESPONSE', message: '이전 로그 응답입니다. Recent Logs로 다시 조회하세요.' };
-      if (selectedIdRef.current !== container.fullId) return;
       setLogs({ ...result, fetchedAt: new Date().toISOString() });
     } catch (error) {
-      if (epoch.current === requestEpoch && request === logSequence.current) {
+      if (request === logSequence.current && canReadLogs(container, list, requestEpoch)) {
         const failure = coreError(error);
         setLogsError(failure);
         if (connectionInvalidatingErrors.has(failure.code)) {
@@ -253,12 +279,28 @@ function AppContent() {
       }
     } finally {
       if (epoch.current === requestEpoch && request === logSequence.current) setLoadingLogs(false);
+      if (activeLogRequest.current === next) {
+        activeLogRequest.current = null;
+        setLogRequestPending(false);
+        // Selection/refresh changes replace this single pending target; clearing removes it.
+        void drain();
+      }
     }
-  }, []);
+  }, [canReadLogs]);
+  const loadLogs = useCallback((container: Container, list: ContainerList) => {
+    if (!canReadLogs(container, list, epoch.current)) return;
+    const current = queuedLogRequest.current ?? activeLogRequest.current;
+    if (current?.sequence === logSequence.current && current.epoch === epoch.current
+      && current.container.handle === container.handle && current.list.generation === list.generation) return;
+    queuedLogRequest.current = { container, list, epoch: epoch.current, sequence: ++logSequence.current };
+    setLoadingLogs(true);
+    setLogsError(null);
+    void drainLogRequests();
+  }, [canReadLogs, drainLogRequests]);
   useEffect(() => {
-    ++logSequence.current;
+    invalidateLogs();
     if (selected && snapshot && !refreshing && !mutating) void loadLogs(selected, snapshot);
-  }, [selected, snapshot, refreshing, mutating, loadLogs]);
+  }, [selected, snapshot, refreshing, mutating, invalidateLogs, loadLogs]);
   async function mutate(container: Container, action: Action, targetSession: string, generation: number) {
     const current = currentSnapshot.current;
     const currentContainer = current?.containers.find(item => item.handle === container.handle);
@@ -389,7 +431,7 @@ function AppContent() {
             {(operation || bulkOperation) && <div className="latest-operation" aria-label={t('latestOperation')}>{operation ? <OperationResult operation={operation} copy={copy} /> : bulkOperation && <BulkResult operation={bulkOperation} />}</div>}
             {selected && snapshot ? <ContainerSummary container={selected} snapshot={snapshot} copy={copy} mutating={mutating} mutationBlocked={mutationBlocked} mutationAllowed={!!environment?.mutationAllowed} /> : <div className="panel-heading"><h2>{t('connectTitle')}</h2></div>}
           </div>
-          {connecting ? <div className="startup-panel"><div className="startup-icon"><LoaderCircle className="spin" size={30} aria-hidden="true" /></div><h3>{t('checkingLocal')}</h3><p>{t('checkingCli')}</p></div> : !ready ? <div className="startup-panel"><div className="startup-icon"><Cable size={32} aria-hidden="true" /></div><span className="eyebrow">{t('localEnvironment')}</span><h3>{t(connectionTitle)}</h3><p>{t(connectionHelp)}</p>{connectionError && <div role="alert"><ErrorDetails error={connectionError} /></div>}{!!environment?.diagnostics.length && <details className="technical-details"><summary>{t('originalDiagnostics')}</summary>{environment.diagnostics.map((message, index) => <p key={index}>{message}</p>)}</details>}<button className="primary-button" onClick={() => void connect()}><RefreshCw size={14} aria-hidden="true" />{t('reconnect')}</button></div> : selected && snapshot ? <ContainerDetail container={selected} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} refreshing={refreshing} mutating={mutating} mutationBlocked={mutationBlocked} mutationAllowed={!!environment?.mutationAllowed} loadLogs={() => void loadLogs(selected, snapshot)} clearLogs={() => { ++logSequence.current; setLogs(null); setLogsError(null); setLoadingLogs(false); }} requestAction={requestAction} copy={copy} copyFeedback={copyFeedback} logsExpanded={logsExpanded} onLogsExpandedChange={setLogsExpanded} /> : <div className="startup-panel"><div className="startup-icon"><Boxes size={32} aria-hidden="true" /></div><h3>{t(refreshing ? 'loadingContainers' : snapshot?.containers.length === 0 ? 'noContainers' : 'selectContainer')}</h3><p>{t(snapshot?.containers.length === 0 ? 'startServices' : 'selectHelp')}</p></div>}
+          {connecting ? <div className="startup-panel"><div className="startup-icon"><LoaderCircle className="spin" size={30} aria-hidden="true" /></div><h3>{t('checkingLocal')}</h3><p>{t('checkingCli')}</p></div> : !ready ? <div className="startup-panel"><div className="startup-icon"><Cable size={32} aria-hidden="true" /></div><span className="eyebrow">{t('localEnvironment')}</span><h3>{t(connectionTitle)}</h3><p>{t(connectionHelp)}</p>{connectionError && <div role="alert"><ErrorDetails error={connectionError} /></div>}{!!environment?.diagnostics.length && <details className="technical-details"><summary>{t('originalDiagnostics')}</summary>{environment.diagnostics.map((message, index) => <p key={index}>{message}</p>)}</details>}<button className="primary-button" onClick={() => void connect()}><RefreshCw size={14} aria-hidden="true" />{t('reconnect')}</button></div> : selected && snapshot ? <ContainerDetail container={selected} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} mutationBlocked={mutationBlocked} mutationAllowed={!!environment?.mutationAllowed} loadLogs={() => void loadLogs(selected, snapshot)} clearLogs={clearLogs} requestAction={requestAction} copy={copy} copyFeedback={copyFeedback} logsExpanded={logsExpanded} onLogsExpandedChange={setLogsExpanded} /> : <div className="startup-panel"><div className="startup-icon"><Boxes size={32} aria-hidden="true" /></div><h3>{t(refreshing ? 'loadingContainers' : snapshot?.containers.length === 0 ? 'noContainers' : 'selectContainer')}</h3><p>{t(snapshot?.containers.length === 0 ? 'startServices' : 'selectHelp')}</p></div>}
         </section>
       </main>
       <footer className="app-footer"><span><span className="footer-dot" />{t('footer')}</span><span className="clipboard-feedback" role="status" aria-live="polite">{copyFeedback}</span><span className="footer-connection" role="status">{connectionStatus}</span></footer>

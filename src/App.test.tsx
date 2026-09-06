@@ -868,8 +868,9 @@ describe('recent log snapshots and diagnostics', () => {
     render(<App />);
     await connected();
     await user.click(screen.getByRole('button', { name: /redis/ }));
-    await screen.findByText('service ready');
+    expect(mock.getRecentLogs).toHaveBeenCalledTimes(1);
     await act(async () => { old.resolve(log('session-1', 'handle-1-g1', 'old container logs')); });
+    await screen.findByText('service ready');
     expect(screen.queryByText('old container logs')).not.toBeInTheDocument();
     expect(screen.getByLabelText('최근 로그 내용')).toHaveTextContent('service ready');
   });
@@ -1091,8 +1092,9 @@ describe('CLI connection session replacement', () => {
     mock.getRecentLogs.mockImplementation(async (sessionId, handle) => log(sessionId, handle, 'Engine B logs'));
     await act(async () => nextConnection.resolve({ ...environment, sessionId: 'session-b', contextName: 'desktop-linux', endpoint: 'unix:///Users/test/.docker/run/docker.sock', engineId: 'engine-b' }));
     expect(await screen.findByRole('button', { name: 'backend-on-b 상세' })).toBeVisible();
-    expect(await screen.findByText('Engine B logs')).toBeVisible();
+    expect(mock.getRecentLogs).not.toHaveBeenCalledWith('session-b', 'engine-b-handle-g1');
     await act(async () => oldLogs.resolve(log('session-1', 'handle-1-g2', 'late Engine A logs')));
+    expect(await screen.findByText('Engine B logs')).toBeVisible();
     expect(screen.queryByText('late Engine A logs')).not.toBeInTheDocument();
     expect(screen.getByRole('region', { name: '최근 작업 결과' })).toBeVisible();
     expect(screen.getByRole('checkbox', { name: 'backend-on-b 작업 대상으로 선택' })).not.toBeChecked();

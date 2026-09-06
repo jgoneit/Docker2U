@@ -109,9 +109,9 @@ export function ContainerSummary({ container, snapshot, copy, mutating, mutation
     {snapshot.stale && <p className="operation-warning">{t('staleActions')}</p>}
   </div>;
 }
-export function ContainerDetail({ container, snapshot, logs, logsError, loadingLogs, refreshing, mutating, mutationBlocked, mutationAllowed, loadLogs, clearLogs, requestAction, copy, copyFeedback, logsExpanded, onLogsExpandedChange }: {
+export function ContainerDetail({ container, snapshot, logs, logsError, loadingLogs, logRequestPending = false, refreshing, mutating, mutationBlocked, mutationAllowed, loadLogs, clearLogs, requestAction, copy, copyFeedback, logsExpanded, onLogsExpandedChange }: {
   container: Container; snapshot: ContainerList; logs: LogSnapshot | null; logsError: CoreError | null;
-  loadingLogs: boolean; refreshing: boolean; mutating: boolean; mutationBlocked: boolean; mutationAllowed: boolean;
+  loadingLogs: boolean; logRequestPending?: boolean; refreshing: boolean; mutating: boolean; mutationBlocked: boolean; mutationAllowed: boolean;
   loadLogs: () => void; clearLogs: () => void; requestAction: (action: Action, returnFocus?: HTMLElement) => void; copy: CopyText;
   copyFeedback?: string; logsExpanded?: boolean; onLogsExpandedChange?: (expanded: boolean) => void;
 }) {
@@ -127,7 +127,7 @@ export function ContainerDetail({ container, snapshot, logs, logsError, loadingL
   }
   return <div className="container-detail">
     <section className="recovery-panel" aria-labelledby="recovery-title"><div><h3 id="recovery-title">{t('recovery')}</h3><p>{t('recoveryHint')}</p></div><div className="recovery-actions"><button className="action-button action-start" disabled={actionsDisabled || !['created', 'exited'].includes(container.state)} onClick={() => requestAction('start')}><Play size={14} aria-hidden="true" />{t('start')}</button><button className="action-button action-stop" disabled={actionsDisabled || container.state !== 'running'} onClick={event => requestConfirmation(event, 'stop')}><Square size={13} aria-hidden="true" />{t('stop')}</button><button className="action-button action-restart" disabled={actionsDisabled || container.state !== 'running'} onClick={event => requestConfirmation(event, 'restart')}><RefreshCw size={14} aria-hidden="true" />{t('restart')}</button></div></section>
-    <LogPanel container={container} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} refreshing={refreshing} mutating={mutating} loadLogs={loadLogs} clearLogs={clearLogs} copy={copy} copyFeedback={copyFeedback} expanded={expanded} onExpandedChange={setExpanded} />
+    <LogPanel container={container} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} loadLogs={loadLogs} clearLogs={clearLogs} copy={copy} copyFeedback={copyFeedback} expanded={expanded} onExpandedChange={setExpanded} />
   </div>;
 }
 
