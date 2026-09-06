@@ -131,6 +131,7 @@ button.text-button { background: transparent; border-color: transparent; color: 
 .inventory-panel { border-right: 1px solid var(--border-subtle); background: var(--sidebar); min-width: 0; }
 .panel-heading { height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 22px; border-bottom: 1px solid var(--border-subtle); }
 .panel-heading h2 { display: flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 600; }
+.refresh-age { display: flex; flex-direction: column; min-width: 0; max-width: 62%; color: var(--text-muted); font-size: 12px; line-height: 1.3; text-align: right; overflow-wrap: anywhere; }
 .count-badge { border: 1px solid var(--border-subtle); border-radius: 5px; padding: 2px 5px; font-size: 12px; color: var(--text-muted); }
 .muted { color: var(--text-muted); }.small { font-size: 12px; }
 .inventory-controls { padding: 17px 17px 14px; border-bottom: 1px solid var(--border-subtle); }
@@ -197,6 +198,10 @@ button.text-button { background: transparent; border-color: transparent; color: 
 .confirm-dialog { width: 440px; max-height: calc(100vh - 60px); overflow: auto; border: 1px solid var(--border); border-radius: 13px; background: var(--raised); padding: 27px; box-shadow: 0 20px 80px var(--shadow); }
 .dialog-icon { display: grid; place-items: center; width: 46px; height: 46px; background: var(--warning-bg); color: var(--warning); border-radius: 11px; margin-bottom: 19px; }.confirm-dialog h2 { font-size: 20px; overflow-wrap: anywhere; }.confirm-dialog > p { color: var(--text-muted); font-size: 12px; line-height: 1.9; margin-top: 14px; }
 .confirm-target { background: var(--inset); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 15px; margin: 20px 0; font-size: 12px; }
+.confirm-dialog .confirm-blocked { padding: 10px 12px; margin: 12px 0; border: 1px solid var(--warning-border); border-radius: 6px; background: var(--warning-bg); color: var(--warning); font-size: 12px; line-height: 1.6; }
+.diagnostic-session, .diagnostic-issue { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.diagnostic-session { margin-bottom: 14px; }
+.diagnostic-issue { margin-top: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 6px; }
 .connection-facts { display: grid; grid-template-columns: 75px minmax(0, 1fr); gap: 8px 11px; margin: 10px 0; }
 .connection-facts dt { color: var(--text-muted); }.connection-facts dd { margin: 0; overflow-wrap: anywhere; }
 .confirm-target .connection-facts:first-child { margin-top: 0; }.confirm-target .connection-facts:last-child { margin-bottom: 0; }
