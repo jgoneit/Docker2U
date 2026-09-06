@@ -95,9 +95,14 @@ pnpm native:dev
 pnpm native:build
 ```
 
-native 명령은 `assets/app-icon.svg`에서 ignored `src-tauri/gen/icons` 아래에
+native 명령은 승인된 `assets/app-icon.png`에서 ignored `src-tauri/gen/icons` 아래에
 앱 아이콘을 생성한다. 검사·재개 명령과 현재 제한은
 [알파 검증 기록](docs/MACOS-ALPHA.md)을 참고한다.
+
+Apple Silicon용 `.app`과 `.dmg`는 `pnpm native:build:dmg --ci -- --locked`로
+생성한다. 이 명령은 `aarch64-apple-darwin`을 지정하며 서명·공증 자격 증명을
+설정하지 않는다. 테스트용 ad-hoc 서명과 배포 검증 절차는
+[macOS DMG 패키징](docs/releases/MACOS-DMG.md)을 참고한다.
 
 두 명령의 Rust 실행은 [toolchain wrapper](scripts/with-toolchain.mjs)를 통해
 준비한 도구체인을 사용한다. 현재 개발 장비의 별도 도구 디렉터리는
