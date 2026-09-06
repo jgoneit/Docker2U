@@ -279,7 +279,7 @@ describe('logs when a selected container becomes unreadable', () => {
 
     await waitFor(() => expect(screen.getByLabelText('최근 로그 내용')).toHaveTextContent('RAW restored raw again'));
     expect(screen.getByRole('searchbox', { name: '로그 검색' })).toHaveValue('raw');
-    expect(screen.getByText('1 / 2건')).toBeVisible();
+    expect(await screen.findByText('1 / 2건')).toBeVisible();
     expect(screen.getByLabelText('최근 로그 내용').querySelector('mark')).toHaveTextContent('RAW');
     expect(screen.getByRole('button', { name: '표시된 로그 복사' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'backend 상세' })).toHaveAttribute('aria-current', 'true');

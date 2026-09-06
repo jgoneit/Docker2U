@@ -1,10 +1,10 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowDownToLine, ChevronDown, ChevronUp, Copy, FileText, Info, Maximize2, RefreshCw, Search, X } from 'lucide-react';
 import type { Container, ContainerList, CoreError } from './api';
 import { ErrorDetails, formatTime, readableStates, type CopyText } from './components';
 import { useI18n } from './i18n';
-import { findLogMatches } from './logSearch';
+import { useLogSearch } from './useLogSearch';
 import type { LogSnapshot } from './logSnapshot';
 import { logMessages } from './messages/logs';
 import { usePreferences } from './preferences';
@@ -37,14 +37,11 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, re
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchFocusVersion, setSearchFocusVersion] = useState(0);
   const [query, setQuery] = useState('');
-  const [matchIndex, setMatchIndex] = useState(0);
   const [navigationVersion, setNavigationVersion] = useState(0);
   // Inventory generations rotate handles; a reload of the same container keeps the search.
   const target = `${snapshot.sessionId}/${container.fullId}`;
   const text = !loadingLogs && !logsError ? logs?.text ?? '' : '';
-  const matches = useMemo(() => findLogMatches(text, query), [text, query]);
-  const activeIndex = matches.length ? Math.min(matchIndex, matches.length - 1) : 0;
-  const activeStart = matches[activeIndex];
+  const { status: searchStatus, total, activeIndex, activeStart, activeLength, move } = useLogSearch({ target, text, query });
   useEffect(() => { ++copyAttempt.current; setShowCopyFeedback(false); }, [expanded, target]);
   useLayoutEffect(() => {
     if (!expanded) return;
@@ -52,10 +49,9 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, re
     if (!(focused instanceof HTMLElement) || !dialog.current?.contains(focused) || focused.matches(':disabled')) closeButton.current?.focus();
   }, [expanded, logs, logsError, loadingLogs]);
   useLayoutEffect(() => {
-    setSearchOpen(false); setQuery(''); setMatchIndex(0); scrollPosition.current = 0;
+    setSearchOpen(false); setQuery(''); scrollPosition.current = 0;
     if (inlineContent.current) inlineContent.current.scrollTop = 0;
   }, [target]);
-  useLayoutEffect(() => { setMatchIndex(0); }, [logs?.text]);
   useLayoutEffect(() => {
     const content = expanded ? modalContent.current : inlineContent.current;
     if (content) {
@@ -72,7 +68,7 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, re
     content.scrollTop += position.top - viewport.top - (content.clientHeight - position.height) / 2;
     content.scrollIntoView?.({ block: 'nearest' });
     scrollPosition.current = content.scrollTop;
-  }, [expanded, searchOpen, activeIndex, query, text, navigationVersion, language]);
+  }, [expanded, searchOpen, activeIndex, query, text, activeStart, activeLength, navigationVersion, language]);
   useLayoutEffect(() => {
     if (!searchOpen || !searchFocusVersion) return;
     const input = expanded ? modalSearch.current : inlineSearch.current;
@@ -133,9 +129,9 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, re
     setSearchOpen(false);
     (inModal ? modalSearchToggle.current : inlineSearchToggle.current)?.focus();
   }
-  function moveMatch(direction: number) {
-    if (matches.length) {
-      setMatchIndex((activeIndex + direction + matches.length) % matches.length);
+  function moveMatch(direction: 1 | -1) {
+    if (searchStatus === 'ready' && total) {
+      move(direction);
       setNavigationVersion(version => version + 1);
     }
   }
@@ -179,7 +175,7 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, re
           // Clearing disables this button; keep keyboard focus on an enabled target.
           if (inModal) closeButton.current?.focus();
           else (inlineContent.current ?? expandButton.current)?.focus();
-          setSearchOpen(false); setQuery(''); setMatchIndex(0); clearLogs();
+          setSearchOpen(false); setQuery(''); clearLogs();
         }} aria-label={t('clear')} title={t('clear')}><X size={13} aria-hidden="true" /></button>
         <button ref={inModal ? modalSearchToggle : inlineSearchToggle} className="log-search-toggle" aria-label={t(searchOpen ? 'closeSearch' : 'openSearch')} title={`${t('search')} (${mac ? '⌘F' : 'Ctrl+F'})`} aria-keyshortcuts={mac ? 'Meta+F' : 'Control+F'} aria-expanded={searchOpen} aria-controls={inModal ? 'expanded-log-search-row' : 'log-search-row'} onClick={() => searchOpen ? closeSearch(inModal) : openSearch()}><Search size={13} aria-hidden="true" /></button>
         <button disabled={!text} onClick={() => bottom(inModal)}><ArrowDownToLine size={13} aria-hidden="true" />{t('bottom')}</button>
@@ -188,15 +184,15 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, re
       <div className="log-meta"><span title={t('limitDetails')}>{t('limits')}</span><span className="log-sensitive" role="img" aria-label={t('sensitive')} title={t('sensitive')}><Info size={13} aria-hidden="true" /></span>{logs && <span className="log-fetched-at">{t('fetchedAt')} <time dateTime={logs.fetchedAt}>{formatTime(logs.fetchedAt, language)}</time></span>}</div>
       <div id={inModal ? 'expanded-log-search-row' : 'log-search-row'} className="log-search" role="search" aria-label={t('searchArea')} hidden={!searchOpen}>
         <label htmlFor={searchId}>{t('search')}</label>
-        <div className="log-search-field"><input ref={inModal ? modalSearch : inlineSearch} id={searchId} className="log-search-input" type="search" value={query} autoComplete="off" spellCheck={false} onChange={event => { setQuery(event.target.value); setMatchIndex(0); }} onKeyDown={event => {
+        <div className="log-search-field"><input ref={inModal ? modalSearch : inlineSearch} id={searchId} className="log-search-input" type="search" value={query} autoComplete="off" spellCheck={false} onChange={event => { setQuery(event.target.value); }} onKeyDown={event => {
           if (event.key === 'Enter') { event.preventDefault(); moveMatch(event.shiftKey ? -1 : 1); }
-        }} />{query && <button className="log-search-clear" onClick={() => { (inModal ? modalSearch.current : inlineSearch.current)?.focus(); setQuery(''); setMatchIndex(0); }} aria-label={t('clearSearch')} title={t('clearSearch')}><X size={14} aria-hidden="true" /></button>}</div>
-        <span className="log-search-count" aria-live="polite" aria-atomic="true">{matches.length ? t('matchCount', { current: activeIndex + 1, total: matches.length }) : t('zeroMatches')}</span>
-        <button disabled={!matches.length} onClick={() => moveMatch(-1)} aria-label={t('previousMatch')} title={t('previousMatch')}><ChevronUp size={14} aria-hidden="true" /></button>
-        <button disabled={!matches.length} onClick={() => moveMatch(1)} aria-label={t('nextMatch')} title={t('nextMatch')}><ChevronDown size={14} aria-hidden="true" /></button>
+        }} />{query && <button className="log-search-clear" onClick={() => { (inModal ? modalSearch.current : inlineSearch.current)?.focus(); setQuery(''); }} aria-label={t('clearSearch')} title={t('clearSearch')}><X size={14} aria-hidden="true" /></button>}</div>
+        <span className="log-search-count" aria-live="polite" aria-atomic="true">{searchStatus === 'searching' ? t('searching') : searchStatus === 'error' ? t('searchFailed') : total ? t('matchCount', { current: activeIndex + 1, total }) : t('zeroMatches')}</span>
+        <button disabled={searchStatus !== 'ready' || !total} onClick={() => moveMatch(-1)} aria-label={t('previousMatch')} title={t('previousMatch')}><ChevronUp size={14} aria-hidden="true" /></button>
+        <button disabled={searchStatus !== 'ready' || !total} onClick={() => moveMatch(1)} aria-label={t('nextMatch')} title={t('nextMatch')}><ChevronDown size={14} aria-hidden="true" /></button>
       </div>
       {logs?.truncated && <p className="truncation-notice" role="status">{t('truncated')}</p>}
-      {logsError ? <div className="log-error" role="alert"><p>{t('failed')}</p><ErrorDetails error={logsError} /></div> : <pre ref={inModal ? modalContent : inlineContent} tabIndex={0} className={`log-content ${!logs?.text ? 'log-placeholder' : ''}`} aria-label={t('content')} aria-busy={loadingLogs} onScroll={event => { if (inModal || !expanded) scrollPosition.current = event.currentTarget.scrollTop; }}>{loadingLogs ? t('loading') : text ? !searchOpen || activeStart === undefined ? text : <>{text.slice(0, activeStart)}<mark ref={inModal ? modalMatch : inlineMatch} className="log-search-match">{text.slice(activeStart, activeStart + query.length)}</mark>{text.slice(activeStart + query.length)}</> : snapshot.stale ? t('stale') : !readableStates.has(container.state) ? t('unreadable') : logs ? t('empty') : t('initial')}</pre>}
+      {logsError ? <div className="log-error" role="alert"><p>{t('failed')}</p><ErrorDetails error={logsError} /></div> : <pre ref={inModal ? modalContent : inlineContent} tabIndex={0} className={`log-content ${!logs?.text ? 'log-placeholder' : ''}`} aria-label={t('content')} aria-busy={loadingLogs} onScroll={event => { if (inModal || !expanded) scrollPosition.current = event.currentTarget.scrollTop; }}>{loadingLogs ? t('loading') : text ? !searchOpen || activeStart === undefined ? text : <>{text.slice(0, activeStart)}<mark ref={inModal ? modalMatch : inlineMatch} className="log-search-match">{text.slice(activeStart, activeStart + activeLength)}</mark>{text.slice(activeStart + activeLength)}</> : snapshot.stale ? t('stale') : !readableStates.has(container.state) ? t('unreadable') : logs ? t('empty') : t('initial')}</pre>}
     </section>;
   }
   return <>{content(false)}{expanded && createPortal(<div className="modal-backdrop"><div ref={dialog} className="logs-modal" role="dialog" aria-modal="true" aria-labelledby="logs-dialog-title" onKeyDown={keyDown}>
