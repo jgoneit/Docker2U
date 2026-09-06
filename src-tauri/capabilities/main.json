@@ -3,5 +3,5 @@
   "identifier": "main",
   "description": "Only explicitly registered Docker2U IPC on the main window.",
   "windows": ["main"],
-  "permissions": ["allow-get-environment", "allow-list-containers", "allow-get-recent-logs", "allow-mutate-container"]
+  "permissions": ["allow-get-environment", "allow-list-containers", "allow-get-recent-logs", "allow-mutate-container", "allow-mutate-containers"]
 }

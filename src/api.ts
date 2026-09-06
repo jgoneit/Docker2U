@@ -57,6 +57,22 @@ export interface MutationResult {
   durationMs?: number;
   observedState?: string | null;
 }
+export interface BulkMutationItem {
+  handle: string;
+  fullId: string;
+  name: string;
+  outcome: MutationResult['outcome'] | 'skipped' | 'notExecuted';
+  message: string;
+  result?: MutationResult | null;
+  error?: CoreError | null;
+}
+export interface BulkMutationResult {
+  sessionId: string;
+  generation: number;
+  action: Action;
+  items: BulkMutationItem[];
+  mutationBlocked: boolean;
+}
 export interface CoreError { code: string; message: string; command?: string; stderr?: string }
 export function coreError(error: unknown): CoreError {
   if (typeof error === 'object' && error !== null && 'code' in error && 'message' in error
@@ -72,6 +88,7 @@ export const api = {
   listContainers: (sessionId: string) => call<ContainerList>('list_containers', { sessionId }),
   getRecentLogs: (sessionId: string, handle: string) => call<RecentLogs>('get_recent_logs', { sessionId, handle }),
   mutateContainer: (sessionId: string, handle: string, action: Action) => call<MutationResult>('mutate_container', { sessionId, handle, action }),
+  mutateContainers: (sessionId: string, generation: number, handles: string[], action: Action) => call<BulkMutationResult>('mutate_containers', { sessionId, generation, handles, action }),
 };
 // Explicit allowlist: no output, logs, credentials, or ambient environment.
 export function diagnosticsText(environment: Environment): string {

@@ -4,11 +4,11 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { api } from './api';
-import type { Container, ContainerList, Environment, MutationResult, RecentLogs } from './api';
+import type { Action, BulkMutationResult, Container, ContainerList, Environment, MutationResult, RecentLogs } from './api';
 
 vi.mock('./api', async importOriginal => ({
   ...await importOriginal<typeof import('./api')>(),
-  api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), mutateContainer: vi.fn() },
+  api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() },
 }));
 const mock = vi.mocked(api);
 const environment: Environment = {
@@ -25,6 +25,12 @@ function log(sessionId: string, handle: string, text = 'service ready', override
   return { sessionId, handle, generation: Number(handle.split('-g').at(-1)) || 1, text, truncated: false, byteCount: text.length, command: 'docker --host unix:///fixed container logs --tail 300 target', stderr: '', ...overrides };
 }
 const succeeded: MutationResult = { outcome: 'succeeded', message: '명령이 완료되었습니다.', command: 'docker --host unix:///fixed container start target', stderr: '', reconciliation: 'notNeeded', mutationBlocked: false, exitCode: 0, durationMs: 200, observedState: null };
+function batch(action: Action, containers = list().containers, overrides: Partial<BulkMutationResult> = {}): BulkMutationResult {
+  return { sessionId: 'session-1', generation: 1, action, mutationBlocked: false, items: containers.map(container => {
+    const allowed = action === 'start' ? ['created', 'exited'].includes(container.state) : container.state === 'running';
+    return { handle: container.handle, fullId: container.fullId, name: container.name, outcome: allowed ? 'succeeded' : 'skipped', message: allowed ? '명령이 완료되었습니다.' : '현재 상태에서는 작업할 수 없습니다.', result: allowed ? succeeded : null };
+  }), ...overrides };
+}
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason: unknown) => void;
@@ -32,7 +38,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 async function connected() {
-  await screen.findByRole('option', { name: /backend/ });
+  await screen.findByRole('button', { name: /backend/ });
   await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
 }
 beforeEach(() => {
@@ -42,6 +48,246 @@ beforeEach(() => {
   mock.listContainers.mockImplementation(async sessionId => list(++generation, [backend, redis], sessionId));
   mock.getRecentLogs.mockImplementation(async (sessionId, handle) => log(sessionId, handle));
   mock.mutateContainer.mockResolvedValue(succeeded);
+  mock.mutateContainers.mockImplementation(async (sessionId, generation, handles, action) => batch(action, list(generation).containers.filter(container => handles.includes(container.handle)), { sessionId, generation }));
+});
+
+describe('bulk selection and recovery', () => {
+  it('keeps checkbox selection separate from detail selection and supports Space', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await connected();
+    const checkbox = screen.getByRole('checkbox', { name: 'redis 작업 대상으로 선택' });
+    checkbox.focus();
+    await user.keyboard(' ');
+    expect(checkbox).toBeChecked();
+    expect(screen.getByRole('button', { name: 'backend 상세' })).toHaveAttribute('aria-current', 'true');
+    expect(screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' })).toBePartiallyChecked();
+    expect(screen.getByRole('button', { name: 'Start (1)' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Stop (0)' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'redis 상세' }));
+    expect(checkbox).toBeChecked();
+    expect(screen.getByRole('button', { name: 'redis 상세' })).toHaveAttribute('aria-current', 'true');
+    await user.click(screen.getByRole('button', { name: '선택 해제' }));
+    expect(checkbox).not.toBeChecked();
+    expect(screen.queryByRole('button', { name: /Start \(/ })).not.toBeInTheDocument();
+  });
+  it('selects only visible containers and clears selection after search and filter changes', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await connected();
+    const all = screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' });
+    await user.click(all);
+    expect(all).toBeChecked();
+    expect(screen.getByText('2개 선택')).toBeVisible();
+    await user.type(screen.getByRole('textbox', { name: 'Container 검색' }), 'redis');
+    expect(all).not.toBeChecked();
+    expect(screen.queryByText('2개 선택')).not.toBeInTheDocument();
+    await user.click(all);
+    expect(screen.getByText('1개 선택')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Start (1)' }));
+    await waitFor(() => expect(mock.mutateContainers).toHaveBeenCalledExactlyOnceWith('session-1', 1, ['handle-2-g1'], 'start'));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
+    expect(all).not.toBeChecked();
+    await user.clear(screen.getByRole('textbox', { name: 'Container 검색' }));
+    await user.click(all);
+    await user.click(screen.getByRole('button', { name: '실행 중' }));
+    expect(all).not.toBeChecked();
+    expect(screen.queryByText('2개 선택')).not.toBeInTheDocument();
+    await user.click(all);
+    expect(screen.getByRole('button', { name: 'Start (0)' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Stop (1)' })).toBeEnabled();
+  });
+  it('clears checked targets at refresh start, including a failed refresh, and on reconnect', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await connected();
+    await user.click(screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' }));
+    const pending = deferred<ContainerList>();
+    mock.listContainers.mockReturnValueOnce(pending.promise);
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(screen.getByRole('checkbox', { name: 'redis 작업 대상으로 선택' })).not.toBeChecked();
+    await act(async () => pending.reject({ code: 'MalformedOutput', message: 'list failed' }));
+    expect(screen.getByRole('checkbox', { name: 'redis 작업 대상으로 선택' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Reconnect' }));
+    await connected();
+    await user.click(screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' }));
+    await user.click(screen.getByRole('button', { name: 'Reconnect' }));
+    await connected();
+    expect(screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' })).not.toBeChecked();
+  });
+  it('counts compatible states and exposes each excluded target and reason', async () => {
+    const user = userEvent.setup();
+    const paused = { ...redis, fullId: 'c'.repeat(64), shortId: 'c'.repeat(12), handle: 'handle-3', name: 'worker', state: 'paused' };
+    mock.listContainers.mockResolvedValueOnce(list(1, [backend, redis, paused]));
+    render(<App />);
+    await connected();
+    await user.click(screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' }));
+    expect(screen.getByText('3개 선택')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Start (1)' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Stop (1)' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Restart (1)' })).toBeEnabled();
+    await user.click(screen.getByText('작업별 제외 대상과 이유'));
+    const bulk = within(screen.getByRole('region', { name: 'Container 일괄 제어' }));
+    expect(bulk.getByRole('heading', { name: 'Start · 2개 제외' })).toBeVisible();
+    expect(bulk.getByText('Paused 상태 · Created / Stopped에서만 Start 가능')).toBeVisible();
+    expect(bulk.getByText('Stopped 상태 · Running에서만 Stop 가능')).toBeVisible();
+  });
+  it.each(['Stop', 'Restart'])('confirms bulk %s once with all targets, exclusions and restored focus', async actionLabel => {
+    const user = userEvent.setup();
+    render(<App />);
+    await connected();
+    await user.click(screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' }));
+    const trigger = screen.getByRole('button', { name: `${actionLabel} (1)` });
+    screen.getByRole('button', { name: 'Refresh' }).focus();
+    fireEvent.click(trigger);
+    const dialog = within(screen.getByRole('dialog', { name: `${actionLabel} 1개 Container?` }));
+    expect(dialog.getByText('실행 대상 · 1개')).toBeVisible();
+    expect(dialog.getByText('제외 대상 · 1개')).toBeVisible();
+    expect(dialog.getByText(backend.fullId)).toBeVisible();
+    expect(dialog.getByText(redis.fullId)).toBeVisible();
+    expect(dialog.getByText('colima-docker2u')).toBeVisible();
+    expect(dialog.getByText(environment.endpoint!)).toBeVisible();
+    const cancel = dialog.getByRole('button', { name: '취소' });
+    expect(cancel).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(dialog.getByRole('button', { name: `${actionLabel} 확인` })).toHaveFocus();
+    await user.tab();
+    expect(cancel).toHaveFocus();
+    await user.keyboard('{Escape}');
+    expect(trigger).toHaveFocus();
+    expect(mock.mutateContainers).not.toHaveBeenCalled();
+    await user.click(trigger);
+    await user.click(screen.getByRole('button', { name: `${actionLabel} 확인` }));
+    await waitFor(() => expect(mock.mutateContainers).toHaveBeenCalledExactlyOnceWith('session-1', 1, ['handle-1-g1', 'handle-2-g1'], actionLabel.toLowerCase()));
+  });
+  it('sends all checked handles in list order immediately for Start and locks all execution controls', async () => {
+    const user = userEvent.setup();
+    const pending = deferred<BulkMutationResult>();
+    mock.mutateContainers.mockReturnValueOnce(pending.promise);
+    render(<App />);
+    await connected();
+    // Select in the opposite order to prove that execution order follows the list.
+    await user.click(screen.getByRole('checkbox', { name: 'redis 작업 대상으로 선택' }));
+    await user.click(screen.getByRole('checkbox', { name: 'backend 작업 대상으로 선택' }));
+    const start = screen.getByRole<HTMLButtonElement>('button', { name: 'Start (1)' });
+    const refresh = screen.getByRole<HTMLButtonElement>('button', { name: 'Refresh' });
+    const reconnect = screen.getByRole<HTMLButtonElement>('button', { name: 'Reconnect' });
+    const singleStop = screen.getByRole<HTMLButtonElement>('button', { name: 'Stop' });
+    act(() => { start.click(); start.click(); refresh.click(); reconnect.click(); singleStop.click(); });
+    expect(mock.mutateContainers).toHaveBeenCalledExactlyOnceWith('session-1', 1, ['handle-1-g1', 'handle-2-g1'], 'start');
+    expect(mock.mutateContainer).not.toHaveBeenCalled();
+    expect(mock.listContainers).toHaveBeenCalledTimes(1);
+    expect(mock.getEnvironment).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    for (const name of ['Refresh', 'Reconnect', 'Stop', 'Start (1)', 'Stop (1)', 'Restart (1)', '전체', '선택 해제']) expect(screen.getByRole('button', { name })).toBeDisabled();
+    expect(screen.getByRole('textbox', { name: 'Container 검색' })).toBeDisabled();
+    screen.getAllByRole('checkbox').forEach(checkbox => expect(checkbox).toBeDisabled());
+    expect(screen.getByText('Start · 1개 대상 순서대로 처리 및 상태 재조회 중…')).toBeVisible();
+    await act(async () => pending.resolve(batch('start')));
+    expect(await screen.findByRole('region', { name: '최근 일괄 작업 결과' })).toBeVisible();
+    expect(mock.listContainers).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(refresh).toBeEnabled());
+    expect(screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' })).not.toBeChecked();
+  });
+  it('uses the same synchronous guard when a single action starts before bulk', async () => {
+    const user = userEvent.setup();
+    const pending = deferred<MutationResult>();
+    mock.mutateContainer.mockReturnValueOnce(pending.promise);
+    render(<App />);
+    await connected();
+    await user.click(screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' }));
+    await user.click(screen.getByRole('button', { name: 'redis 상세' }));
+    const single = screen.getByRole<HTMLButtonElement>('button', { name: 'Start' });
+    const bulk = screen.getByRole<HTMLButtonElement>('button', { name: 'Start (1)' });
+    act(() => { single.click(); bulk.click(); single.click(); });
+    expect(mock.mutateContainer).toHaveBeenCalledTimes(1);
+    expect(mock.mutateContainers).not.toHaveBeenCalled();
+    expect(screen.getByRole('checkbox', { name: 'redis 작업 대상으로 선택' })).toBeDisabled();
+    await act(async () => pending.resolve(succeeded));
+  });
+  it('preserves every outcome across final refresh, detail selection and another refresh', async () => {
+    const user = userEvent.setup();
+    const containers = [backend, redis, ...['c', 'd', 'e'].map((letter, index) => ({ ...redis, fullId: letter.repeat(64), shortId: letter.repeat(12), handle: `handle-${index + 3}`, name: `worker-${index + 3}` }))];
+    let generation = 0;
+    mock.listContainers.mockImplementation(async () => list(++generation, containers));
+    const result = batch('start', list(1, containers).containers);
+    result.items[2] = { ...result.items[2]!, outcome: 'failed', message: '확정 실패', result: { ...succeeded, outcome: 'failed', reconciliation: 'succeeded', exitCode: 1 } };
+    result.items[3] = { ...result.items[3]!, outcome: 'resultUnknown', message: '명령 응답 유실', result: { ...succeeded, outcome: 'resultUnknown', reconciliation: 'succeeded', observedState: 'running', mutationBlocked: true } };
+    result.items[4] = { ...result.items[4]!, outcome: 'notExecuted', message: '앞선 결과 불명으로 미실행', result: null };
+    result.mutationBlocked = true;
+    mock.mutateContainers.mockResolvedValueOnce(result);
+    render(<App />);
+    await connected();
+    await user.click(screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' }));
+    await user.click(screen.getByRole('button', { name: 'Start (4)' }));
+    const report = within(await screen.findByRole('region', { name: '최근 일괄 작업 결과' }));
+    for (const label of ['성공', '실패', '결과 불명', '제외', '미실행']) expect(report.getByText(`${label} 1개`)).toBeVisible();
+    for (const container of containers) expect(report.getByText(container.fullId)).toBeVisible();
+    expect(report.getByText(/현재 상태 재조회는 원래 명령의 성공을 의미하지 않습니다/)).toBeVisible();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
+    expect(mock.listContainers).toHaveBeenCalledTimes(2);
+    await user.click(screen.getByRole('button', { name: 'redis 상세' }));
+    expect(report.getByText('결과 불명 1개')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(mock.listContainers).toHaveBeenCalledTimes(3));
+    expect(report.getByText('결과 불명 1개')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Start' })).toBeDisabled();
+    expect(mock.mutateContainers).toHaveBeenCalledTimes(1);
+  });
+  it.each([new Error('response lost'), { code: 'WorkerFailed', message: 'worker response lost' }])('treats missing IPC replies as aggregate unknown and requires reconnect', async failure => {
+    const user = userEvent.setup();
+    mock.mutateContainers.mockRejectedValueOnce(failure);
+    render(<App />);
+    await connected();
+    await user.click(screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' }));
+    await user.click(screen.getByRole('button', { name: 'Start (1)' }));
+    const report = within(await screen.findByRole('region', { name: '최근 일괄 작업 결과' }));
+    expect(report.getByRole('heading', { name: 'Start · 일괄 작업 결과 불명' })).toBeVisible();
+    expect(report.getByText(/개별 대상의 결과를 확정할 수 없습니다/)).toBeVisible();
+    expect(report.queryByText(/성공 \d+개/)).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
+    expect(mock.listContainers).toHaveBeenCalledTimes(2);
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Reconnect' })).toBeEnabled());
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeDisabled();
+    expect(mock.mutateContainers).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole('button', { name: 'Reconnect' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled());
+  });
+  it('reports a proven native preflight rejection without inventing item outcomes', async () => {
+    const user = userEvent.setup();
+    mock.mutateContainers.mockRejectedValueOnce({ code: 'StaleHandle', message: '목록 세대가 변경되었습니다.' });
+    render(<App />);
+    await connected();
+    await user.click(screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' }));
+    await user.click(screen.getByRole('button', { name: 'Start (1)' }));
+    expect(await screen.findByRole('heading', { name: 'Start · 일괄 작업 요청 거절' })).toBeVisible();
+    expect(screen.getByText(/실행 전에 요청이 거절되어/)).toBeVisible();
+    expect(mock.listContainers).toHaveBeenCalledTimes(2);
+  });
+  it.each(['session', 'generation', 'action', 'fullId', 'missingItem', 'duplicateItem', 'outcome', 'missingResult', 'observedState'] as const)('rejects a bulk reply with incorrect %s binding', async kind => {
+    const user = userEvent.setup();
+    const result = batch('start');
+    if (kind === 'session') result.sessionId = 'old-session';
+    if (kind === 'generation') result.generation = 0;
+    if (kind === 'action') result.action = 'restart';
+    if (kind === 'fullId') result.items[0]!.fullId = 'f'.repeat(64);
+    if (kind === 'missingItem') result.items.pop();
+    if (kind === 'duplicateItem') result.items[1] = result.items[0]!;
+    if (kind === 'outcome') result.items[1]!.outcome = 'failed';
+    if (kind === 'missingResult') result.items[1]!.result = null;
+    if (kind === 'observedState') result.items[1]!.result = { ...succeeded, reconciliation: 'succeeded', observedState: { invalid: true } as unknown as string };
+    mock.mutateContainers.mockResolvedValueOnce(result);
+    render(<App />);
+    await connected();
+    await user.click(screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' }));
+    await user.click(screen.getByRole('button', { name: 'Start (1)' }));
+    expect(await screen.findByRole('heading', { name: 'Start · 일괄 작업 결과 불명' })).toBeVisible();
+    expect(screen.getByText(/요청 대상과 일치하는 전체 일괄 응답/)).toBeVisible();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeDisabled();
+    expect(mock.mutateContainers).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('environment and inventory', () => {
@@ -81,15 +327,15 @@ describe('environment and inventory', () => {
     render(<App />);
     await connected();
     await user.type(screen.getByRole('textbox', { name: 'Container 검색' }), '8080');
-    expect(screen.getAllByRole('option')).toHaveLength(1);
-    expect(screen.getByRole('option')).toHaveTextContent('backend');
+    expect(within(screen.getByRole('list', { name: 'Container 목록' })).getAllByRole('button')).toHaveLength(1);
+    expect(within(screen.getByRole('list', { name: 'Container 목록' })).getByRole('button')).toHaveTextContent('backend');
     await user.clear(screen.getByRole('textbox', { name: 'Container 검색' }));
     await user.type(screen.getByRole('textbox'), 'missing');
     expect(screen.getByText('검색 결과가 없습니다.')).toBeVisible();
     await user.click(screen.getByRole('button', { name: '검색·필터 초기화' }));
     await user.click(screen.getByRole('button', { name: '중지' }));
-    expect(screen.getAllByRole('option')).toHaveLength(1);
-    expect(screen.getByRole('option')).toHaveTextContent('redis');
+    expect(within(screen.getByRole('list', { name: 'Container 목록' })).getAllByRole('button')).toHaveLength(1);
+    expect(within(screen.getByRole('list', { name: 'Container 목록' })).getByRole('button')).toHaveTextContent('redis');
     mock.listContainers.mockResolvedValueOnce(list(2, []));
     await user.click(screen.getByRole('button', { name: 'Refresh' }));
     expect(await screen.findByRole('heading', { name: '아직 Container가 없습니다.' })).toBeVisible();
@@ -99,11 +345,11 @@ describe('environment and inventory', () => {
     const user = userEvent.setup();
     render(<App />);
     await connected();
-    const first = screen.getByRole('option', { name: /backend/ });
+    const first = screen.getByRole('button', { name: /backend/ });
     first.focus();
     await user.keyboard('{ArrowDown}');
-    expect(screen.getByRole('option', { name: /redis/ })).toHaveFocus();
-    expect(screen.getByRole('option', { name: /redis/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('button', { name: /redis/ })).toHaveFocus();
+    expect(screen.getByRole('button', { name: /redis/ })).toHaveAttribute('aria-current', 'true');
     expect(screen.getByRole('button', { name: 'Start' })).toBeEnabled();
     await user.keyboard('{Home}');
     expect(first).toHaveFocus();
@@ -117,7 +363,7 @@ describe('environment and inventory', () => {
     mock.listContainers.mockRejectedValueOnce({ code: 'MalformedOutput', message: '전체 목록을 해석하지 못했습니다.' });
     await user.click(screen.getByRole('button', { name: 'Refresh' }));
     expect(await screen.findByText('Stale · 마지막 정상 목록입니다.')).toBeVisible();
-    expect(screen.getAllByRole('option')).toHaveLength(2);
+    expect(within(screen.getByRole('list', { name: 'Container 목록' })).getAllByRole('button')).toHaveLength(2);
     expect(screen.getByRole('button', { name: 'Stop' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Recent Logs' })).toBeDisabled();
     await user.click(screen.getByRole('button', { name: 'Refresh' }));
@@ -139,17 +385,17 @@ describe('environment and inventory', () => {
     await user.click(reconnectButton);
     expect(mock.getEnvironment).toHaveBeenCalledTimes(1);
     expect(mock.listContainers).toHaveBeenCalledTimes(2);
-    expect(screen.getAllByRole('option')).toHaveLength(2);
-    expect(screen.getByRole('option', { name: /backend/ })).toBeVisible();
-    expect(screen.getByRole('option', { name: /redis/ })).toBeVisible();
+    expect(within(screen.getByRole('list', { name: 'Container 목록' })).getAllByRole('button')).toHaveLength(2);
+    expect(screen.getByRole('button', { name: /backend/ })).toBeVisible();
+    expect(screen.getByRole('button', { name: /redis/ })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Stop' })).toBeDisabled();
     await act(async () => { pending.resolve(list(2, [{ ...backend, name: 'refreshed-container' }])); });
-    expect(screen.getByRole('option', { name: /refreshed-container/ })).toBeVisible();
+    expect(screen.getByRole('button', { name: /refreshed-container/ })).toBeVisible();
     expect(reconnectButton).toBeEnabled();
     mock.getEnvironment.mockResolvedValueOnce({ ...environment, sessionId: 'session-2' });
     mock.listContainers.mockResolvedValueOnce(list(1, [{ ...redis, name: 'new-session-container' }], 'session-2'));
     await user.click(reconnectButton);
-    expect(await screen.findByRole('option', { name: /new-session-container/ })).toBeVisible();
+    expect(await screen.findByRole('button', { name: /new-session-container/ })).toBeVisible();
     expect(mock.getEnvironment).toHaveBeenCalledTimes(2);
     expect(mock.listContainers).toHaveBeenCalledTimes(3);
     expect(mock.listContainers).toHaveBeenLastCalledWith('session-2');
@@ -172,19 +418,19 @@ describe('environment and inventory', () => {
     await user.click(reconnectButton);
     expect(mock.getEnvironment).toHaveBeenCalledTimes(1);
     expect(mock.listContainers).toHaveBeenCalledTimes(2);
-    expect(screen.getAllByRole('option')).toHaveLength(2);
-    expect(screen.getByRole('option', { name: /backend/ })).toBeVisible();
-    expect(screen.getByRole('option', { name: /redis/ })).toBeVisible();
+    expect(within(screen.getByRole('list', { name: 'Container 목록' })).getAllByRole('button')).toHaveLength(2);
+    expect(screen.getByRole('button', { name: /backend/ })).toBeVisible();
+    expect(screen.getByRole('button', { name: /redis/ })).toBeVisible();
     await act(async () => { pending.reject(failure); });
     expect(screen.getByText(failure.message)).toBeVisible();
     expect(screen.getByText('Stale · 마지막 정상 목록입니다.')).toBeVisible();
-    expect(screen.getAllByRole('option')).toHaveLength(2);
+    expect(within(screen.getByRole('list', { name: 'Container 목록' })).getAllByRole('button')).toHaveLength(2);
     expect(refreshButton).toBeEnabled();
     expect(reconnectButton).toBeEnabled();
     mock.getEnvironment.mockResolvedValueOnce({ ...environment, sessionId: 'session-2' });
     mock.listContainers.mockResolvedValueOnce(list(1, [{ ...redis, name: 'new-session-container' }], 'session-2'));
     await user.click(reconnectButton);
-    expect(await screen.findByRole('option', { name: /new-session-container/ })).toBeVisible();
+    expect(await screen.findByRole('button', { name: /new-session-container/ })).toBeVisible();
     expect(mock.getEnvironment).toHaveBeenCalledTimes(2);
     expect(mock.listContainers).toHaveBeenCalledTimes(3);
     expect(mock.listContainers).toHaveBeenLastCalledWith('session-2');
@@ -207,9 +453,9 @@ describe('environment and inventory', () => {
     });
     expect(mock.getEnvironment).toHaveBeenCalledTimes(1);
     expect(mock.listContainers).toHaveBeenCalledTimes(2);
-    expect(screen.getAllByRole('option')).toHaveLength(2);
-    expect(screen.getByRole('option', { name: /backend/ })).toBeVisible();
-    expect(screen.getByRole('option', { name: /redis/ })).toBeVisible();
+    expect(within(screen.getByRole('list', { name: 'Container 목록' })).getAllByRole('button')).toHaveLength(2);
+    expect(screen.getByRole('button', { name: /backend/ })).toBeVisible();
+    expect(screen.getByRole('button', { name: /redis/ })).toBeVisible();
     expect(reconnectButton).toBeDisabled();
     await act(async () => { pending.resolve(list(2)); });
     expect(reconnectButton).toBeEnabled();
@@ -221,8 +467,8 @@ describe('environment and inventory', () => {
     mock.listContainers.mockResolvedValueOnce(list(1, [{ ...backend, name: 'stale-generation' }]));
     await user.click(screen.getByRole('button', { name: 'Refresh' }));
     expect(await screen.findByText('Stale · 마지막 정상 목록입니다.')).toBeVisible();
-    expect(screen.queryByRole('option', { name: /stale-generation/ })).not.toBeInTheDocument();
-    expect(screen.getByRole('option', { name: /backend/ })).toBeVisible();
+    expect(screen.queryByRole('button', { name: /stale-generation/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /backend/ })).toBeVisible();
   });
 });
 
@@ -285,7 +531,7 @@ describe('container recovery policy and confirmation', () => {
     mock.mutateContainer.mockResolvedValueOnce({ ...succeeded, outcome: 'failed', message: 'CLI가 종료 코드 1을 반환했습니다.', stderr: 'container failure', exitCode: 1 });
     render(<App />);
     await connected();
-    await user.click(screen.getByRole('option', { name: /redis/ }));
+    await user.click(screen.getByRole('button', { name: /redis/ }));
     await user.click(screen.getByRole('button', { name: 'Start' }));
     expect(await screen.findByRole('heading', { name: 'Failed' })).toBeVisible();
     expect(mock.listContainers).toHaveBeenCalledTimes(2);
@@ -327,7 +573,7 @@ describe('container recovery policy and confirmation', () => {
     mock.mutateContainer.mockRejectedValueOnce(failure);
     render(<App />);
     await connected();
-    await user.click(screen.getByRole('option', { name: /redis/ }));
+    await user.click(screen.getByRole('button', { name: /redis/ }));
     await user.click(screen.getByRole('button', { name: 'Start' }));
     expect(await screen.findByRole('heading', { name: 'ResultUnknown · 결과 불확실' })).toBeVisible();
     expect(screen.getByText(/추가 복구 작업이 차단되었습니다/)).toBeVisible();
@@ -338,7 +584,7 @@ describe('container recovery policy and confirmation', () => {
     mock.mutateContainer.mockRejectedValueOnce({ code: 'TargetChanged', message: '대상이 변경되었습니다.' });
     render(<App />);
     await connected();
-    await user.click(screen.getByRole('option', { name: /redis/ }));
+    await user.click(screen.getByRole('button', { name: /redis/ }));
     await user.click(screen.getByRole('button', { name: 'Start' }));
     expect(await screen.findByRole('heading', { name: 'Failed' })).toBeVisible();
     expect(screen.getByText(/추가 복구 작업이 차단되었습니다/)).toBeVisible();
@@ -353,7 +599,7 @@ describe('recent log snapshots and diagnostics', () => {
     mock.getRecentLogs.mockImplementationOnce(() => old.promise);
     render(<App />);
     await connected();
-    await user.click(screen.getByRole('option', { name: /redis/ }));
+    await user.click(screen.getByRole('button', { name: /redis/ }));
     await screen.findByText('service ready');
     await act(async () => { old.resolve(log('session-1', 'handle-1-g1', 'old container logs')); });
     expect(screen.queryByText('old container logs')).not.toBeInTheDocument();
