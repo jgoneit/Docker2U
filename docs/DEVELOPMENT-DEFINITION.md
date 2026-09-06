@@ -5,7 +5,7 @@
 | 항목 | 내용 |
 | --- | --- |
 | 문서 상태 | macOS 로컬 알파 구현 기준, 외부 v0.1 출시 기준 병기 |
-| 문서 버전 | 1.1 |
+| 문서 버전 | 1.2 |
 | 작성일 | 2026-09-01 |
 | 제품 목표 버전 | Docker2U v0.1 |
 | 대상 플랫폼 | 현재 macOS 26.5.2 Apple Silicon 로컬 알파, Windows 후속 |
@@ -36,6 +36,8 @@ Docker2U v0.1의 개발과 리뷰는 이 문서를 기준으로 수행한다. �
   아래 두 OS 지원 matrix와 signed release gate는 외부 v0.1 출시 요건으로 유지한다.
 - UI는 제공된 React 패널을 기반으로 한다. 기본 창은 1280×800, 최소는
   1024×680이며 어두운 테마의 왼쪽 목록·오른쪽 상세 구조를 사용한다.
+- 개별 상세 선택과 별도로 여러 Container를 체크하여 Start·Stop·Restart할 수 있다.
+  전체 선택은 현재 검색·필터 결과로 보이는 목록에만 적용한다.
 - Rust Core가 `colima-docker2u` context만 선택하고 검증한 local Unix socket을
   session에 고정한다. 전역 기본 context와 `DOCKER_HOST` / `DOCKER_CONTEXT`는
   앱 대상 선택에 영향을 주지 않는다. Reconnect도 같은 이름의 context를 재검증한다.
@@ -623,8 +625,8 @@ UI Action 정책은 실수를 줄이는 1차 방어선이다. Docker Engine의 �
 docker --host <pinned-local-endpoint> container start <full-id>
 ```
 
-Start는 별도 확인창 없이 실행한다. 실행 중 해당 Container의 모든 mutation
-버튼을 잠그고 완료 후 전체 상태를 다시 조회한다.
+Start는 단건·다중 작업 모두 별도 확인창 없이 실행한다. 단건과 다중 작업은
+하나의 Core mutation lock을 공유하며 완료 후 전체 상태를 다시 조회한다.
 
 ### 8.6 Stop
 
@@ -666,11 +668,39 @@ Start, Stop, Restart 직전 다음 항목을 다시 확인한다.
 - EngineFingerprint가 session 생성 시 고정한 값과 일치한다.
 - Container handle이 현재 session의 마지막 정상 조회 결과에 존재한다.
 - Rust Core가 handle을 유효한 full Container ID로 변환할 수 있다.
-- 동일 Container에 다른 mutation이 실행 중이지 않다.
+- 단건 또는 다중 mutation이 이미 실행 중이지 않다.
 
-명령 종료 후 성공·실패와 관계없이 Container 목록을 다시 조회한다.
+단건 명령 또는 다중 작업 종료 후 성공·실패와 관계없이 Container 목록을 다시 조회한다.
 외부에서 active context가 바뀌어도 현재 session target을 자동으로 따라가지 않는다.
 사용자가 `Reconnect`를 실행할 때만 target을 다시 해석하고 고정한다.
+
+### 8.8.1 선택한 Container 일괄 작업
+
+여러 행의 체크박스와 현재 보이는 목록의 전체 선택으로 대상을 정한다. 검색어·
+상태 필터 변경, Refresh, Reconnect 시 체크를 해제한다. 상세·최근 로그를 보는
+행 선택은 단일 Container로 유지하며 체크 상태와 분리한다.
+
+- 선택 개수와 작업별 실행 가능 개수를 표시한다. Start는 `created`·`exited`,
+  Stop·Restart는 `running`만 대상으로 하며 실행 가능한 대상이 없으면 비활성화한다.
+- Stop·Restart는 선택한 대상, 실행·제외 개수와 현재 연결 환경을 한 확인창에
+  표시한다. 확인 취소는 어떤 Container도 조작하지 않는다.
+- 요청을 수락할 때 현재 session·generation·모든 handle을 검증하고, 실행 대상과
+  full ID를 고정한다. 선택 당시 부적격 대상이 나중에 적격 상태가 되어도 추가하지 않는다.
+- Core가 대상별로 순차 실행한다. 단건과 다중 요청이 같은 전역 mutation lock을
+  사용하며, 다중 작업 중 다른 mutation·Refresh·Reconnect를 실행하지 않는다.
+- 각 대상 실행 직전에 고정된 Engine과 full ID의 상태를 다시 확인한다. 상태가
+  바뀌어 해당 작업을 허용하지 않으면 건너뛰고 다른 Container로 대체하지 않는다.
+- 정상 종료된 명령 실패는 대상 상태를 확인할 수 있을 때 다음 대상으로 계속한다.
+  `ResultUnknown`, Engine identity 변경, 연결 단절 또는 상태 재조회 실패가 발생하면
+  후속 실행을 중단한다. 자동 재시도나 이미 실행된 작업의 rollback은 제공하지 않는다.
+- 대상별로 성공, 실패, 결과 불명, 건너뜀, 미실행을 표시한다. 건너뜀은 상태 정책상
+  제외된 대상이며, 미실행은 실행 전 검증 실패 또는 앞선 작업의 중단으로 명령을
+  시작하지 않은 대상이다.
+- 대상별 exact full ID 확인은 유지하되 전체 목록 Refresh는 다중 작업이 끝난 뒤
+  한 번 수행한다. 최종 Refresh 실패는 마지막 목록을 `Stale`로 표시한다.
+
+이 기능은 선택한 개별 Container에 같은 작업을 적용한다. Compose 프로젝트의
+의존성 순서, health 대기, 전체 작업의 원자적 성공이나 원상 복구는 보장하지 않는다.
 
 ### 8.9 최근 로그
 
@@ -710,7 +740,8 @@ Refresh 규칙:
 - 실행 중에는 중복 Refresh를 합치거나 이전 Refresh를 취소한다.
 - 오래된 결과가 최신 결과를 덮어쓰지 않도록 generation을 구분한다.
 - 마지막 성공 갱신 시각을 표시한다.
-- mutation 직후에는 자동으로 한 번 Refresh한다.
+- 단건 mutation 직후 또는 다중 작업 전체 종료 후 자동으로 한 번 Refresh한다.
+- 다중 작업 중에는 대상 generation을 보존하기 위해 Refresh를 `Busy`로 거부한다.
 
 주기적인 Auto Refresh는 v0.1 범위가 아니다.
 
@@ -791,10 +822,11 @@ macOS 알파는 사용자가 제공한 React 패널의 어두운 테마와 검�
 ├───────────────────────────────────────────────────────────────────┤
 │ Containers                                   Updated 14:03 [Refresh]│
 │                                                                   │
-│ NAME       STATE       HEALTH      IMAGE             PORTS        │
-│ backend    Running     Healthy     company-api       8080:8080    │
-│ redis      Running     —           redis:7           6379:6379    │
-│ oracle     Stopped     —           oracle:19c        —            │
+│ [ ] Select visible     Selected: 0                               │
+│     NAME       STATE       HEALTH      IMAGE          PORTS       │
+│ [ ] backend    Running     Healthy     company-api    8080:8080   │
+│ [ ] redis      Running     —           redis:7        6379:6379   │
+│ [ ] oracle     Stopped     —           oracle:19c     —           │
 │                                                                   │
 ├───────────────────────────────────────────────────────────────────┤
 │ Selected: backend                                                 │
@@ -807,7 +839,10 @@ macOS 알파는 사용자가 제공한 React 패널의 어두운 테마와 검�
 
 ### 9.2 UI 원칙
 
-- 한 번에 한 Container를 명시적으로 선택한다.
+- 상세·로그 대상은 한 Container를 선택하고, 다중 작업 대상은 별도 체크박스로 정한다.
+- 전체 선택은 보이는 목록만 포함하며 일부 체크 상태를 구분해 표시한다. 검색어·
+  상태 필터 변경, Refresh, Reconnect 시 체크를 해제한다.
+- 체크한 대상이 있으면 목록의 일괄 작업 영역에 선택 수와 작업별 실행 가능 수를 표시한다.
 - 행별 모호한 아이콘 버튼과 하단 버튼을 중복 제공하지 않는다.
 - Action은 텍스트 레이블과 접근 가능한 이름을 가진다.
 - 색상만으로 상태를 표현하지 않는다.
@@ -973,6 +1008,7 @@ list_containers(environment_session_id)
 start_container(environment_session_id, container_handle)
 stop_container(environment_session_id, container_handle)
 restart_container(environment_session_id, container_handle)
+mutate_containers(sessionId, generation, handles, action)
 get_recent_logs(environment_session_id, container_handle)
 cancel_read_operation(operation_id)
 copy_diagnostics()
@@ -1008,6 +1044,15 @@ Docker Client contract를 고정된 인자로 검증한 뒤에만 새 environmen
 전달한다. Rust Core가 handle을 마지막 정상 조회 결과의 full Container ID로
 변환하고, Action enum을 고정된 command specification으로 바꾼다. Full ID는
 사용자 확인·복사용으로 표시할 수 있지만 mutation IPC의 target으로 받지 않는다.
+
+다중 mutation은 `mutate_containers(sessionId, generation, handles, action)`으로
+현재 목록 generation, opaque handle 배열과 `start | stop | restart` enum만 받는다.
+단건 IPC를 유지하며 raw full ID, 임의 Docker 인자나 명령 문자열을 추가로 받지 않는다.
+`BulkMutationResult`는 `sessionId`, `generation`, `action`, `items`,
+`mutationBlocked`를 반환한다. 각 item에는 `handle`, `fullId`, `name`,
+`outcome`, `message`와 해당할 때 기존 `MutationResult` 또는 `CoreError`를 담는다.
+Item outcome은 `succeeded | failed | resultUnknown | skipped | notExecuted`이며
+명령 결과와 별도 조회로 확인한 상태를 합쳐 성공으로 추정하지 않는다.
 
 ### 12.3 Tauri capability 원칙
 
@@ -1113,7 +1158,8 @@ Lifecycle 규칙:
 - CLI와 target 검증이 모두 끝난 뒤에만 새 session을 `Active`로 발급한다.
 - Reconnect, 검증된 CLI 변경, target 재검증·재선택은 기존 session을 원자적으로
   `Invalid`로 만들고 모든 handle과 read operation을 폐기한 뒤 새 session을 만든다.
-- mutation 실행 중에는 Reconnect와 CLI 변경을 `Busy`로 거부한다.
+- 단건·다중 mutation은 하나의 Core lock을 공유한다. 실행 중에는 다른 mutation,
+  Refresh, Reconnect와 CLI 변경을 `Busy`로 거부한다.
 - Engine 연결 상실 시 session을 `NeedsValidation`으로 바꾸고 새 mutation을 차단한다.
 - 앱 종료나 spawn 이후 연결 단절로 mutation 완료를 관찰하지 못하면 해당
   operation의 의미는 `ResultUnknown`이며 `Failed`로 바꾸지 않는다.
@@ -1125,7 +1171,8 @@ Container 목록 Refresh는 Core에서 원자적으로 commit한다. 성공할 �
 generation, full ID에 귀속된다.
 
 - 이전 session 또는 이전 generation의 handle은 항상 거부한다.
-- 새 목록에서도 같은 full ID가 존재하면 UI는 새 handle로 선택 상태를 복원할 수 있다.
+- 새 목록에서도 같은 full ID가 존재하면 UI는 새 handle로 단일 상세 선택을 복원할 수
+  있다. 다중 작업 체크는 Refresh와 Reconnect 시 해제하며 이전 handle을 재사용하지 않는다.
 - Refresh가 실패하면 generation과 map을 교체하지 않고 이전 목록을 `Stale`로
   표시하며, 새 mutation은 다음 정상 Refresh 또는 Reconnect까지 차단한다.
 - mutation 직전 Core의 active session, current generation, current handle map을 모두
@@ -1289,7 +1336,7 @@ Docker2U v0.1은 다음 원칙을 따른다.
 
 - Docker CLI 실행 중 UI thread를 차단하지 않는다.
 - Window 이동, 선택, 취소, 상세 보기 기능은 CLI 응답과 독립적으로 동작한다.
-- 같은 Container에 중복 mutation을 실행하지 않는다.
+- 단건과 다중 mutation이 전역 lock을 공유하여 동시에 실행되지 않는다.
 - 오래된 Refresh 결과가 최신 화면 상태를 덮지 않는다.
 
 ### 16.2 Bounded Resources
@@ -1578,7 +1625,8 @@ mutation 기능 없이도 사용자가 문제 Container를 찾고 최근 로그�
 - Restart
 - 확인창
 - full ID 고정
-- per-container mutation lock
+- 단건·다중 작업의 공통 전역 mutation lock
+- 현재 보이는 목록의 다중 선택·전체 선택과 대상별 결과
 - post-action Refresh
 - ResultUnknown 처리
 
@@ -1626,6 +1674,9 @@ Pilot 성과 측정도 별개이며 후자의 수치를 추정하여 채우지 �
 - [ ] created / exited Container를 Start할 수 있다.
 - [ ] running Container를 Stop할 수 있다.
 - [ ] running Container를 Restart할 수 있다.
+- [ ] 개별 체크와 현재 보이는 목록의 전체 선택으로 Start·Stop·Restart할 수 있다.
+- [ ] 검색·필터 변경, Refresh, Reconnect 시 다중 체크를 해제하고 상세 선택과 구분한다.
+- [ ] 일괄 Stop·Restart의 확인창에서 대상과 실행·제외 개수를 확인할 수 있다.
 - [ ] 최근 로그를 최대 300줄 요청하고 마지막 2 MiB만 표시·복사하며 truncation을 알린다.
 - [ ] 사용자가 실행한 equivalent command와 stderr를 확인할 수 있다.
 - [ ] Manual Refresh와 mutation 직후 Refresh가 동작한다.
@@ -1657,6 +1708,9 @@ Pilot 성과 측정도 별개이며 후자의 수치를 추정하여 채우지 �
 - [ ] Reconciliation 후에도 원래 Outcome을 `ResultUnknown`으로 유지한다.
 - [ ] `ResultUnknown` mutation을 자동 재시도하지 않는다.
 - [ ] Reconciliation 실패 후 environment 재검증 전까지 추가 mutation을 차단한다.
+- [ ] 일괄 작업은 고정한 대상에 순차 실행하며 단건 작업·Refresh·Reconnect와 겹치지 않는다.
+- [ ] 대상별 상태 변경은 건너뛰고, 결과 불명·identity 변경·연결 단절·재조회 실패는 후속 실행을 중단한다.
+- [ ] 일괄 작업의 성공·실패·결과 불명·건너뜀·미실행을 구분하고 종료 후 한 번 Refresh한다.
 - [ ] malformed JSON line을 조용히 제외하거나 부분 목록으로 표시하지 않는다.
 - [ ] Refresh 실패 시 마지막 정상 목록을 `Stale`로 표시한다.
 - [ ] 오래된 session, list generation, Refresh 결과가 최신 상태를 덮지 않는다.

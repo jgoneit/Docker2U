@@ -5,6 +5,7 @@ fn main() {
             "list_containers",
             "get_recent_logs",
             "mutate_container",
+            "mutate_containers",
         ]),
     ))
     .expect("failed to generate the explicit application permissions");

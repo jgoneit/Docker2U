@@ -112,7 +112,7 @@ pub struct Logs {
     pub command: String,
     pub stderr: String,
 }
-#[derive(Debug, Deserialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
 pub enum Action {
     Start,
@@ -146,6 +146,28 @@ pub struct Mutation {
     pub exit_code: Option<i32>,
     pub duration_ms: u64,
     pub observed_state: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkMutation {
+    pub session_id: String,
+    pub generation: u64,
+    pub action: Action,
+    pub items: Vec<BulkMutationItem>,
+    pub mutation_blocked: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkMutationItem {
+    pub handle: String,
+    pub full_id: String,
+    pub name: String,
+    pub outcome: String,
+    pub message: String,
+    pub result: Option<Mutation>,
+    pub error: Option<ApiError>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -303,7 +325,36 @@ struct State {
     epoch: u64,
     refreshing: bool,
     diagnosing: bool,
-    mutations: HashSet<String>,
+    mutating: bool,
+}
+
+/// Owns the global mutation reservation without holding a mutex during CLI work.
+/// An interrupted worker fails closed and still releases the reservation.
+struct MutationGuard {
+    state: Arc<Mutex<State>>,
+    session_id: String,
+    needs_validation: bool,
+}
+
+impl MutationGuard {
+    fn finish(mut self, needs_validation: bool) {
+        self.needs_validation = needs_validation;
+    }
+}
+
+impl Drop for MutationGuard {
+    fn drop(&mut self) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.mutating = false;
+        if let Some(session) = state
+            .session
+            .as_mut()
+            .filter(|session| session.id == self.session_id)
+        {
+            session.stale = true;
+            session.needs_validation |= self.needs_validation;
+        }
+    }
 }
 #[derive(Clone, Debug)]
 struct HostInfo {
@@ -628,7 +679,7 @@ impl Core {
     pub fn get_environment(&self) -> Result<Environment> {
         let epoch = {
             let mut state = self.state.lock().unwrap();
-            if !state.mutations.is_empty() || state.diagnosing || state.refreshing {
+            if state.mutating || state.diagnosing || state.refreshing {
                 return Err(ApiError::new("Busy", "An operation is still in progress"));
             }
             state.epoch += 1;
@@ -859,7 +910,7 @@ impl Core {
     pub fn list_containers(&self, id: &str) -> Result<ContainerList> {
         let session = {
             let mut state = self.state.lock().unwrap();
-            if state.refreshing || state.diagnosing || !state.mutations.is_empty() {
+            if state.refreshing || state.diagnosing || state.mutating {
                 return Err(ApiError::new("Busy", "An operation is still in progress"));
             }
             let session = state
@@ -1001,9 +1052,9 @@ impl Core {
         })
     }
     pub fn mutate_container(&self, id: &str, handle: &str, action: Action) -> Result<Mutation> {
-        let (session, container) = {
+        let (session, container, reservation) = {
             let mut state = self.state.lock().unwrap();
-            if state.refreshing || state.diagnosing {
+            if state.refreshing || state.diagnosing || state.mutating {
                 return Err(ApiError::new(
                     "Busy",
                     "Wait for the current environment operation",
@@ -1030,28 +1081,130 @@ impl Core {
                     "This action is unavailable for the current state",
                 ));
             }
-            if !state.mutations.insert(container.full_id.clone()) {
-                return Err(ApiError::new(
-                    "Busy",
-                    "Recovery for this container is already running",
-                ));
-            }
-            (session, container)
+            let reservation = MutationGuard {
+                state: self.state.clone(),
+                session_id: id.into(),
+                needs_validation: true,
+            };
+            state.mutating = true;
+            (session, container, reservation)
         };
         let result = self.perform_mutation(&session, &container, action);
-        let mut state = self.state.lock().unwrap();
-        state.mutations.remove(&container.full_id);
-        if let Some(active) = state.session.as_mut().filter(|s| s.id == id) {
-            // Every action requires a fresh full list; failed reconciliation requires a new session.
-            active.stale = true;
-            match &result {
-                Ok(result) if result.mutation_blocked => active.needs_validation = true,
-                Err(_) => active.needs_validation = true,
-                _ => {}
-            }
-        }
+        reservation.finish(match &result {
+            Ok(result) => result.mutation_blocked,
+            Err(_) => true,
+        });
         result
     }
+
+    pub fn mutate_containers(
+        &self,
+        id: &str,
+        generation: u64,
+        handles: &[String],
+        action: Action,
+    ) -> Result<BulkMutation> {
+        let (session, containers, reservation) = {
+            let mut state = self.state.lock().unwrap();
+            if state.refreshing || state.diagnosing || state.mutating {
+                return Err(ApiError::new("Busy", "An operation is still in progress"));
+            }
+            let session = state
+                .session
+                .as_ref()
+                .filter(|session| session.id == id)
+                .cloned()
+                .ok_or_else(|| ApiError::new("StaleSession", "Reconnect before recovery"))?;
+            if session.stale || session.needs_validation {
+                return Err(ApiError::new(
+                    "NeedsValidation",
+                    "Refresh or reconnect before recovery",
+                ));
+            }
+            if session.generation != generation {
+                return Err(ApiError::new("StaleHandle", "Select from the latest list"));
+            }
+            if handles.is_empty() || handles.len() > session.handles.len() {
+                return Err(ApiError::new(
+                    "InvalidSelection",
+                    "Select containers from the current list",
+                ));
+            }
+            let mut seen = HashSet::new();
+            let mut containers = Vec::with_capacity(handles.len());
+            // Validate the complete request before reserving or dispatching any action.
+            // Request order is the visible list order frozen by the selection UI.
+            for handle in handles {
+                if !seen.insert(handle) {
+                    return Err(ApiError::new(
+                        "InvalidSelection",
+                        "A container was selected more than once",
+                    ));
+                }
+                let container = session.handles.get(handle).cloned().ok_or_else(|| {
+                    ApiError::new("StaleHandle", "Select containers from the latest list")
+                })?;
+                containers.push(container);
+            }
+            let reservation = MutationGuard {
+                state: self.state.clone(),
+                session_id: id.into(),
+                needs_validation: true,
+            };
+            state.mutating = true;
+            (session, containers, reservation)
+        };
+
+        let mut items = Vec::with_capacity(containers.len());
+        let mut aborted = false;
+        let mut mutation_blocked = false;
+        for container in containers {
+            let mut item = BulkMutationItem {
+                handle: container.handle.clone(),
+                full_id: container.full_id.clone(),
+                name: container.name.clone(),
+                outcome: "notExecuted".into(),
+                message: "Not executed because an earlier operation requires review.".into(),
+                result: None,
+                error: None,
+            };
+            // Eligibility belongs to the accepted list, even if runtime state later changes.
+            if !action.allowed(&container.state) {
+                item.outcome = "skipped".into();
+                item.message = "This action was unavailable in the selected list state.".into();
+            } else if !aborted {
+                match self.perform_mutation(&session, &container, action) {
+                    Ok(result) => {
+                        aborted = result.outcome == "resultUnknown" || result.mutation_blocked;
+                        mutation_blocked |= result.mutation_blocked;
+                        item.outcome = result.outcome.clone();
+                        item.message = result.message.clone();
+                        item.result = Some(result);
+                    }
+                    Err(error) => {
+                        item.message = error.message.clone();
+                        if error.code == "StateChanged" {
+                            item.outcome = "skipped".into();
+                        } else {
+                            aborted = true;
+                            mutation_blocked = true;
+                        }
+                        item.error = Some(error);
+                    }
+                }
+            }
+            items.push(item);
+        }
+        reservation.finish(mutation_blocked);
+        Ok(BulkMutation {
+            session_id: id.into(),
+            generation,
+            action,
+            items,
+            mutation_blocked,
+        })
+    }
+
     fn perform_mutation(
         &self,
         session: &Session,

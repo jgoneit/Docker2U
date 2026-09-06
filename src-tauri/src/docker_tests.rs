@@ -6,6 +6,9 @@ use std::{
     time::Instant,
 };
 
+#[path = "docker_bulk_tests.rs"]
+mod bulk;
+
 struct Fixture {
     dir: PathBuf,
     core: Core,
@@ -52,6 +55,30 @@ impl Fixture {
     }
     fn mode(&self, mode: &str) {
         fs::write(self.dir.join("mode"), mode).unwrap();
+    }
+    fn states(&self, states: &[&str]) {
+        fs::write(self.dir.join("count"), states.len().to_string()).unwrap();
+        let states: HashMap<_, _> = states
+            .iter()
+            .enumerate()
+            .map(|(index, state)| (format!("{:064x}", index + 1), *state))
+            .collect();
+        fs::write(
+            self.dir.join("states"),
+            serde_json::to_vec(&states).unwrap(),
+        )
+        .unwrap();
+    }
+    fn behaviors(&self, modes: &[(usize, &str)]) {
+        let modes: HashMap<_, _> = modes
+            .iter()
+            .map(|(index, mode)| (format!("{index:064x}"), *mode))
+            .collect();
+        fs::write(
+            self.dir.join("behaviors"),
+            serde_json::to_vec(&modes).unwrap(),
+        )
+        .unwrap();
     }
     fn connect(&self) -> String {
         let env = self.core.get_environment().unwrap();
@@ -119,15 +146,30 @@ if a[1]=='inspect':
             time.sleep(.005)
         if mode=='held_inspect_failure': print('inspect failed',file=sys.stderr);sys.exit(1)
     state=(p/'state').read_text() if (p/'state').exists() else 'exited'
+    states=json.loads((p/'states').read_text()) if (p/'states').exists() else {}
     for ident in a[4:]:
-        print(json.dumps({'Id':'f'*64 if mode=='wrong_id' else ident,'Name':"/test;$(touch forbidden)",'Image':'busybox:test','Created':'2026-09-05T08:00:00Z','State':state,'Health':None,'Ports':None}))
+        print(json.dumps({'Id':'f'*64 if mode=='wrong_id' else ident,'Name':"/test;$(touch forbidden)",'Image':'busybox:test','Created':'2026-09-05T08:00:00Z','State':states.get(ident,state),'Health':None,'Ports':None}))
     sys.exit()
 if a[1]=='logs':
     sys.stdout.write('hello\x1b[31m red\x1b[0m\n');sys.stdout.flush()
     sys.stderr.write('stderr log\n');sys.exit()
 if a[1] in ['start','stop','restart']:
+    assert len(a)==3, repr(a)
+    if (p/'behaviors').exists(): mode=json.loads((p/'behaviors').read_text()).get(a[2],mode)
     (p/'mutated').write_text('1')
-    (p/'state').write_text('exited' if a[1]=='stop' else 'running')
+    if mode!='daemon_error':
+        state='exited' if a[1]=='stop' else 'running'
+        if (p/'states').exists():
+            states=json.loads((p/'states').read_text());states[a[2]]=state
+            (p/'states').write_text(json.dumps(states))
+        else: (p/'state').write_text(state)
+    if mode=='held_mutation':
+        deadline=time.monotonic()+10
+        while not (p/'release-mutation').exists():
+            if time.monotonic()>deadline: raise Exception('fixture release timed out')
+            time.sleep(.005)
+    if mode=='change_engine': (p/'mode').write_text('engine_changed')
+    if mode=='reconcile_fail': (p/'mode').write_text('reconcile_fail')
     if mode in ['timeout','reconcile_fail','slow_mutation']: time.sleep(10)
     if mode=='daemon_error': print('Error response from daemon: rejected',file=sys.stderr);sys.exit(1)
     if mode=='transport_error': print('connection reset by peer',file=sys.stderr);sys.exit(1)

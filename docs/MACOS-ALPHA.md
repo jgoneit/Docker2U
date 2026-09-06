@@ -17,7 +17,7 @@ Colima Container를 조회하고 복구할 수 있는 `Docker2U.app`을 만드�
 | 대상 endpoint | 해당 context와 Colima 상태를 대조한 local Unix socket |
 | UI | 제공된 React 패널의 어두운 테마, 검색·필터, 왼쪽 목록·오른쪽 상세 |
 | 창 | 기본 1280×800, 최소 1024×680 |
-| 기능 | 환경 진단, 목록·Health, 최근 로그, Refresh, Start·Stop·Restart |
+| 기능 | 환경 진단, 목록·Health, 최근 로그, Refresh, 단건·다중 Start·Stop·Restart |
 | 로그 | 최근 300줄 요청, stdout/stderr 합계 마지막 2 MiB 표시 |
 | 산출물 | 로컬 `.app`, 소스, 자동 검사·실환경 검증 결과 |
 
@@ -26,10 +26,13 @@ context가 없으면 환경 진단을 반환하고 다른 Engine으로 fallback�
 Docker Desktop의 기존 Container·Volume과 Runtime은 이동하거나 수정하지 않는다.
 Colima 설치·시작은 개발 환경 준비이며 앱에서 Runtime을 관리하지 않는다.
 
-전체 초기화, Delete/Prune, 전체 중지, Terminal/Exec, Compose 실행, 호스트 Port
+전체 초기화, Delete/Prune, 대상 확인 없는 전체 중지, Terminal/Exec, Compose 실행, 호스트 Port
 Inspector, 자동 갱신, 실시간 로그, 환경 변수 표시와 Local-only 해제 설정은
 제외한다. Windows·Intel Mac·macOS 14+ 전체 범위, 외부 서명·notarization,
 DMG·공개 GitHub Release는 후속 검증이다.
+
+현재 보이는 목록을 명시적으로 전체 선택한 뒤 확인창을 거치는 Stop은 허용한다.
+검색·필터로 숨겨진 Container나 다른 context를 일괄 작업에 포함하지 않는다.
 
 ## 준비와 작업 경계
 
@@ -58,6 +61,8 @@ Rust toolchain 및 Cargo/frontend lockfile을 고정한다. 최초 설치와 빌
    최근 로그 한도·정규화·잘림 표시, Stale·빈 결과·연결 오류 화면.
 3. 복구·재조회: Start → Stop → Restart, 확인창, 정확한 대상 재검증,
    중복 조작 차단, 실행 후 Refresh와 `ResultUnknown` reconciliation.
+4. 다중 복구: 개별 체크·현재 목록 전체 선택, 실행 가능 대상 표시, 순차 실행,
+   대상별 결과와 후속 중단, 전체 작업 종료 후 한 번 Refresh.
 
 ## 동작과 검증 계약
 
@@ -84,7 +89,9 @@ generation을 보존하고 `Busy`를 반환한다. 기존 Refresh가 성공하�
 재연결할 수 있으며, UI 함수의 ref 검사로 화면 재렌더링 전 연속 클릭도 차단한다.
 
 Mutation 직전에 full ID, session, generation, endpoint, profile, Engine
-fingerprint를 확인한다. Stop·Restart는 대상과 연결 환경의 확인창을 표시한다.
+fingerprint를 확인한다. 단건·다중 mutation은 Core의 전역 lock을 공유하고
+작업 중 다른 mutation·Refresh·Reconnect를 `Busy`로 거부한다.
+Stop·Restart는 대상과 연결 환경의 확인창을 표시한다.
 Timeout·연결 단절 등으로 결과가 불확실하면 `ResultUnknown`을 그대로 남기고
 자동 재시도하지 않는다. exact full ID 상태를 재조회하고 실패하면 추가 mutation을
 차단한다. 재조회 성공도 원래 Outcome을 성공으로 바꾸지 않는다.
@@ -95,10 +102,30 @@ CLI 없음, 미지원·연결 실패, 빈 목록, 검색 결과 없음, Stale, B
 이동·복원과 Escape를 검증한다. UX 시뮬레이터·mock은 개발·테스트 전용이다.
 외부 폰트 요청과 사용하지 않는 서버·AI SDK 의존성은 포함하지 않는다.
 
+### 다중 선택과 일괄 복구
+
+상세·로그를 보는 행 선택은 하나로 유지하고 복구 대상은 체크박스로 선택한다.
+전체 선택은 현재 검색·필터 결과로 보이는 Container만 포함한다. 검색어·상태
+필터 변경, Refresh, Reconnect 시 체크를 해제한다. 선택 수와 작업별 실행 가능
+수를 표시하며 실행 가능한 대상이 없는 버튼은 비활성화한다.
+
+Start는 바로 실행한다. Stop·Restart는 선택한 대상과 실행·제외 개수, 현재 연결
+환경을 한 확인창에서 보여준다. Core는 요청 시점의 session·generation·handle을
+검증하여 full ID와 최초 실행 가능 대상을 고정하고 한 개씩 순차 실행한다.
+작업 직전 상태가 달라지면 해당 대상을 건너뛰며 새 대상을 추가하거나 대체하지 않는다.
+
+확정된 명령 실패는 상태 확인이 성공하면 다음 대상으로 계속한다. 결과 불명,
+Engine identity 변경, 연결 단절 또는 상태 재조회 실패는 후속 실행을 중단한다.
+자동 재시도·rollback은 없으며 성공·실패·결과 불명·건너뜀·미실행을 대상별로
+보여준다. 대상별 exact full ID 확인과 별도로 전체 목록 Refresh는 일괄 작업
+종료 후 한 번 수행한다. Compose 의존성 순서나 전체 작업의 원자성은 보장하지 않는다.
+
 ## 완료 체크리스트
 
 각 항목은 실제로 확인한 범위만 체크한다. 서명·Windows 검증은 현재 로컬 알파의
 완료 조건이 아니다. 화면 검증은 자동 테스트·프로세스 기동과 구분한다.
+아래 체크와 실환경 기록은 기존 단건 복구 기능의 검증 이력이다. 다중 복구 변경의
+검증 상태는 별도 절에 기록하며 이전 통과 결과를 새 기능의 증거로 사용하지 않는다.
 
 - [x] 실제 Mac의 OS·architecture와 Colima·Docker CLI·Server/API 버전을 기록했다.
 - [x] 개발 전용 `docker2u` Colima 프로파일을 확인했고 전역 default context를 보존했다.
@@ -310,6 +337,114 @@ macOS 지원 범위 확대의 증거가 아니다. 각 원격 실행 결과는 P
 - `pnpm native:build --ci --no-sign -- --locked`로 TypeScript/frontend 및 unsigned
   ARM64 앱 빌드를 통과했다. 앞선 Finder GUI 검증은 초기 알파 기록이며 이번 변경의
   GUI 수동 재검증으로 간주하지 않는다.
+
+## 다중 복구 변경 검증
+
+2026-09-05 다중 복구 변경에서 실제 실행한 범위만 기록한다. 아래 체크리스트는
+전체 접근이 적용된 새 작업에서 수행한 재검증 결과다. 기존 단건 실환경 기록 및
+앞선 권한 오류 이력과 구분한다.
+
+- [x] UI: 개별 체크·전체 선택·부분 선택, 검색·필터 변경과 Refresh·Reconnect 후
+  체크 해제, 단일 상세 선택 보존, 상태별 실행 가능 개수와 버튼 정책.
+- [x] UI: Stop·Restart의 단일 확인창에 대상·실행·제외 개수·연결 환경 표시,
+  취소 시 호출 없음, 키보드와 focus 이동·복원, 대상별 결과와 전체 종료 후 한 번 Refresh.
+- [x] Core/IPC: 모든 handle·session·generation 사전 검증과 full ID 고정,
+  최초 적격 대상 유지, 순차 실행, 단건·다중 공통 lock 및 중복 실행·Refresh·Reconnect 차단.
+- [x] Core: 상태 변경 대상 건너뜀, 확정 실패 후 상태 확인에 따른 계속 실행,
+  결과 불명·Engine 교체·연결 단절·재조회 실패 후 남은 대상 미실행, 자동 재시도 없음.
+- [x] React/IPC 회귀 검사 66건, TypeScript 검사와 frontend build.
+- [x] Rust format 검사.
+- [x] Rust 회귀 검사와 native build.
+- [x] 실제 Colima의 명시적 테스트 대상만 사용한 다중 Start·Stop·Restart.
+- [x] 재빌드한 네이티브 앱에서 선택·확인창·대상별 결과 수동 확인.
+
+### 새 작업의 재검증 결과
+
+- `pnpm test`: 3개 파일, 66건 통과. 기본 `pnpm build`도 TypeScript 검사와
+  기존 출력 정리를 포함해 통과했다. 출력 보존 옵션을 사용하지 않았다.
+- 중첩 복사본에서는 toolchain wrapper의 상대경로가 준비한 Rust를 찾지 못해
+  최초 Rust 명령이 `cargo ENOENT`로 끝났다. 기존 개발용 toolchain의
+  `CARGO_HOME`, `RUSTUP_HOME`, `PATH`를 프로세스 환경에 지정한 뒤
+  `pnpm rust:fmt`, `pnpm rust:test`, `pnpm native:build`를 통과했다.
+  도구 설치, 제품 소스·lockfile·runtime 설정 변경은 없었다.
+- Rust 기본 검사: 37건 통과, 실패 0건, opt-in 3건 ignored. 새 fake CLI 일괄
+  검사 10건을 포함한다. native bundle은 Mach-O arm64로 확인했다.
+- `real_environment_probe`: 1건 통과. macOS 26.5.2 / arm64에서 기존
+  `colima-docker2u`와 Engine ID `0d0a908d-e177-49ff-8b87-2ace961b117a`,
+  `ready`, `mutationAllowed=true`, 초기 빈 목록을 확인했다.
+- `real_bulk_runtime_smoke`: 1건 통과. 고유 label의 컨테이너 3개로 혼합 상태
+  Start `[skipped, succeeded, succeeded]`, Restart·Stop·Start 각 3건 성공,
+  목록 generation 3→6을 확인했다. 정확한 소유 대상 정리와 후속 목록 조회 후
+  전체 컨테이너 및 bulk-smoke label의 잔류 대상은 각각 0개였다.
+- 재빌드한 `.app`을 Computer Use로 직접 열었다. 실행 프로세스 경로가 이번
+  독립 복사본의 release bundle임을 확인했으며 실제 `tauri://localhost`
+  WKWebView를 조작했다. 개별·전체·부분 선택, 행 상세와 체크의 독립성,
+  방향키·Enter 상세 조회, Tab·Space 체크, 검색·필터·Refresh·Reconnect 후
+  체크 해제 및 혼합 상태 작업 개수·제외 사유를 확인했다.
+- 실제 Stop·Restart 확인창의 이름·full ID·대상/제외 개수·고정 endpoint,
+  초기 취소 focus, Stop의 Tab·Shift+Tab 순환과 Escape 후 focus 복원,
+  Restart 취소 후 원래 버튼 focus 복원을 확인했다.
+- GUI 전용 label을 붙인 4개 중 이름 검색에 보이는 3개만 전체 선택했다.
+  Start 결과는 성공 2개·제외 1개, Restart와 Stop은 각각 성공 3개였다.
+  Restart·Stop 실행 중 검색·필터·체크·단건/일괄 버튼·Refresh·Reconnect의
+  비활성화와 처리 중 표시를 관찰했다. 완료 후 체크 해제, full ID별 결과,
+  상세 변경·Refresh 후 결과 보존, 상세 스크롤 중 전역 제어 유지도 확인했다.
+- Docker CLI의 고정 `--host`로 Restart 후 3개 Running, Stop 후 3개 exited를
+  별도로 대조했다. 검색에 숨긴 1개는 상태와 StartedAt·FinishedAt가 초기값과
+  동일했다. GUI fixture 4개도 정확한 이름·full ID·고유 label을 대조해 정리했고,
+  앱 Refresh에서 빈 목록과 이전 일괄 결과의 보존을 확인했다.
+- 원시 명령 로그, fixture 상태, 재현 명령은 원본 저장소의
+  `.cache/bulk-verification-01a071bc/`에 보관했다. 제품 코드와 기존 staged
+  변경은 보존하며 검증 문서만 갱신한다.
+
+이번 실환경 GUI 검사는 정상·제외 경로를 확인했다. 실패·결과 불명·Engine 변경·
+응답 유실은 자동 검사로 검증했으며 실제 Engine 장애를 주입한 GUI 검사는 하지
+않았다. 의존성의 새 설치, 최소 1024×680 창 resize, 배포용 서명·notarization,
+Windows·다른 Host 검증은 이번 다중 복구 검증 범위에 포함하지 않는다.
+
+### 앞선 시도의 검증 방법과 당시 제한
+
+- React/IPC 전체 검사는 `pnpm test`로 3개 파일의 66건을 통과했다. 새 일괄 작업의
+  응답 유실, 잘못된 대상·generation·결과 필드도 검사한다.
+- TypeScript 검사를 통과했다. 기본 `pnpm build`는 기존 `dist/assets` 삭제에서
+  `Operation not permitted`로 중단됐다. `pnpm exec vite build --emptyOutDir false`로
+  기존 출력을 삭제하지 않는 frontend build를 통과했다. 이는 기본 build 검사 통과와
+  구분하며, 생성물에 이전 파일이 남을 수 있다.
+- 독립 작업 복사본에서 기존 의존성 캐시를 사용했다. pnpm의 자동 재설치는
+  `node_modules` 하위 디렉터리 삭제 권한 때문에 실행할 수 없어,
+  `pnpm_config_verify_deps_before_run=warn`으로 자동 설치를 막았다.
+  package manifest·lockfile은 변경하지 않았다. 새 의존성 설치 검증은 하지 못했다.
+- Rust에는 fake CLI 기반 일괄 검사 10건과 opt-in 실제 검사 1건을 추가했다.
+  `cargo test --lib --locked`는 애플리케이션 컴파일 전에 의존성의 `.temp-archive`
+  디렉터리 삭제 권한 오류로 중단됐다. Rust format·정적 리뷰를 실행했지만
+  Rust 타입 검사·테스트 통과의 근거로 사용하지 않는다.
+- native build와 실제 Colima 일괄 검사는 위 컴파일 제한으로 실행하지 않았다.
+  실제 GUI는 Computer Use의 Docker2U 접근이 승인되지 않아 확인하지 못했다.
+  이 변경으로 새 native 앱을 빌드하거나 화면 동작을 검증했다고 해석하면 안 된다.
+- Rust 검증이 가능한 환경에서는 기본 회귀 검사 후
+  `DOCKER2U_REAL_BULK_SMOKE=1 node scripts/with-toolchain.mjs cargo test --manifest-path src-tauri/Cargo.toml --locked real_bulk_runtime_smoke -- --ignored --nocapture`를
+  실행한다. 고유 라벨을 붙인 테스트 Container 3개만 조작·정리하며, 마지막 성공한
+  목록 조회로 해당 full ID가 남지 않았는지 확인한다.
+
+권한 변경 후 검증 재개(2026-09-05):
+
+- writable root가 `/`로 표시된 주 실행 명령에서도 `cargo test --locked`가
+  의존성 임시 디렉터리 삭제의 `Operation not permitted`로 중단됐다.
+  애플리케이션 컴파일 전 실패이며 이번 실행의 테스트 수는 0건이다.
+- 주 실행 명령이 직접 만든 임시 디렉터리의 삭제도 같은 오류로 거절됐다.
+  소스의 파일 권한 변경이나 다른 실행 도구로 이 제한을 우회하지 않았다.
+- Offline frozen 의존성 설치는 완료되지 않아 중단했다. 기본 frontend/native
+  build와 실제 Colima 검사는 이번 재개에서도 완료하지 못했다.
+  앞선 UI/IPC 66건 통과 기록은 이번 재실행 결과와 구분한다.
+- Docker2U의 Computer Use 접근이 다시 승인되지 않아 GUI 검사를 수행하지 않았다.
+- 실제 검사 준비 코드에서 `create`가 Engine에 전달된 뒤 응답이 유실되면
+  cleanup 목록에 full ID가 등록되지 않는 경로를 발견했다. 생성 전에 고유 이름을
+  기록하고, 실패 시 고정 Engine에서 해당 실행의 정확한 라벨과 이름으로 ID를
+  회수한 뒤 기존 라벨 검증을 거쳐 정리하도록 보완했다. 조회 자체가 실패하면
+  정리 미확정을 출력하고 이미 알고 있는 ID의 정리는 계속 시도한다.
+  이 보완은 Rust format과 독립 정적 검토만 수행했으며 컴파일·실환경은 미검증이다.
+- 기존 Seal Task는 정확한 ID로 조회했다. 이전 Evidence 게시 실패는 미확정으로
+  보존했으며, 실행 제한이 남아 있는 이번 재개에서는 verify/complete를 반복하지 않았다.
 
 ## 이전 중단과 재개
 

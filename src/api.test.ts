@@ -15,6 +15,7 @@ describe('native IPC boundary', () => {
     native.isTauri.mockReturnValue(false);
     await expect(api.getEnvironment()).rejects.toMatchObject({ code: 'NATIVE_REQUIRED' });
     await expect(api.mutateContainer('session', 'handle', 'start')).rejects.toMatchObject({ code: 'NATIVE_REQUIRED' });
+    await expect(api.mutateContainers('session', 1, ['handle'], 'start')).rejects.toMatchObject({ code: 'NATIVE_REQUIRED' });
     expect(native.invoke).not.toHaveBeenCalled();
   });
 
@@ -24,11 +25,13 @@ describe('native IPC boundary', () => {
     await api.listContainers('session-a');
     await api.getRecentLogs('session-a', 'opaque-handle');
     await api.mutateContainer('session-a', 'opaque-handle', 'restart');
+    await api.mutateContainers('session-a', 7, ['opaque-a', 'opaque-b'], 'stop');
     expect(native.invoke.mock.calls).toEqual([
       ['get_environment', undefined],
       ['list_containers', { sessionId: 'session-a' }],
       ['get_recent_logs', { sessionId: 'session-a', handle: 'opaque-handle' }],
       ['mutate_container', { sessionId: 'session-a', handle: 'opaque-handle', action: 'restart' }],
+      ['mutate_containers', { sessionId: 'session-a', generation: 7, handles: ['opaque-a', 'opaque-b'], action: 'stop' }],
     ]);
   });
 
@@ -44,6 +47,15 @@ describe('native IPC boundary', () => {
     expect(coreError(new Error('WebView disconnected'))).toEqual({ code: 'IPC_FAILURE', message: 'WebView disconnected' });
     expect(coreError(null).code).toBe('IPC_FAILURE');
     expect(coreError({ code: 42, message: 'invalid error' }).code).toBe('IPC_FAILURE');
+  });
+
+  it('does not retry a bulk operation when its response is lost', async () => {
+    const failure = new Error('WebView disconnected after dispatch');
+    native.invoke.mockRejectedValue(failure);
+    await expect(api.mutateContainers('session', 2, ['first', 'second'], 'restart')).rejects.toBe(failure);
+    expect(native.invoke).toHaveBeenCalledExactlyOnceWith('mutate_containers', {
+      sessionId: 'session', generation: 2, handles: ['first', 'second'], action: 'restart',
+    });
   });
 });
 

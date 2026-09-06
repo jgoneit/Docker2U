@@ -3,7 +3,7 @@ mod process;
 #[cfg(all(test, unix))]
 mod process_tests;
 
-use docker::{Action, ApiError, ContainerList, Core, Environment, Logs, Mutation};
+use docker::{Action, ApiError, BulkMutation, ContainerList, Core, Environment, Logs, Mutation};
 use tauri::Manager;
 
 async fn worker<T: Send + 'static>(
@@ -52,6 +52,18 @@ async fn mutate_container(
     worker(move || core.mutate_container(&session_id, &handle, action)).await
 }
 
+#[tauri::command]
+async fn mutate_containers(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    generation: u64,
+    handles: Vec<String>,
+    action: Action,
+) -> Result<BulkMutation, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.mutate_containers(&session_id, generation, &handles, action)).await
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(Core::default())
@@ -59,7 +71,8 @@ pub fn run() {
             get_environment,
             list_containers,
             get_recent_logs,
-            mutate_container
+            mutate_container,
+            mutate_containers
         ])
         .build(tauri::generate_context!())
         .expect("Docker2U could not start")
@@ -86,7 +99,8 @@ mod ipc_tests {
                 "allow-get-environment",
                 "allow-list-containers",
                 "allow-get-recent-logs",
-                "allow-mutate-container"
+                "allow-mutate-container",
+                "allow-mutate-containers"
             ])
         );
     }
