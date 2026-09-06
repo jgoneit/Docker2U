@@ -3,6 +3,7 @@ import type { KeyboardEvent, MouseEvent } from 'react';
 import { AlertTriangle, Boxes, CheckCircle2, Copy, LoaderCircle, Play, RefreshCw, Square, X } from 'lucide-react';
 import type { Action, ConnectionTarget, Container, ContainerList, CoreError, Environment, MutationResult } from './api';
 import { diagnosticsText } from './api';
+import { displayErrorMessage, type FrontendErrorDescriptor } from './frontendErrors';
 import { LogPanel } from './LogPanel';
 import type { LogSnapshot } from './logSnapshot';
 import { translate, useI18n } from './i18n';
@@ -18,7 +19,7 @@ export function actionLabel(action: Action, language: Language) { return transla
 export const stateLabels: Record<string, string> = { created: 'Created', running: 'Running', paused: 'Paused', restarting: 'Restarting', removing: 'Removing', exited: 'Stopped', dead: 'Error', unknown: 'Unknown' };
 export const actionLabels: Record<Action, string> = { start: 'Start', stop: 'Stop', restart: 'Restart' };
 export const readableStates = new Set(['created', 'running', 'paused', 'restarting', 'exited', 'dead']);
-export type Operation = MutationResult & ConnectionTarget & { fullId: string; name: string; action: Action };
+export type Operation = MutationResult & ConnectionTarget & { fullId: string; name: string; action: Action; frontendError?: FrontendErrorDescriptor };
 export type Confirmation = ConnectionTarget & { action: 'stop' | 'restart'; sessionId: string; generation: number; returnFocus?: HTMLElement }
   & ({ container: Container; containers?: never } | { containers: Container[]; container?: never });
 export type CopyLabel = 'logs' | 'fullId' | 'diagnostics' | 'command';
@@ -40,7 +41,8 @@ export function State({ value }: { value: string }) {
 }
 export function ErrorDetails({ error }: { error: CoreError }) {
   const t = useI18n(componentMessages);
-  return <details className="technical-details"><summary>{t('diagnosticDetails', { code: error.code })}</summary><pre tabIndex={0}>{error.message}</pre>{error.command && <pre tabIndex={0}>{error.command}</pre>}{error.stderr && <pre tabIndex={0}>{error.stderr}</pre>}</details>;
+  const { language } = usePreferences();
+  return <details className="technical-details"><summary>{t('diagnosticDetails', { code: error.code })}</summary><pre tabIndex={0}>{displayErrorMessage(error, language)}</pre>{error.command && <pre tabIndex={0}>{error.command}</pre>}{error.stderr && <pre tabIndex={0}>{error.stderr}</pre>}</details>;
 }
 export function ConnectionFacts({ target }: { target: ConnectionTarget }) {
   const t = useI18n(componentMessages);
@@ -147,7 +149,7 @@ export function OperationResult({ operation, copy }: { operation: Operation; cop
     <p>{t(operation.outcome === 'succeeded' ? 'succeededMessage' : operation.outcome === 'failed' ? 'failedMessage' : 'unknownMessage')}</p>
     {operation.reconciliation !== 'notNeeded' && <p>{operation.reconciliation === 'succeeded' ? t('reconciled', { state: operation.observedState ? ` · ${stateLabel(operation.observedState, language)}` : '' }) : t('resultReconcileFailed')}</p>}
     {operation.mutationBlocked && operation.reconciliation !== 'failed' && <p>{t('resultBlocked')}</p>}
-    <details className="technical-details operation-details"><summary>{t('executionDetails')}</summary><ConnectionFacts target={operation} /><pre tabIndex={0}>{operation.message}</pre>
+    <details className="technical-details operation-details"><summary>{t('executionDetails')}</summary><ConnectionFacts target={operation} /><pre tabIndex={0}>{displayErrorMessage(operation, language, operation.frontendError)}</pre>
       {operation.command && <><pre tabIndex={0}>{operation.command}</pre><button onClick={() => void copy(operation.command, 'command')}><Copy size={13} aria-hidden="true" />{t('copyCommand')}</button></>}
       {operation.exitCode != null && <p>{t('exitCode', { code: operation.exitCode })}</p>}{operation.durationMs != null && <p>{t('duration', { duration: operation.durationMs })}</p>}{operation.stderr && <pre tabIndex={0}>{operation.stderr}</pre>}
     </details>

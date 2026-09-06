@@ -1,4 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { frontendError } from './frontendErrors';
 
 export type Action = 'start' | 'stop' | 'restart';
 export interface Environment {
@@ -78,10 +79,10 @@ export interface CoreError { code: string; message: string; command?: string; st
 export function coreError(error: unknown): CoreError {
   if (typeof error === 'object' && error !== null && 'code' in error && 'message' in error
       && typeof error.code === 'string' && typeof error.message === 'string') return error as CoreError;
-  return { code: 'IPC_FAILURE', message: error instanceof Error ? error.message : '앱과 실행 계층의 응답을 확인하지 못했습니다.' };
+  return error instanceof Error ? { code: 'IPC_FAILURE', message: error.message } : frontendError('ipcFailure');
 }
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  if (!isTauri()) throw { code: 'NATIVE_REQUIRED', message: 'Docker2U.app에서 로컬 환경에 연결할 수 있습니다. 브라우저 미리보기에는 Docker 연결이 없습니다.' } satisfies CoreError;
+  if (!isTauri()) throw frontendError('nativeRequired');
   return invoke<T>(command, args);
 }
 export const api = {

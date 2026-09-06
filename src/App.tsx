@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import type { KeyboardEvent } from 'react';
 import { AlertTriangle, Boxes, Cable, ChevronRight, Info, LoaderCircle, Monitor, RefreshCw, Search, Settings, X } from 'lucide-react';
 import { api, coreError } from './api';
+import { frontendError, frontendErrorDescriptor, type FrontendErrorDescriptor } from './frontendErrors';
 import type { Action, ConnectionTarget, Container, ContainerList, CoreError, Environment, MutationResult } from './api';
 import { ConfirmDialog, ContainerDetail, ContainerSummary, Diagnostics, ErrorDetails, OperationResult, Health, State, readableStates } from './components';
 import type { Confirmation, Operation, CopyLabel } from './components';
@@ -153,7 +154,7 @@ function AppContent() {
     try {
       const result = await api.listContainers(sessionId);
       if (epoch.current !== requestEpoch || session.current !== sessionId || request !== listSequence.current) return;
-      if (result.sessionId !== sessionId || (currentSnapshot.current && result.generation <= currentSnapshot.current.generation)) throw { code: 'STALE_RESPONSE', message: '최신 목록을 확인하지 못했습니다. Refresh로 다시 조회하세요.' };
+      if (result.sessionId !== sessionId || (currentSnapshot.current && result.generation <= currentSnapshot.current.generation)) throw frontendError('staleInventory');
       pendingRemovedFocus.current = document.activeElement;
       currentSnapshot.current = result;
       setSnapshot(result);
@@ -265,7 +266,7 @@ function AppContent() {
     try {
       const result = await api.getRecentLogs(list.sessionId, container.handle);
       if (request !== logSequence.current || !canReadLogs(container, list, requestEpoch)) return;
-      if (result.sessionId !== list.sessionId || result.generation !== list.generation || result.handle !== container.handle) throw { code: 'STALE_RESPONSE', message: '이전 로그 응답입니다. Recent Logs로 다시 조회하세요.' };
+      if (result.sessionId !== list.sessionId || result.generation !== list.generation || result.handle !== container.handle) throw frontendError('staleLogs');
       setLogs({ ...result, fetchedAt: new Date().toISOString() });
     } catch (error) {
       if (request === logSequence.current && canReadLogs(container, list, requestEpoch)) {
@@ -315,9 +316,11 @@ function AppContent() {
     const requestEpoch = epoch.current;
     const target = connectionTarget(environment);
     let result: MutationResult;
+    let frontendFailure: FrontendErrorDescriptor | undefined;
     try { result = await api.mutateContainer(targetSession, container.handle, action); }
     catch (error) {
       const failure = coreError(error);
+      frontendFailure = frontendErrorDescriptor(failure);
       const uncertain = failure.code === 'IPC_FAILURE' || failure.code === 'WorkerFailed';
       result = { outcome: uncertain ? 'resultUnknown' : 'failed', message: failure.message, command: failure.command ?? '', stderr: failure.stderr ?? '', reconciliation: uncertain ? 'failed' : 'notNeeded', mutationBlocked: true };
     }
@@ -325,7 +328,7 @@ function AppContent() {
     blocked.current = blocked.current || result.mutationBlocked || result.reconciliation === 'failed';
     setMutationBlocked(blocked.current);
     if (blocked.current) setReconnectRequired(true);
-    setOperation({ ...result, fullId: container.fullId, name: container.name, action, ...target });
+    setOperation({ ...result, frontendError: frontendFailure, fullId: container.fullId, name: container.name, action, ...target });
     await refresh(targetSession);
     if (epoch.current === requestEpoch) { busy.current = false; setMutating(false); }
   }
@@ -351,7 +354,7 @@ function AppContent() {
     try {
       const result = await api.mutateContainers(targetSession, generation, containers.map(container => container.handle), action);
       if (epoch.current !== requestEpoch) return;
-      if (!isBoundBulkResult(result, targetSession, generation, containers, action)) throw { code: 'INVALID_BULK_RESPONSE', message: '요청 대상과 일치하는 전체 일괄 응답을 확인하지 못했습니다.' };
+      if (!isBoundBulkResult(result, targetSession, generation, containers, action)) throw frontendError('invalidBulkResponse');
       blocked.current = blocked.current || result.mutationBlocked || result.items.some(item => item.result?.mutationBlocked || item.result?.reconciliation === 'failed');
       setBulkOperation({ ...context, result, needsReconnect: blocked.current });
     } catch (error) {
