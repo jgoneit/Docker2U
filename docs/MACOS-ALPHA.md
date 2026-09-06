@@ -817,3 +817,76 @@ frontend-tests/frontend-build다. 브라우저·네이티브 검증은 별도 �
 
 Seal Evidence/Completion은 이 최종 소스·문서 후보에서 실행하며 정확한 Run ID와
 Completion 결과는 작업 응답에 별도로 기록한다.
+
+### 2026-09-06 PR #4 추가 리뷰 4건 보완
+
+기준 커밋 `ace5907`의 깨끗한 `codex/ui-appearance` 체크아웃에서 작업했다. 기존
+Task/Run과 조회 불가 상태 로그 제거 수정을 보존했다. CLI와 Plugin의 공개 버전은
+모두 `0.3.0-rc.4`다. 새 Seal Basic Task는 `docker2u-pr4-review-four-20260906`이며
+risk=medium, verifier.required=false, 필수 검사는 frontend-tests/frontend-build다.
+브라우저·네이티브 빌드·실제 앱 증거는 Seal 기계 검사와 별도로 기록한다.
+
+#### 변경과 자동 검사
+
+- 로그 검색을 렌더링 중 전체 위치 배열 생성에서 Worker의 희소 인덱스로 옮겼다.
+  정확한 전체 건수와 모든 결과 이동을 유지한다. 512건마다 UTF-16 위치를 저장하므로
+  2 MiB ASCII 밀집 로그의 2,097,152건도 체크포인트 4,096개·16 KiB로 처리한다.
+  이 수치는 위치 인덱스 크기이며 원문·Worker 런타임을 포함한 전체 메모리는 아니다.
+- Unicode 대소문자 무시·일반 문자열·비중첩 의미를 유지한다. 계산은 최대
+  16,384회 또는 약 4ms 단위로 양보한다. 4ms는 협력적 예산이며 개별 정규식 실행을
+  중간에 선점하지는 않는다. Worker 실패/초기 응답 2초 초과 시 같은 코어를 메인
+  스레드에서 작업 단위로 나눠 실행한다. CSP와 의존성을 변경하지 않았다.
+- 검색 지우기는 원문 캐시를 유지하고 대상/로그 교체·전체 비우기는 이전 계산을
+  무효화한다. 오래된 검색/이동 응답을 거부하고 연속 이동과 fallback의 위치를 보존한다.
+- 로그 표시 로딩과 실제 IPC 슬롯을 분리했다. 비우기는 즉시 화면을 지우지만 요청이
+  끝날 때까지 중복 조회를 막는다. 선택이 바뀌면 최신 대상 한 개만 대기시키며 실행
+  직전에 선택·세션·generation·handle·조회 가능 상태를 다시 검사한다.
+- 복사 버튼과 실행 함수는 현재 표시 중인 비어 있지 않은 원문만 허용한다.
+  로딩/오류에 가려진 이전 로그는 복사하지 않고, 실패한 목록 갱신 후 화면에 남아
+  있는 마지막 정상 로그는 복사할 수 있다.
+- 프런트엔드 오류 5종에 내부 출처·메시지 키를 보관해 렌더링 시 번역한다.
+  단일 작업 결과에도 출처를 유지한다. 네이티브 오류·명령·stderr와 일반 예외의
+  원문은 번역하지 않는다. Docker IPC와 Rust 구현/타입 계약은 유지한다.
+- `pnpm test`: 15개 파일, 274개 통과(17.47초). 기존 223개에서 51개 늘었다.
+  희소 인덱스/Worker/fallback, 로그 요청 경합, 원문 복사, 오류 번역과 표시 조작의
+  추가 API 호출 없음 검사를 포함한다.
+- `pnpm build`: TypeScript/Vite와 배포 fixture 격리 검사 통과. 배포물은 4개 파일이며
+  검색 Worker가 별도 JS 파일로 포함되고 합성 데이터 표식은 검출되지 않았다.
+- `pnpm test:browser`: Chromium 99개 통과(53.8초, 로컬 retry 없음). 기존 9개
+  크기·테마·언어 조합의 81개 검사에 밀집 로그/실제 Worker/원문 복사 9개와
+  배포 Worker를 변경 없는 앱 CSP 아래에서 실행하는 9개 검사를 추가했다.
+  CSP 검사는 로컬 HTTP origin의 배포 Worker이며 macOS 자산 프로토콜과 구분한다.
+- 브라우저 검사는 빌드된 Worker를 읽으므로 `pnpm build` 이후 실행한다. 기존 CI도
+  이 순서다. 보고서는 `playwright-report/index.html`이며 서버는 Playwright가 관리한다.
+
+#### 네이티브 빌드와 실제 앱
+
+초기 빌드는 중첩 체크아웃에서 Cargo 경로를 찾지 못했다. 저장소 변경 없이 기존
+`/Users/jgoneit/project/.docker2u-tools`의 CARGO_HOME/RUSTUP_HOME/PATH를 프로세스에
+지정한 뒤 `pnpm native:build`가 통과했다. Rust 단위 검사는 로컬에서 재실행하지 않았다.
+
+최종 앱: `src-tauri/target/release/bundle/macos/Docker2U.app` (arm64).
+실행 파일 SHA-256:
+`38c6c0117c75ee4b603cfbad716ef6fc14c024008e0b2b4633fbe89cfa719efa`.
+실제 실행 프로세스가 이 체크아웃의 앱 경로를 사용하는 것을 확인했다.
+
+Computer Use로 다음을 확인했다.
+
+- 기존 로컬 Docker 연결과 컨테이너 4개, PostgreSQL 로그 조회.
+- ⌘F 검색 포커스, `database` 20건과 Enter의 두 번째 일치 이동.
+- 인라인 Escape→돋보기로 재열기, 확대/⌘F에서도 검색어와 두 번째 일치 유지.
+  확대 Escape는 창을 닫고 확대 버튼으로 포커스를 복원했다.
+- 1024×680에서 검색줄과 로그 하단/푸터 표시. X는 검색어만 지우고 0건·비활성
+  이동 버튼·입력 포커스를 유지했다. 라이트/영어 전환 뒤에도 검색어·결과를 유지했다.
+- 앱 종료/재실행 후 Light/English 저장값을 확인하고 시스템 테마/한국어로 복원했다.
+  최종 앱은 기본 창 크기로 실행 중이다.
+
+실제 앱에서는 검색 기능을 확인했지만 Worker와 호환성 fallback 중 실행 경로를
+별도로 계측하지 않았다. 실제 Worker 실행과 배포 CSP 검증은 Chromium 증거다.
+실제 컨테이너 시작·중지·재시작, 강제 지연/실패 주입, Windows 앱 실행은 하지 않았다.
+해당 경합/실패와 Windows Ctrl+F는 자동 검사로 확인했다. 실제 클립보드 바이트 비교는
+하지 않았으며 원문 전체 복사는 단위 및 합성 Chromium 검사로 확인했다.
+
+Seal은 이 최종 소스·문서 후보에서 verify/complete하며, 정확한 Run ID·Completion과
+최신 커밋의 원격 CI 결과는 PR 및 작업 응답에 별도로 기록한다. PR #4에 push하되
+merge는 하지 않는다.
