@@ -5,6 +5,7 @@ import type { Action, BulkMutationResult, Container, ContainerList, CoreError, E
 if (import.meta.env.DEV) {
   const scenarios = {
     normal: 'Normal — 300 bilingual log lines',
+    'dense-logs': 'Dense 2 MiB logs — exact search stress case',
     'long-metadata': 'Long container name, image and 24 published ports',
     'empty-logs': 'Empty logs',
     'loading-logs': 'Logs loading (held pending)',
@@ -166,7 +167,7 @@ if (import.meta.env.DEV) {
         command: '[SIMULATED ONLY] recent logs failure',
         stderr: Array.from({ length: 40 }, (_, index) => `Synthetic stderr ${index + 1}: logging driver detail. ${index === 39 ? 'LAST_STDERR_LINE' : ''}`).join('\n'),
       } satisfies CoreError;
-      const text = scenario === 'empty-logs' ? '' : logText;
+      const text = scenario === 'empty-logs' ? '' : scenario === 'dense-logs' ? 'a'.repeat(2 * 1024 * 1024) : logText;
       return { sessionId: id, generation, handle, text, truncated: scenario === 'truncated', byteCount: new TextEncoder().encode(text).length, command: '[SIMULATED ONLY] recent logs', stderr: '' };
     },
     mutateContainer: async (id, handle, action): Promise<MutationResult> => {
@@ -193,7 +194,12 @@ if (import.meta.env.DEV) {
   if (Object.keys(api).some(key => !Object.hasOwn(fixtureApi, key))) {
     throw new Error('Visual fixture refused to mount: an API method has no fake.');
   }
-  Object.assign(api, fixtureApi);
+  const calls: Record<keyof typeof api, number> = { getEnvironment: 0, listContainers: 0, getRecentLogs: 0, mutateContainer: 0, mutateContainers: 0 };
+  Object.assign(window, { __docker2uFixtureCalls: calls });
+  for (const name of Object.keys(fixtureApi) as (keyof typeof api)[]) {
+    const original = fixtureApi[name] as (...args: unknown[]) => unknown;
+    Object.assign(api, { [name]: (...args: unknown[]) => { ++calls[name]; return original(...args); } });
+  }
   const { default: App } = await import('../App');
   await import('../styles.css');
   createRoot(root).render(<StrictMode><App /></StrictMode>);

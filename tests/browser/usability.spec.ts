@@ -45,7 +45,8 @@ test.beforeEach(async ({ page }, testInfo) => {
 async function openFixture(page: Page, scenario = 'normal', platform?: string) {
   await page.goto(`/src/test/visual.html?toolbar=hidden&scenario=${scenario}${platform ? `&browserTestPlatform=${platform}` : ''}`);
   await expect(page.locator('.container-row')).toHaveCount(4);
-  if (scenario !== 'log-error') await expect(page.locator('.log-content')).toContainText('LAST_LINE_300');
+  if (scenario === 'dense-logs') await expect.poll(() => page.locator('.log-content').textContent().then(text => text?.length)).toBe(2 * 1024 * 1024);
+  else if (scenario !== 'log-error') await expect(page.locator('.log-content')).toContainText('LAST_LINE_300');
 }
 
 async function visibleTextRange(content: Locator, text: string) {
@@ -442,4 +443,57 @@ test('lets the keyboard reach and scroll long error details in expanded logs', a
   await expect(close).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('button', { name: t.expand, exact: true })).toBeFocused();
+});
+
+test('uses the real Worker for every dense-log match while retaining raw copy and UI controls', async ({ page }, testInfo) => {
+  const t = words[language(testInfo)];
+  await page.addInitScript(() => {
+    const observed = { messages: [] as { type?: string }[], copied: '' };
+    Object.assign(window, { __searchObserved: observed });
+    const NativeWorker = window.Worker;
+    window.Worker = class extends NativeWorker {
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options);
+        this.addEventListener('message', event => observed.messages.push(event.data));
+      }
+    };
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { observed.copied = text; } } });
+  });
+  await openFixture(page, 'dense-logs');
+  const calls = () => page.evaluate(() => (window as unknown as { __docker2uFixtureCalls: Record<string, number> }).__docker2uFixtureCalls);
+  const before = await calls();
+  await expectLogFits(page);
+  await page.getByRole('button', { name: t.openSearch, exact: true }).click();
+  const search = page.getByRole('searchbox', { name: t.search, exact: true });
+  const count = page.locator('.log-search-count');
+  const content = page.locator('.log-content');
+  const countText = (current: number) => language(testInfo) === 'ko' ? `${current} / 2097152건` : `${current} / 2097152 matches`;
+  await search.fill('a');
+  await expect(count).toHaveText(countText(1));
+  expect(page.workers().some(worker => worker.url().includes('logSearch.worker'))).toBe(true);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __searchObserved: { messages: { type?: string }[] } }).__searchObserved.messages.some(message => message.type === 'result'))).toBe(true);
+  await expect(content.locator('mark')).toHaveCount(1);
+  await page.getByRole('button', { name: t.previous, exact: true }).click();
+  await expect(count).toHaveText(countText(2097152));
+  await visibleTextRange(content.locator('mark'), 'a');
+  await page.getByRole('button', { name: language(testInfo) === 'ko' ? '표시된 로그 복사' : 'Copy displayed logs', exact: true }).click();
+  expect(await page.evaluate(() => (window as unknown as { __searchObserved: { copied: string } }).__searchObserved.copied === 'a'.repeat(2 * 1024 * 1024))).toBe(true);
+  await page.getByRole('button', { name: t.closeSearch, exact: true }).click();
+  await expect(content.locator('mark')).toHaveCount(0);
+  await page.getByRole('button', { name: t.openSearch, exact: true }).click();
+  await expect(count).toHaveText(countText(2097152));
+  await visibleTextRange(content.locator('mark'), 'a');
+  // Replace and clear a real asynchronous query; its late result cannot restore highlighting.
+  await search.fill('aa');
+  await page.getByRole('button', { name: t.clearSearch, exact: true }).click();
+  await expect(search).toHaveValue('');
+  await expect(search).toBeFocused();
+  await expect(count).toHaveText(language(testInfo) === 'ko' ? '0건' : '0 matches');
+  await expect(content.locator('mark')).toHaveCount(0);
+  await search.press('Escape');
+  await expect(page.getByRole('button', { name: t.openSearch, exact: true })).toBeFocused();
+  expect((await content.textContent())?.length).toBe(2 * 1024 * 1024);
+  await expectLogFits(page);
+  await expectNoHorizontalOverflow(page);
+  expect(await calls()).toEqual(before);
 });

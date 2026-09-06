@@ -411,3 +411,41 @@ describe('collapsible log search', () => {
     }
   });
 });
+
+
+describe('displayed snapshot copying and request gates', () => {
+  it.each([false, true])('blocks hidden snapshots while loading or failed, expanded=%s', async expanded => {
+    const user = userEvent.setup();
+    const copy = vi.fn(async () => {});
+    const view = renderLogs({ copy, loading: true });
+    if (expanded) await user.click(screen.getByRole('button', { name: '로그 확대 보기' }));
+    const surface = () => expanded ? within(screen.getByRole('dialog')) : screen;
+    expect(surface().getByRole('button', { name: '표시된 로그 복사' })).toBeDisabled();
+    await user.click(surface().getByRole('button', { name: '표시된 로그 복사' }));
+    view.rerender(<PreferencesProvider initialPreferences={{ theme: 'dark', language: 'ko' }}><Harness copy={copy} error={{ code: 'LogsUnavailable', message: 'raw failure' }} /></PreferencesProvider>);
+    expect(surface().getByRole('button', { name: '표시된 로그 복사' })).toBeDisabled();
+    await user.click(surface().getByRole('button', { name: '표시된 로그 복사' }));
+    expect(copy).not.toHaveBeenCalled();
+    view.rerender(<PreferencesProvider initialPreferences={{ theme: 'dark', language: 'ko' }}><Harness copy={copy} /></PreferencesProvider>);
+    await user.click(surface().getByRole('button', { name: '표시된 로그 복사' }));
+    expect(copy).toHaveBeenCalledExactlyOnceWith(raw, 'logs');
+  });
+
+  it('allows the visible last good snapshot to be copied after a list refresh fails', async () => {
+    const user = userEvent.setup();
+    const copy = vi.fn(async () => {});
+    render(<PreferencesProvider initialPreferences={{ theme: 'dark', language: 'ko' }}><LogPanel container={container} snapshot={{ ...snapshot, stale: true }} logs={logs} logsError={null} loadingLogs={false} refreshing={false} mutating={false} loadLogs={() => {}} clearLogs={() => {}} copy={copy} expanded={false} onExpandedChange={() => {}} /></PreferencesProvider>);
+    expect(screen.getByLabelText('최근 로그 내용').textContent).toBe(raw);
+    await user.click(screen.getByRole('button', { name: '표시된 로그 복사' }));
+    expect(copy).toHaveBeenCalledExactlyOnceWith(raw, 'logs');
+  });
+
+  it('explains the held request gate after clear without showing a loading spinner', () => {
+    render(<PreferencesProvider initialPreferences={{ theme: 'dark', language: 'ko' }}><LogPanel container={container} snapshot={snapshot} logs={null} logsError={null} loadingLogs={false} logRequestPending refreshing={false} mutating={false} loadLogs={() => {}} clearLogs={() => {}} copy={async () => {}} expanded={false} onExpandedChange={() => {}} /></PreferencesProvider>);
+    const load = screen.getByRole('button', { name: '로그 조회' });
+    expect(load).toBeDisabled();
+    expect(load).toHaveAccessibleDescription('이전 로그 요청이 끝나면 다시 조회할 수 있습니다.');
+    expect(load.querySelector('.spin')).toBeNull();
+    expect(screen.getByLabelText('최근 로그 내용')).toHaveAttribute('aria-busy', 'false');
+  });
+});
