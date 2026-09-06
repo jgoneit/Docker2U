@@ -40,6 +40,30 @@ export default function App() {
   const refreshBusy = useRef(false);
   const blocked = useRef(false);
   const inventory = useRef<HTMLUListElement>(null);
+  const bulkSelectAll = useRef<HTMLInputElement>(null);
+  const bulkRegion = useRef<HTMLElement>(null);
+  const pendingBulkFocus = useRef<{ epoch: number } | null>(null);
+  useEffect(() => {
+    function preserveUserFocus(event: FocusEvent) {
+      const target = event.target;
+      if (pendingBulkFocus.current && target instanceof HTMLElement && target !== document.body && target !== document.documentElement && !target.matches(':disabled') && !target.closest('[role="dialog"], [inert]')) pendingBulkFocus.current = null;
+    }
+    document.addEventListener('focusin', preserveUserFocus);
+    return () => {
+      pendingBulkFocus.current = null;
+      document.removeEventListener('focusin', preserveUserFocus);
+    };
+  }, []);
+  useEffect(() => {
+    const pending = pendingBulkFocus.current;
+    if (!pending) return;
+    if (pending.epoch !== epoch.current) { pendingBulkFocus.current = null; return; }
+    if (busy.current || refreshBusy.current || mutating || refreshing || confirmation) return;
+    // Consume before focusin fires, after React has enabled the final controls.
+    pendingBulkFocus.current = null;
+    if (bulkSelectAll.current && !bulkSelectAll.current.disabled) bulkSelectAll.current.focus();
+    else bulkRegion.current?.focus();
+  }, [mutating, refreshing, confirmation, snapshot]);
   const selected = snapshot?.containers.find(container => container.fullId === selectedId) ?? null;
   const visible = (snapshot?.containers ?? []).filter(container => {
     const searchMatches = `${container.name} ${container.image} ${container.shortId} ${container.ports.join(' ')}`.toLowerCase().includes(query.trim().toLowerCase());
@@ -76,6 +100,7 @@ export default function App() {
   }, []);
   const connect = useCallback(async () => {
     if (busy.current || refreshBusy.current) return;
+    pendingBulkFocus.current = null;
     const requestEpoch = ++epoch.current;
     session.current = null;
     currentSnapshot.current = null;
@@ -175,6 +200,7 @@ export default function App() {
   async function mutateBulk(containers: Container[], action: Action, targetSession: string, generation: number) {
     const current = currentSnapshot.current;
     if (busy.current || refreshBusy.current || blocked.current || !containers.length || !containers.some(container => canApply(container, action)) || session.current !== targetSession || current?.stale || current?.generation !== generation || containers.some(container => !current.containers.some(item => item.handle === container.handle))) return;
+    if (action !== 'start') pendingBulkFocus.current = { epoch: epoch.current };
     busy.current = true;
     setMutating(true);
     setBulkPending({ action, count: containers.filter(container => canApply(container, action)).length });
@@ -239,7 +265,7 @@ export default function App() {
         <aside className="inventory-panel" aria-labelledby="inventory-title">
           <div className="panel-heading"><h2 id="inventory-title">Containers <span className="count-badge">{snapshot?.containers.length ?? '—'}</span></h2><span className="muted small">수동 갱신</span></div>
           <div className="inventory-controls"><label className="search-field"><Search size={16} aria-hidden="true" /><input aria-label="Container 검색" placeholder="이름, 이미지 또는 ID 검색" value={query} disabled={mutating} onChange={event => { if (!busy.current) { setQuery(event.target.value); setCheckedHandles(new Set()); } }} /></label><div className="filter-group" aria-label="Container 필터">{([['all', '전체'], ['running', '실행 중'], ['stopped', '중지'], ['attention', '확인 필요']] as const).map(([value, label]) => <button key={value} aria-pressed={filter === value} disabled={mutating} onClick={() => { if (!busy.current) { setFilter(value); setCheckedHandles(new Set()); } }}>{label}</button>)}</div></div>
-          <BulkSelection visible={visible} checked={checked} disabled={mutating || refreshing || connecting || !snapshot || snapshot.stale} actionsDisabled={mutating || refreshing || mutationBlocked || !environment?.mutationAllowed || !snapshot || snapshot.stale} pending={bulkPending} onToggleAll={() => changeSelection(() => checked.length === visible.length ? new Set() : new Set(visible.map(container => container.handle)))} onClear={() => changeSelection(() => new Set())} onAction={requestBulkAction} />
+          <BulkSelection visible={visible} checked={checked} disabled={mutating || refreshing || connecting || !snapshot || snapshot.stale} actionsDisabled={mutating || refreshing || mutationBlocked || !environment?.mutationAllowed || !snapshot || snapshot.stale} pending={bulkPending} selectAllRef={bulkSelectAll} regionRef={bulkRegion} onToggleAll={() => changeSelection(() => checked.length === visible.length ? new Set() : new Set(visible.map(container => container.handle)))} onClear={() => changeSelection(() => new Set())} onAction={requestBulkAction} />
           {snapshot?.stale && <div className="stale-notice" role="status"><AlertTriangle size={14} aria-hidden="true" /><span>Stale · 마지막 정상 목록입니다.</span></div>}
           {listError && <div className="inline-error" role="alert"><p>목록을 갱신하지 못했습니다.</p><p>{listError.message}</p><ErrorDetails error={listError} /></div>}
           <ul ref={inventory} aria-label="Container 목록" aria-busy={refreshing || mutating} className="container-list">{visible.map((container, index) => <li key={container.fullId} className="container-list-item"><input type="checkbox" className="container-checkbox" aria-label={`${container.name} 작업 대상으로 선택`} checked={checkedHandles.has(container.handle)} disabled={mutating || refreshing || !!snapshot?.stale} onChange={() => changeSelection(previous => { const next = new Set(previous); if (next.has(container.handle)) next.delete(container.handle); else next.add(container.handle); return next; })} /><button aria-label={`${container.name} 상세`} aria-current={selectedId === container.fullId ? 'true' : undefined} tabIndex={selectedId === container.fullId || (!visible.some(item => item.fullId === selectedId) && index === 0) ? 0 : -1} className="container-row" onClick={() => setSelectedId(container.fullId)} onKeyDown={event => selectWithKeyboard(event, index)}><span className="container-row-title"><strong>{container.name}</strong><ChevronRight size={15} aria-hidden="true" /></span><span className="container-image">{container.image}</span><span className="container-statuses"><State value={container.state} /><Health value={container.health} /></span></button></li>)}</ul>

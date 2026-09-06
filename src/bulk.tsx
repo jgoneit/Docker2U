@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, type RefObject } from 'react';
 import { AlertTriangle, LoaderCircle, Play, RefreshCw, Square } from 'lucide-react';
 import type { Action, BulkMutationResult, Container, CoreError } from './api';
 import { actionLabels, ErrorDetails, stateLabels } from './components';
@@ -32,16 +32,16 @@ export function isBoundBulkResult(value: BulkMutationResult, sessionId: string, 
   });
 }
 
-export function BulkSelection({ visible, checked, disabled, actionsDisabled, pending, onToggleAll, onClear, onAction }: {
+export function BulkSelection({ visible, checked, disabled, actionsDisabled, pending, selectAllRef, regionRef, onToggleAll, onClear, onAction }: {
   visible: Container[]; checked: Container[]; disabled: boolean; actionsDisabled: boolean;
   pending: { action: Action; count: number } | null;
+  selectAllRef: RefObject<HTMLInputElement | null>; regionRef: RefObject<HTMLElement | null>;
   onToggleAll: () => void; onClear: () => void; onAction: (action: Action, returnFocus?: HTMLElement) => void;
 }) {
-  const selectAll = useRef<HTMLInputElement>(null);
   const partial = checked.length > 0 && checked.length < visible.length;
-  useEffect(() => { if (selectAll.current) selectAll.current.indeterminate = partial; }, [partial]);
-  return <section className="bulk-selection" aria-label="Container 일괄 제어">
-    <div className="selection-heading"><label><input ref={selectAll} type="checkbox" aria-label="보이는 Container 전체 선택" aria-checked={partial ? 'mixed' : checked.length > 0 && checked.length === visible.length} checked={checked.length > 0 && checked.length === visible.length} disabled={disabled || !visible.length} onChange={onToggleAll} />전체 선택 <span className="muted">({visible.length})</span></label>{checked.length > 0 && <button className="text-button" disabled={disabled} onClick={onClear}>선택 해제</button>}</div>
+  useEffect(() => { if (selectAllRef.current) selectAllRef.current.indeterminate = partial; }, [partial, selectAllRef]);
+  return <section ref={regionRef} tabIndex={-1} className="bulk-selection" aria-label="Container 일괄 제어">
+    <div className="selection-heading"><label><input ref={selectAllRef} type="checkbox" aria-label="보이는 Container 전체 선택" aria-checked={partial ? 'mixed' : checked.length > 0 && checked.length === visible.length} checked={checked.length > 0 && checked.length === visible.length} disabled={disabled || !visible.length} onChange={onToggleAll} />전체 선택 <span className="muted">({visible.length})</span></label>{checked.length > 0 && <button className="text-button" disabled={disabled} onClick={onClear}>선택 해제</button>}</div>
     {checked.length > 0 && <><p className="selection-count" role="status">{checked.length}개 선택</p><div className="bulk-actions">{(['start', 'stop', 'restart'] as const).map(action => {
       const count = checked.filter(container => canApply(container, action)).length;
       const Icon = action === 'start' ? Play : action === 'stop' ? Square : RefreshCw;
