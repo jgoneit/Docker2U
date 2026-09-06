@@ -1,0 +1,23 @@
+import type { Messages } from '../i18n';
+export const bulkMessages = {
+  region: { ko: '컨테이너 일괄 제어', en: 'Bulk container actions' }, selectVisible: { ko: '보이는 컨테이너 전체 선택', en: 'Select all visible containers' },
+  selectAll: { ko: '전체 선택', en: 'Select all' }, clearSelection: { ko: '선택 해제', en: 'Clear selection' }, selected: { ko: '{count}개 선택', en: '{count} selected' },
+  exclusions: { ko: '작업별 제외 대상과 이유', en: 'Excluded targets and reasons by action' }, excluded: { ko: '{action} · {count}개 제외', en: '{action} · {count} excluded' },
+  startOnly: { ko: '{state} 상태 · 생성됨 / 중지됨에서만 시작 가능', en: '{state} · Start requires Created or Stopped' },
+  runningOnly: { ko: '{state} 상태 · 실행 중일 때만 {action} 가능', en: '{state} · {action} requires Running' },
+  allEligible: { ko: '선택한 모든 대상에 실행할 수 있습니다.', en: 'All selected targets are eligible.' },
+  pending: { ko: '{action} · {count}개 대상 순서대로 처리 및 상태 재조회 중…', en: '{action} · Processing {count} targets in order and checking their states…' },
+  regionResult: { ko: '최근 일괄 작업 결과', en: 'Latest bulk operation result' }, titleResult: { ko: '{action} · 일괄 작업 결과', en: '{action} · Bulk operation results' },
+  titleUnknown: { ko: '{action} · 일괄 작업 결과 불명', en: '{action} · Bulk outcome unknown' }, titleRejected: { ko: '{action} · 일괄 작업 요청 거절', en: '{action} · Bulk request rejected' },
+  succeeded: { ko: '성공', en: 'Succeeded' }, failed: { ko: '실패', en: 'Failed' }, resultUnknown: { ko: '결과 불명', en: 'Result unknown' }, skipped: { ko: '제외', en: 'Skipped' }, notExecuted: { ko: '미실행', en: 'Not executed' },
+  outcomeCount: { ko: '{outcome} {count}개', en: '{outcome} {count}' }, itemDetails: { ko: '항목별 결과 · {count}개', en: 'Results by target · {count}' },
+  uncertainItems: { ko: '결과가 불명확하거나 실행되지 않은 대상이 있습니다. 현재 목록 상태를 명령 성공으로 해석하지 마세요.', en: 'Some targets have unknown outcomes or were not executed. The current list state does not prove command success.' },
+  unknown: { ko: '현재 상태 재조회는 원래 명령의 성공을 의미하지 않습니다. 자동 재시도하지 않았습니다.', en: 'Checking the current state does not prove the original command succeeded. No automatic retry was made.' },
+  failedReconciliation: { ko: '대상 상태 재조회 실패. 재연결이 필요합니다.', en: 'Could not check the current state. Reconnect is required.' },
+  reconciled: { ko: '대상 상태 재조회 완료{state}. 원래 작업 결과는 유지됩니다.', en: 'Current state checked{state}. The original operation outcome is unchanged.' },
+  executionDetails: { ko: '실행 상세', en: 'Execution details' },
+  rejected: { ko: '실행 전에 요청이 거절되어 이 요청의 조작은 실행되지 않았습니다.', en: 'The request was rejected before execution. No action from this request was executed.' },
+  unknownRequest: { ko: '일괄 응답을 확인하지 못해 개별 대상의 결과를 확정할 수 없습니다. 자동 재시도하지 않았습니다. 현재 목록의 상태를 성공 여부로 해석하지 마세요.', en: 'The bulk response could not be verified, so individual outcomes are unknown. No automatic retry was made. The current list state does not prove success.' },
+  blocked: { ko: '이 작업 뒤 연결 재확인이 필요해졌습니다. 재연결해도 이 작업 결과는 바뀌지 않습니다.', en: 'The connection needed revalidation after this operation. Reconnecting does not change its outcome.' },
+  refresh: { ko: '새로고침 후 대상을 다시 선택하세요.', en: 'Refresh, then select the targets again.' },
+} satisfies Messages;

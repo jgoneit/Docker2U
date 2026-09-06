@@ -1,10 +1,21 @@
 <!doctype html>
-<html lang="ko">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="dark" />
-    <meta name="theme-color" content="#09090b" />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      // Apply preferences before styles/React paint to avoid a theme flash.
+      (() => {
+        let saved = {};
+        try { saved = JSON.parse(localStorage.getItem('docker2u.preferences.v1') || '{}') || {}; } catch {}
+        const theme = saved.theme === 'light' || saved.theme === 'dark' ? saved.theme : (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        const language = saved.language === 'ko' || saved.language === 'en' ? saved.language : (navigator.language.toLowerCase().startsWith('ko') ? 'ko' : 'en');
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme = theme;
+        document.documentElement.lang = language;
+      })();
+    </script>
     <title>Docker2U</title>
   </head>
   <body>

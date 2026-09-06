@@ -2,6 +2,9 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import './styles.css';
+import { initializePreferences } from './preferences';
+
+initializePreferences();
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Docker2U root element is missing.');

@@ -1,0 +1,22 @@
+import type { Messages } from '../i18n';
+export const logMessages = {
+  openSearch: { ko: '로그 검색 열기', en: 'Open log search' }, closeSearch: { ko: '로그 검색 닫기', en: 'Close log search' },
+  search: { ko: '로그 검색', en: 'Search logs' }, searchArea: { ko: '로그 탐색', en: 'Log navigation' },
+  previousMatch: { ko: '이전 일치', en: 'Previous match' }, nextMatch: { ko: '다음 일치', en: 'Next match' },
+  clearSearch: { ko: '로그 검색 지우기', en: 'Clear log search' }, bottom: { ko: '맨 아래로', en: 'Scroll to bottom' },
+  matchCount: { ko: '{current} / {total}건', en: '{current} / {total} matches' }, zeroMatches: { ko: '0건', en: '0 matches' },
+  fetchedAt: { ko: '로그 조회 완료', en: 'Logs received' },
+  title: { ko: '최근 로그', en: 'Recent logs' }, fetch: { ko: '로그 조회', en: 'Load logs' },
+  expand: { ko: '로그 확대 보기', en: 'Expand logs' }, close: { ko: '로그 확대 보기 닫기', en: 'Close expanded logs' },
+  expandedTitle: { ko: '{name} · 로그 확대 보기', en: '{name} · Expanded logs' },
+  copy: { ko: '표시된 로그 복사', en: 'Copy displayed logs' }, copyLabel: { ko: '표시된 로그', en: 'Displayed logs' }, clear: { ko: '로그 화면 비우기', en: 'Clear displayed logs' },
+  limits: { ko: '최대 300줄 · 2 MiB', en: 'Up to 300 lines · 2 MiB' },
+  limitDetails: { ko: '최근 300줄 · 최대 2 MiB · 조회 시점 기준', en: 'Last 300 lines · Up to 2 MiB · Snapshot' },
+  sensitive: { ko: '로그에 민감정보가 포함될 수 있습니다.', en: 'Logs may contain sensitive information.' },
+  truncated: { ko: '로그 앞부분이 잘렸습니다. 마지막 2 MiB만 표시·복사합니다.', en: 'Earlier logs were truncated. Only the final 2 MiB are displayed and copied.' },
+  failed: { ko: '최근 로그를 읽지 못했습니다.', en: 'Recent logs could not be read.' },
+  content: { ko: '최근 로그 내용', en: 'Recent log content' }, loading: { ko: '최근 로그를 불러오는 중…', en: 'Loading recent logs…' },
+  stale: { ko: '목록을 새로고침한 뒤 로그를 조회하세요.', en: 'Refresh the list before loading logs.' },
+  unreadable: { ko: '현재 상태에서는 로그를 조회할 수 없습니다.', en: 'Logs cannot be loaded in this state.' },
+  empty: { ko: '최근 로그가 없습니다.', en: 'No recent logs.' }, initial: { ko: '로그 조회를 눌러 로그를 확인하세요.', en: 'Select Load logs to view recent logs.' },
+} satisfies Messages;

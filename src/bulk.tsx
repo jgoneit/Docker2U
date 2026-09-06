@@ -1,13 +1,16 @@
 import { useEffect, type RefObject } from 'react';
 import { AlertTriangle, LoaderCircle, Play, RefreshCw, Square } from 'lucide-react';
 import type { Action, BulkMutationResult, ConnectionTarget, Container, CoreError } from './api';
-import { actionLabels, ConnectionFacts, ErrorDetails, stateLabels } from './components';
+import { actionLabel, ConnectionFacts, ErrorDetails, ResultDisclosure, stateLabel } from './components';
+import { translate, useI18n } from './i18n';
+import { bulkMessages } from './messages/bulk';
+import { usePreferences, type Language } from './preferences';
 
 export function canApply(container: Container, action: Action) {
   return action === 'start' ? ['created', 'exited'].includes(container.state) : container.state === 'running';
 }
-export function exclusionReason(container: Container, action: Action) {
-  return `${stateLabels[container.state] ?? 'Unknown'} 상태 · ${action === 'start' ? 'Created / Stopped에서만 Start 가능' : `Running에서만 ${actionLabels[action]} 가능`}`;
+export function exclusionReason(container: Container, action: Action, language: Language = 'ko') {
+  return translate(bulkMessages, language, action === 'start' ? 'startOnly' : 'runningOnly', { state: stateLabel(container.state, language), action: actionLabel(action, language) });
 }
 export type BulkOperation = {
   action: Action;
@@ -37,23 +40,25 @@ export function BulkSelection({ visible, checked, disabled, actionsDisabled, pen
   selectAllRef: RefObject<HTMLInputElement | null>; regionRef: RefObject<HTMLElement | null>;
   onToggleAll: () => void; onClear: () => void; onAction: (action: Action, returnFocus?: HTMLElement) => void;
 }) {
+  const t = useI18n(bulkMessages);
+  const { language } = usePreferences();
   const partial = checked.length > 0 && checked.length < visible.length;
   useEffect(() => { if (selectAllRef.current) selectAllRef.current.indeterminate = partial; }, [partial, selectAllRef]);
-  return <section ref={regionRef} tabIndex={-1} className="bulk-selection" aria-label="Container 일괄 제어">
-    <div className="selection-heading"><label><input ref={selectAllRef} type="checkbox" aria-label="보이는 Container 전체 선택" aria-checked={partial ? 'mixed' : checked.length > 0 && checked.length === visible.length} checked={checked.length > 0 && checked.length === visible.length} disabled={disabled || !visible.length} onChange={onToggleAll} />전체 선택 <span className="muted">({visible.length})</span></label>{checked.length > 0 && <button className="text-button" disabled={disabled} onClick={onClear}>선택 해제</button>}</div>
-    {checked.length > 0 && <><p className="selection-count" role="status">{checked.length}개 선택</p><div className="bulk-actions">{(['start', 'stop', 'restart'] as const).map(action => {
+  return <section ref={regionRef} tabIndex={-1} className="bulk-selection" aria-label={t('region')}>
+    <div className="selection-heading"><label><input ref={selectAllRef} type="checkbox" aria-label={t('selectVisible')} aria-checked={partial ? 'mixed' : checked.length > 0 && checked.length === visible.length} checked={checked.length > 0 && checked.length === visible.length} disabled={disabled || !visible.length} onChange={onToggleAll} />{t('selectAll')} <span className="muted">({visible.length})</span></label>{checked.length > 0 && <button className="text-button" disabled={disabled} onClick={onClear}>{t('clearSelection')}</button>}</div>
+    {checked.length > 0 && <><p className="selection-count" role="status">{t('selected', { count: checked.length })}</p><div className="bulk-actions">{(['start', 'stop', 'restart'] as const).map(action => {
       const count = checked.filter(container => canApply(container, action)).length;
       const Icon = action === 'start' ? Play : action === 'stop' ? Square : RefreshCw;
-      return <button key={action} className={action === 'start' ? 'primary-button' : ''} disabled={actionsDisabled || count === 0} onClick={event => { if (action !== 'start') event.currentTarget.focus(); onAction(action, event.currentTarget); }}><Icon size={13} aria-hidden="true" />{actionLabels[action]} ({count})</button>;
-    })}</div><details className="technical-details selection-exclusions"><summary>작업별 제외 대상과 이유</summary>{(['start', 'stop', 'restart'] as const).map(action => {
+      return <button key={action} className={`action-button action-${action}`} disabled={actionsDisabled || count === 0} onClick={event => { if (action !== 'start') event.currentTarget.focus(); onAction(action, event.currentTarget); }}><Icon size={13} aria-hidden="true" />{actionLabel(action, language)} ({count})</button>;
+    })}</div><details className="technical-details selection-exclusions"><summary>{t('exclusions')}</summary>{(['start', 'stop', 'restart'] as const).map(action => {
       const excluded = checked.filter(container => !canApply(container, action));
-      return <div key={action}><h3>{actionLabels[action]} · {excluded.length}개 제외</h3>{excluded.length ? <ul>{excluded.map(container => <li key={container.handle}><strong>{container.name}</strong> · {container.shortId}<p>{exclusionReason(container, action)}</p></li>)}</ul> : <p>선택한 모든 대상에 실행할 수 있습니다.</p>}</div>;
+      return <div key={action}><h3>{t('excluded', { action: actionLabel(action, language), count: excluded.length })}</h3>{excluded.length ? <ul>{excluded.map(container => <li key={container.handle}><strong>{container.name}</strong> · {container.shortId}<p>{exclusionReason(container, action, language)}</p></li>)}</ul> : <p>{t('allEligible')}</p>}</div>;
     })}</details></>}
-    {pending && <p className="operation-notice" role="status"><LoaderCircle size={16} className="spin" aria-hidden="true" />{actionLabels[pending.action]} · {pending.count}개 대상 순서대로 처리 및 상태 재조회 중…</p>}
+    {pending && <p className="operation-notice" role="status"><LoaderCircle size={16} className="spin" aria-hidden="true" />{t('pending', { action: actionLabel(pending.action, language), count: pending.count })}</p>}
   </section>;
 }
 
-const outcomeLabels = { succeeded: '성공', failed: '실패', resultUnknown: '결과 불명', skipped: '제외', notExecuted: '미실행' } as const;
+const outcomes = ['succeeded', 'failed', 'resultUnknown', 'skipped', 'notExecuted'] as const;
 function resultClass(operation: BulkOperation) {
   const { result } = operation;
   if (!result) return operation.uncertain ? 'outcome-resultUnknown' : 'outcome-failed';
@@ -62,11 +67,25 @@ function resultClass(operation: BulkOperation) {
   return result.items.some(item => item.outcome === 'succeeded') ? '' : 'outcome-neutral';
 }
 export function BulkResult({ operation }: { operation: BulkOperation }) {
+  const t = useI18n(bulkMessages);
+  const { language } = usePreferences();
   const { result } = operation;
-  return <section className={`bulk-result operation-result ${resultClass(operation)}`} aria-label="최근 일괄 작업 결과">
-    <h3>{!result && <AlertTriangle size={16} aria-hidden="true" />}{actionLabels[operation.action]} · 일괄 작업 {result ? '결과' : operation.uncertain ? '결과 불명' : '요청 거절'}</h3>
-    <p>{operation.containers.length}개 선택</p><ConnectionFacts target={operation} />
-    {result ? <><p role="status" className="bulk-summary">{Object.entries(outcomeLabels).map(([outcome, label]) => <span key={outcome}>{label} {result.items.filter(item => item.outcome === outcome).length}개</span>)}</p><details className="technical-details" open><summary>항목별 결과 · {result.items.length}개</summary><ul className="bulk-result-items">{result.items.map(item => <li key={item.handle}><div><strong>{item.name}</strong><span className={`bulk-outcome bulk-outcome-${item.outcome}`}>{outcomeLabels[item.outcome]}</span></div><code title={item.fullId}>{item.fullId}</code><p>{item.message}</p>{item.outcome === 'resultUnknown' && <p>현재 상태 재조회는 원래 명령의 성공을 의미하지 않습니다. 자동 재시도하지 않았습니다.</p>}{item.result?.reconciliation === 'failed' && <p>대상 상태 재조회 실패. Reconnect가 필요합니다.</p>}{item.result?.reconciliation === 'succeeded' && <p>대상 상태 재조회 완료{item.result.observedState ? ` · ${stateLabels[item.result.observedState] ?? item.result.observedState}` : ''}. 원래 작업 결과는 유지됩니다.</p>}{item.error && <ErrorDetails error={item.error} />}{item.result && (item.result.command || item.result.stderr) && <details className="technical-details"><summary>실행 상세</summary>{item.result.command && <pre>{item.result.command}</pre>}{item.result.stderr && <pre>{item.result.stderr}</pre>}</details>}</li>)}</ul></details></> : <><p>{operation.error.message}</p><p>{operation.uncertain ? '일괄 응답을 확인하지 못해 개별 대상의 결과를 확정할 수 없습니다. 자동 재시도하지 않았습니다. 현재 목록의 상태를 성공 여부로 해석하지 마세요.' : '실행 전에 요청이 거절되어 이 요청의 조작은 실행되지 않았습니다.'}</p><ErrorDetails error={operation.error} /></>}
-    {operation.needsReconnect ? <p>추가 작업이 차단되었습니다. Reconnect로 환경을 다시 검증하세요.</p> : !result && <p>Refresh 후 대상을 다시 선택하세요.</p>}
+  const warning = operation.needsReconnect || resultClass(operation) === 'outcome-resultUnknown';
+  const content = <>
+    {result ? <details className="technical-details"><summary>{t('itemDetails', { count: result.items.length })}</summary><ConnectionFacts target={operation} /><ul className="bulk-result-items">{result.items.map(item => <li key={item.handle}><div><strong>{item.name}</strong><span className={`bulk-outcome bulk-outcome-${item.outcome}`}>{t(item.outcome)}</span></div><code title={item.fullId}>{item.fullId}</code>
+      {item.outcome === 'resultUnknown' && <p>{t('unknown')}</p>}
+      {item.result?.reconciliation === 'failed' && <p>{t('failedReconciliation')}</p>}
+      {item.result?.reconciliation === 'succeeded' && <p>{t('reconciled', { state: item.result.observedState ? ` · ${stateLabel(item.result.observedState, language)}` : '' })}</p>}
+      {item.error && <ErrorDetails error={item.error} />}
+      <details className="technical-details"><summary>{t('executionDetails')}</summary><pre tabIndex={0}>{item.message}</pre>{item.result && <><pre tabIndex={0}>{item.result.message}</pre>{item.result.command && <pre tabIndex={0}>{item.result.command}</pre>}{item.result.stderr && <pre tabIndex={0}>{item.result.stderr}</pre>}</>}</details>
+    </li>)}</ul></details> : <><p>{t(operation.uncertain ? 'unknownRequest' : 'rejected')}</p><ErrorDetails error={operation.error} /></>}
+    {operation.needsReconnect ? <p>{t('blocked')}</p> : !result && <p>{t('refresh')}</p>}
+  </>;
+  return <section className={`bulk-result operation-result ${resultClass(operation)}`} aria-label={t('regionResult')}>
+    <h3>{!result && <AlertTriangle size={16} aria-hidden="true" />}{t(result ? 'titleResult' : operation.uncertain ? 'titleUnknown' : 'titleRejected', { action: actionLabel(operation.action, language) })}</h3>
+    <p>{t('selected', { count: operation.containers.length })}</p>
+    {result && <p role="status" className="bulk-summary">{outcomes.map(outcome => <span key={outcome}>{t('outcomeCount', { outcome: t(outcome), count: result.items.filter(item => item.outcome === outcome).length })}</span>)}</p>}
+    {result?.items.some(item => item.outcome === 'resultUnknown' || item.outcome === 'notExecuted') && <p>{t('uncertainItems')}</p>}
+    {warning ? content : <ResultDisclosure identity={operation}>{content}</ResultDisclosure>}
   </section>;
 }
