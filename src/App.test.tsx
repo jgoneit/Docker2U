@@ -41,6 +41,19 @@ async function connected() {
   await screen.findByRole('button', { name: /backend/ });
   await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
 }
+async function confirmBulkWithKeyboard(user: ReturnType<typeof userEvent.setup>, action: 'Stop' | 'Restart') {
+  screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' }).focus();
+  await user.keyboard(' ');
+  const trigger = screen.getByRole('button', { name: `${action} (1)` });
+  trigger.focus();
+  await user.keyboard('{Enter}');
+  const dialog = within(screen.getByRole('dialog', { name: `${action} 1개 Container?` }));
+  expect(dialog.getByRole('button', { name: '취소' })).toHaveFocus();
+  await user.tab();
+  expect(dialog.getByRole('button', { name: `${action} 확인` })).toHaveFocus();
+  await user.keyboard('{Enter}');
+  return trigger;
+}
 beforeEach(() => {
   vi.resetAllMocks();
   let generation = 0;
@@ -371,6 +384,133 @@ describe('bulk selection and recovery', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
     expect(screen.getByRole('button', { name: 'Stop' })).toBeDisabled();
     expect(mock.mutateContainers).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('confirmed bulk focus recovery', () => {
+  it.each(['Stop', 'Restart'] as const)('restores keyboard %s focus only after mutation and final Refresh finish without selecting or retrying', async action => {
+    const user = userEvent.setup();
+    const mutation = deferred<BulkMutationResult>();
+    const finalRefresh = deferred<ContainerList>();
+    mock.mutateContainers.mockReturnValueOnce(mutation.promise);
+    render(<App />);
+    await connected();
+    mock.listContainers.mockReturnValueOnce(finalRefresh.promise);
+    const all = screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' });
+    const region = screen.getByRole('region', { name: 'Container 일괄 제어' });
+    const trigger = await confirmBulkWithKeyboard(user, action);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(all).toBeDisabled();
+    expect(all).not.toHaveFocus();
+    expect(region).not.toHaveFocus();
+    expect(trigger).not.toHaveFocus();
+    expect(mock.mutateContainers).toHaveBeenCalledExactlyOnceWith('session-1', 1, ['handle-1-g1', 'handle-2-g1'], action.toLowerCase());
+    await act(async () => mutation.resolve(batch(action.toLowerCase() as Action)));
+    expect(mock.listContainers).toHaveBeenCalledTimes(2);
+    expect(all).toBeDisabled();
+    expect(all).not.toBeChecked();
+    expect(all).not.toHaveFocus();
+    expect(region).not.toHaveFocus();
+    await act(async () => finalRefresh.resolve(list(2)));
+    await waitFor(() => expect(all).toHaveFocus());
+    expect(all).toBeEnabled();
+    screen.getAllByRole('checkbox').forEach(checkbox => expect(checkbox).not.toBeChecked());
+    expect(screen.queryByRole('button', { name: `${action} (1)` })).not.toBeInTheDocument();
+    expect(mock.mutateContainers).toHaveBeenCalledTimes(1);
+    expect(mock.mutateContainer).not.toHaveBeenCalled();
+  });
+  it.each(['empty', 'failed'] as const)('focuses the bulk region when the final Refresh is %s', async outcome => {
+    const user = userEvent.setup();
+    const finalRefresh = deferred<ContainerList>();
+    render(<App />);
+    await connected();
+    mock.listContainers.mockReturnValueOnce(finalRefresh.promise);
+    await confirmBulkWithKeyboard(user, 'Stop');
+    const region = screen.getByRole('region', { name: 'Container 일괄 제어' });
+    expect(region).not.toHaveFocus();
+    await act(async () => {
+      if (outcome === 'empty') finalRefresh.resolve(list(2, []));
+      else finalRefresh.reject({ code: 'TimedOut', message: '최종 목록 확인 실패' });
+    });
+    await waitFor(() => expect(region).toHaveFocus());
+    expect(region).toHaveAttribute('tabindex', '-1');
+    const all = screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' });
+    expect(all).toBeDisabled();
+    expect(all).not.toBeChecked();
+    expect(mock.mutateContainers).toHaveBeenCalledTimes(1);
+    expect(mock.mutateContainer).not.toHaveBeenCalled();
+  });
+  it.each([
+    { name: 'recoverable preflight', failure: { code: 'Busy', message: '다른 작업 실행 중' }, blocked: false },
+    { name: 'required validation', failure: { code: 'NeedsValidation', message: '환경 재검증 필요' }, blocked: true },
+    { name: 'lost IPC response', failure: new Error('response lost'), blocked: true },
+  ])('restores selection focus after $name without changing the action gate', async ({ failure, blocked }) => {
+    const user = userEvent.setup();
+    const finalRefresh = deferred<ContainerList>();
+    mock.mutateContainers.mockRejectedValueOnce(failure);
+    render(<App />);
+    await connected();
+    mock.listContainers.mockReturnValueOnce(finalRefresh.promise);
+    await confirmBulkWithKeyboard(user, 'Restart');
+    const all = screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' });
+    expect(all).toBeDisabled();
+    expect(all).not.toHaveFocus();
+    await act(async () => finalRefresh.resolve(list(2)));
+    await waitFor(() => expect(all).toHaveFocus());
+    expect(all).toBeEnabled();
+    expect(all).not.toBeChecked();
+    expect(screen.getByRole('button', { name: 'Stop' }).hasAttribute('disabled')).toBe(blocked);
+    expect(mock.mutateContainers).toHaveBeenCalledTimes(1);
+    expect(mock.getEnvironment).toHaveBeenCalledTimes(1);
+  });
+  it.each(['diagnostics', 'summary'] as const)('preserves focus the user moves to %s while the bulk operation is pending', async destination => {
+    const user = userEvent.setup();
+    const mutation = deferred<BulkMutationResult>();
+    const finalRefresh = deferred<ContainerList>();
+    mock.mutateContainers.mockReturnValueOnce(mutation.promise);
+    render(<App />);
+    await connected();
+    mock.listContainers.mockReturnValueOnce(finalRefresh.promise);
+    await confirmBulkWithKeyboard(user, 'Stop');
+    let chosen: HTMLElement;
+    if (destination === 'diagnostics') {
+      chosen = screen.getByRole('button', { name: '환경 진단 보기' });
+      await user.click(chosen);
+      expect(chosen).toHaveFocus();
+      await act(async () => mutation.resolve(batch('stop')));
+    } else {
+      await act(async () => mutation.resolve(batch('stop')));
+      chosen = screen.getByText('항목별 결과 · 2개');
+      chosen.focus();
+      expect(chosen).toHaveFocus();
+    }
+    await act(async () => finalRefresh.resolve(list(2)));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
+    expect(chosen).toHaveFocus();
+    expect(screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' })).not.toBeChecked();
+    expect(mock.mutateContainers).toHaveBeenCalledTimes(1);
+  });
+  it('does not transfer pending focus restoration into a remounted App', async () => {
+    const user = userEvent.setup();
+    const oldRefresh = deferred<ContainerList>();
+    const first = render(<App />);
+    await connected();
+    mock.listContainers.mockReturnValueOnce(oldRefresh.promise);
+    await confirmBulkWithKeyboard(user, 'Stop');
+    expect(mock.listContainers).toHaveBeenCalledTimes(2);
+    first.unmount();
+    mock.getEnvironment.mockResolvedValueOnce({ ...environment, sessionId: 'new-session' });
+    mock.listContainers.mockResolvedValueOnce(list(1, [backend, redis], 'new-session'));
+    render(<App />);
+    await connected();
+    const chosen = screen.getByRole('button', { name: '환경 진단 보기' });
+    await user.click(chosen);
+    await act(async () => oldRefresh.resolve(list(2)));
+    expect(chosen).toHaveFocus();
+    expect(screen.getByRole('checkbox', { name: '보이는 Container 전체 선택' })).not.toHaveFocus();
+    expect(screen.queryByRole('region', { name: '최근 일괄 작업 결과' })).not.toBeInTheDocument();
+    expect(mock.mutateContainers).toHaveBeenCalledTimes(1);
+    expect(mock.listContainers).toHaveBeenCalledTimes(3);
   });
 });
 

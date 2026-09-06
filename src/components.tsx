@@ -33,15 +33,25 @@ export function ConnectionFacts({ target }: { target: ConnectionTarget }) {
 export function ConfirmDialog({ confirmation, onCancel, onConfirm }: { confirmation: Confirmation; onCancel: () => void; onConfirm: () => void }) {
   const dialog = useRef<HTMLDivElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
+  const restoreOnClose = useRef(true);
   const targets = confirmation.containers?.filter(container => container.state === 'running');
   const excluded = confirmation.containers?.filter(container => container.state !== 'running');
   useEffect(() => {
     const previousFocus = confirmation.returnFocus ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     cancel.current?.focus();
-    return () => previousFocus?.focus();
+    return () => { if (restoreOnClose.current) previousFocus?.focus(); };
   }, [confirmation.returnFocus]);
+  function cancelConfirmation() {
+    restoreOnClose.current = true;
+    onCancel();
+  }
+  function confirm() {
+    // Confirmed bulk actions restore focus after the operation and final refresh.
+    restoreOnClose.current = !confirmation.containers;
+    onConfirm();
+  }
   function keyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === 'Escape') { event.preventDefault(); onCancel(); }
+    if (event.key === 'Escape') { event.preventDefault(); cancelConfirmation(); }
     if (event.key !== 'Tab') return;
     const elements = dialog.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)');
     const first = elements?.[0];
@@ -56,7 +66,7 @@ export function ConfirmDialog({ confirmation, onCancel, onConfirm }: { confirmat
       <p id="confirm-description">{confirmation.action === 'stop' ? '서비스가 중단됩니다. 종료 대기 시간이 지나면 강제로 종료될 수 있습니다.' : '서비스가 잠시 중단됩니다. 진행 중인 요청에 영향을 줄 수 있습니다.'}</p>
       <div className="confirm-target">{confirmation.container && <dl className="connection-facts"><dt>Container</dt><dd>{confirmation.container.name}</dd><dt>ID</dt><dd>{confirmation.container.shortId}</dd></dl>}<ConnectionFacts target={confirmation} /></div>
       {targets && <div className="confirm-bulk-targets"><h3>실행 대상 · {targets.length}개</h3><ul>{targets.map(container => <li key={container.handle}><strong>{container.name}</strong><code>{container.fullId}</code></li>)}</ul><h3>제외 대상 · {excluded?.length ?? 0}개</h3>{excluded?.length ? <ul>{excluded.map(container => <li key={container.handle}><strong>{container.name}</strong><code>{container.fullId}</code><p>{stateLabels[container.state] ?? 'Unknown'} 상태 · Running에서만 {actionLabels[confirmation.action]} 가능</p></li>)}</ul> : <p>제외되는 대상이 없습니다.</p>}</div>}
-      <div className="dialog-actions"><button ref={cancel} onClick={onCancel}>취소</button><button className="danger-button" onClick={onConfirm}>{actionLabels[confirmation.action]} 확인</button></div>
+      <div className="dialog-actions"><button ref={cancel} onClick={cancelConfirmation}>취소</button><button className="danger-button" onClick={confirm}>{actionLabels[confirmation.action]} 확인</button></div>
     </div>
   </div>;
 }
