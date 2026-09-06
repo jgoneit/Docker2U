@@ -12,7 +12,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "build": "pnpm typecheck && vite build",
+    "test:browser": "playwright test",
+    "check:production-fixtures": "node scripts/check-production-fixtures.mjs",
+    "build": "pnpm typecheck && vite build && pnpm check:production-fixtures",
     "preview": "vite preview --host 127.0.0.1",
     "icons": "tauri icon assets/app-icon.svg --output src-tauri/gen/icons",
     "rust:fmt": "node scripts/with-toolchain.mjs cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
@@ -28,6 +30,7 @@
     "react-dom": "19.2.8"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "@tauri-apps/cli": "2.11.4",
     "@testing-library/jest-dom": "7.0.1",
     "@testing-library/react": "16.3.3",

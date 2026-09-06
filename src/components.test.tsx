@@ -1,10 +1,14 @@
+import type { ReactNode } from 'react';
+import { PreferencesProvider } from './preferences';
 import { useLayoutEffect, useState } from 'react';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render as renderUI, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { Container, ContainerList } from './api';
-import { ConfirmDialog, ContainerDetail } from './components';
+import { ConfirmDialog, ContainerDetail, ContainerSummary, OperationResult } from './components';
 import type { Confirmation } from './components';
+
+function render(ui: ReactNode) { return renderUI(<PreferencesProvider initialPreferences={{ theme: 'dark', language: 'ko' }}>{ui}</PreferencesProvider>); }
 
 const container: Container = {
   handle: 'handle-1', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'backend',
@@ -25,7 +29,7 @@ function ConfirmationHarness({ simulateInertFocusLoss = false, closeOnConfirm = 
       <button>이전 위치</button>
       <ContainerDetail container={container} snapshot={snapshot} logs={null} logsError={null}
         loadingLogs={false} refreshing={false} mutating={false} mutationBlocked={false} mutationAllowed
-        operation={null} loadLogs={() => {}} clearLogs={() => {}} copy={async () => {}}
+        loadLogs={() => {}} clearLogs={() => {}} copy={async () => {}}
         requestAction={(action, returnFocus) => {
           if (action === 'start') return;
           setConfirmation({ container, action, sessionId: snapshot.sessionId, generation: snapshot.generation,
@@ -48,7 +52,7 @@ function BulkConfirmationHarness({ leaveOpen = false, onConfirmed }: { leaveOpen
 }
 
 describe('confirmation trigger focus', () => {
-  it.each(['Stop', 'Restart'])('returns to %s after a click that does not focus the button', action => {
+  it.each(['중지', '재시작'])('returns to %s after a click that does not focus the button', action => {
     render(<ConfirmationHarness />);
     screen.getByRole('button', { name: '이전 위치' }).focus();
     const trigger = screen.getByRole('button', { name: action });
@@ -56,7 +60,7 @@ describe('confirmation trigger focus', () => {
     // Unlike userEvent.click, this leaves native click-to-focus behavior to the component.
     fireEvent.click(trigger);
 
-    const dialog = screen.getByRole('dialog', { name: `${action} backend?` });
+    const dialog = screen.getByRole('dialog', { name: `backend ${action} 확인` });
     const cancel = within(dialog).getByRole('button', { name: '취소' });
     expect(cancel).toHaveFocus();
     expect(screen.getByTestId('background')).toHaveAttribute('inert');
@@ -66,7 +70,7 @@ describe('confirmation trigger focus', () => {
     expect(screen.getByTestId('background')).not.toHaveAttribute('inert');
     expect(trigger).toHaveFocus();
   });
-  it.each(['Stop', 'Restart'])('returns to %s when inert blurs the trigger before dialog effects', action => {
+  it.each(['중지', '재시작'])('returns to %s when inert blurs the trigger before dialog effects', action => {
     render(<ConfirmationHarness simulateInertFocusLoss />);
     const trigger = screen.getByRole('button', { name: action });
 
@@ -82,9 +86,9 @@ describe('confirmation trigger focus', () => {
   it('preserves single-action trigger restoration when confirmation closes the dialog', async () => {
     const user = userEvent.setup();
     render(<ConfirmationHarness closeOnConfirm />);
-    const trigger = screen.getByRole('button', { name: 'Stop' });
+    const trigger = screen.getByRole('button', { name: '중지' });
     await user.click(trigger);
-    await user.click(screen.getByRole('button', { name: 'Stop 확인' }));
+    await user.click(screen.getByRole('button', { name: '중지 확인' }));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
   });
@@ -97,7 +101,7 @@ describe('bulk confirmation close reason', () => {
     render(<BulkConfirmationHarness onConfirmed={confirmed} />);
     const trigger = screen.getByRole('button', { name: 'Stop (1)' });
     await user.click(trigger);
-    await user.click(screen.getByRole('button', { name: 'Stop 확인' }));
+    await user.click(screen.getByRole('button', { name: '중지 확인' }));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(trigger).toBeEnabled();
     expect(trigger).not.toHaveFocus();
@@ -109,7 +113,7 @@ describe('bulk confirmation close reason', () => {
     render(<BulkConfirmationHarness leaveOpen onConfirmed={confirmed} />);
     const trigger = screen.getByRole('button', { name: 'Stop (1)' });
     await user.click(trigger);
-    await user.click(screen.getByRole('button', { name: 'Stop 확인' }));
+    await user.click(screen.getByRole('button', { name: '중지 확인' }));
     expect(screen.getByRole('dialog')).toBeVisible();
     expect(confirmed).toHaveBeenCalledTimes(1);
     if (close === 'cancel') await user.click(screen.getByRole('button', { name: '취소' }));
@@ -117,5 +121,74 @@ describe('bulk confirmation close reason', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
     expect(confirmed).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('compact operation details', () => {
+  it('keeps result uncertainty visible while native messages, command and identity remain in collapsed details', async () => {
+    const user = userEvent.setup();
+    const command = 'docker --host unix:///fixed/docker.sock container restart RAW_ID';
+    const operation = { fullId: container.fullId, name: container.name, action: 'restart' as const,
+      contextName: 'raw-context', endpoint: 'unix:///raw/socket', engineId: 'RAW_ENGINE',
+      outcome: 'resultUnknown' as const, message: '원문 diagnostic stays unchanged', command, stderr: 'raw stderr',
+      reconciliation: 'succeeded' as const, observedState: 'running', mutationBlocked: false };
+    render(<><OperationResult operation={operation} copy={vi.fn(async () => {})} /><ContainerDetail container={container} snapshot={snapshot} logs={null} logsError={null}
+      loadingLogs={false} refreshing={false} mutating={false} mutationBlocked={false} mutationAllowed
+      loadLogs={vi.fn()} clearLogs={vi.fn()} copy={vi.fn(async () => {})} requestAction={vi.fn()} /></>);
+    const report = screen.getByRole('region', { name: '최근 작업 결과' });
+    expect(within(report).getByRole('heading', { name: '결과 불명 · 재시작 · backend' })).toBeVisible();
+    expect(within(report).getByText(/자동 재시도하지 않았습니다/)).toBeVisible();
+    expect(within(report).getByText(/대상 상태 재조회 완료 · 실행 중/)).toBeVisible();
+    expect(within(report).getByText(operation.message)).not.toBeVisible();
+    expect(within(report).getByText(command)).not.toBeVisible();
+    await user.click(within(report).getByText('실행 상세'));
+    expect(within(report).getByText(operation.message)).toBeVisible();
+    expect(within(report).getByText(command)).toBeVisible();
+    expect(within(report).getByText('RAW_ENGINE')).toBeVisible();
+    const sections = Array.from(document.querySelectorAll('.container-detail > section'));
+    expect(sections.indexOf(screen.getByRole('region', { name: '서비스 복구' }))).toBeLessThan(sections.indexOf(screen.getByRole('region', { name: '최근 로그' })));
+  });
+
+  it('closes locally controlled expanded logs when the selected target changes', async () => {
+    const user = userEvent.setup();
+    function SelectionHarness() {
+      const [selected, setSelected] = useState(container);
+      return <><button onClick={() => setSelected({ ...container, handle: 'new-handle', name: 'another-container' })}>Simulate selection change</button>
+        <ContainerSummary container={selected} snapshot={snapshot} copy={async () => {}} mutating={false} mutationBlocked={false} mutationAllowed />
+        <ContainerDetail container={selected} snapshot={snapshot} logs={null} logsError={null}
+          loadingLogs={false} refreshing={false} mutating={false} mutationBlocked={false} mutationAllowed
+          loadLogs={vi.fn()} clearLogs={vi.fn()} copy={vi.fn(async () => {})} requestAction={vi.fn()} />
+      </>;
+    }
+    render(<SelectionHarness />);
+    await user.click(screen.getByRole('button', { name: '로그 확대 보기' }));
+    expect(screen.getByRole('dialog')).toBeVisible();
+    // The App normally makes this control inert; simulate a programmatic target replacement.
+    fireEvent.click(screen.getByRole('button', { name: 'Simulate selection change' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'another-container' })).toBeVisible();
+  });
+});
+
+
+describe('independent latest operation result', () => {
+  it.each(['succeeded', 'failed'] as const)('summarizes a definitive %s result and exposes its details on request', async outcome => {
+    const user = userEvent.setup();
+    render(<OperationResult operation={{ fullId: container.fullId, name: container.name, action: 'restart', contextName: 'ctx', endpoint: 'unix:///fixed', engineId: 'engine', outcome, message: 'raw diagnostic', command: '', stderr: '', reconciliation: 'succeeded', observedState: 'running', mutationBlocked: false }} copy={vi.fn(async () => {})} />);
+    const result = screen.getByRole('region', { name: '최근 작업 결과' });
+    expect(within(result).getByRole('heading')).toHaveTextContent(`재시작 · ${container.name}`);
+    const toggle = within(result).getByRole('button', { name: '결과 펼치기' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(within(result).getByText(/대상 상태 재조회 완료/)).not.toBeVisible();
+    await user.click(toggle);
+    expect(within(result).getByText(/대상 상태 재조회 완료/)).toBeVisible();
+    expect(within(result).getByRole('button', { name: '결과 접기' })).toHaveAttribute('aria-expanded', 'true');
+  });
+  it.each(['blocked', 'reconciliation'] as const)('does not collapse a known outcome with a %s reconnect warning', source => {
+    render(<OperationResult operation={{ fullId: container.fullId, name: container.name, action: 'restart', contextName: 'ctx', endpoint: 'unix:///fixed', engineId: 'engine', outcome: 'succeeded', message: 'raw diagnostic', command: '', stderr: '', reconciliation: source === 'reconciliation' ? 'failed' : 'succeeded', mutationBlocked: source === 'blocked' }} copy={vi.fn(async () => {})} />);
+    const result = screen.getByRole('region', { name: '최근 작업 결과' });
+    expect(result).toHaveClass('outcome-resultUnknown');
+    expect(within(result).queryByRole('button', { name: '결과 펼치기' })).not.toBeInTheDocument();
+    expect(within(result).getByText(/재연결/)).toBeVisible();
   });
 });

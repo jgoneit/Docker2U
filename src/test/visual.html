@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Docker2U — development fixture, no Docker connection</title>
+    <style>
+      body.visual-fixture { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+      #visual-app { flex: 1; min-height: 0; }
+      #visual-app .app-shell { height: 100%; }
+      .visual-toolbar { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 8px 16px; color: #f8fafc; background: #0f172a; font: 12px/1.5 system-ui, sans-serif; border-bottom: 2px solid #fbbf24; }
+      .visual-toolbar[hidden] { display: none; }
+      .visual-toolbar strong { color: #fde68a; }
+      .visual-toolbar label { display: inline-flex; align-items: center; gap: 8px; }
+      .visual-toolbar select { font: inherit; padding: 4px; color: #0f172a; background: #fff; border: 1px solid #94a3b8; border-radius: 4px; }
+      .visual-toolbar a { color: #bae6fd; }
+      .visual-toolbar :focus-visible { outline: 2px solid #fbbf24; outline-offset: 3px; }
+      #visual-unavailable { margin: 24px; }
+    </style>
+  </head>
+  <body class="visual-fixture">
+    <div id="visual-toolbar" class="visual-toolbar" role="region" aria-label="Development fixture controls" hidden></div>
+    <div id="visual-app"><p id="visual-unavailable">Development fixture only. No Docker connection.</p></div>
+    <script type="module" src="./visual.tsx"></script>
+  </body>
+</html>

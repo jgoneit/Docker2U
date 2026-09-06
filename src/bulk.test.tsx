@@ -1,8 +1,12 @@
-import { render, screen, within } from '@testing-library/react';
+import type { ReactNode } from 'react';
+import { PreferencesProvider } from './preferences';
+import { fireEvent, render as renderUI, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import type { BulkMutationItem, Container, MutationResult } from './api';
 import { BulkResult } from './bulk';
 import type { BulkOperation } from './bulk';
+
+function render(ui: ReactNode) { return renderUI(<PreferencesProvider initialPreferences={{ theme: 'dark', language: 'ko' }}>{ui}</PreferencesProvider>); }
 
 const container: Container = {
   handle: 'handle-1', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'worker',
@@ -47,7 +51,7 @@ describe('bulk result outcome presentation', () => {
     expect(operation.needsReconnect).toBe(false);
     if (tone) expect(report).toHaveClass(tone);
     for (const alternative of ['outcome-failed', 'outcome-resultUnknown', 'outcome-neutral'].filter(value => value !== tone)) expect(report).not.toHaveClass(alternative);
-    expect(within(report).queryByText(/Reconnect/)).not.toBeInTheDocument();
+    expect(within(report).queryByText(/재연결/)).not.toBeInTheDocument();
   });
 
   it.each(['reconciliation', 'itemBlock', 'aggregateBlock', 'existingBlock'] as const)('gives %s warning precedence over a known item failure', source => {
@@ -60,17 +64,18 @@ describe('bulk result outcome presentation', () => {
     expect(report).toHaveClass('outcome-resultUnknown');
     expect(report).not.toHaveClass('outcome-failed');
     expect(within(report).getByText('실패 1개')).toBeVisible();
-    if (operation.needsReconnect) expect(within(report).getByText('추가 작업이 차단되었습니다. Reconnect로 환경을 다시 검증하세요.')).toBeVisible();
-    else expect(within(report).queryByText('추가 작업이 차단되었습니다. Reconnect로 환경을 다시 검증하세요.')).not.toBeInTheDocument();
+    if (operation.needsReconnect) expect(within(report).getByText('이 작업 뒤 연결 재확인이 필요해졌습니다. 재연결해도 이 작업 결과는 바뀌지 않습니다.')).toBeVisible();
+    else expect(within(report).queryByText('이 작업 뒤 연결 재확인이 필요해졌습니다. 재연결해도 이 작업 결과는 바뀌지 않습니다.')).not.toBeInTheDocument();
   });
 
-  it('keeps a reconciled unknown result visibly uncertain without requiring Reconnect', () => {
+  it('keeps a reconciled unknown result visibly uncertain without requiring 재연결', () => {
     const report = renderResult(resultOperation(['resultUnknown']));
     expect(report).toHaveClass('outcome-resultUnknown');
     expect(within(report).getByText('결과 불명 1개')).toBeVisible();
+    fireEvent.click(within(report).getByText('항목별 결과 · 1개'));
     expect(within(report).getByText(/현재 상태 재조회는 원래 명령의 성공을 의미하지 않습니다. 자동 재시도하지 않았습니다./)).toBeVisible();
-    expect(within(report).getByText(/대상 상태 재조회 완료 · Running/)).toBeVisible();
-    expect(within(report).queryByText(/Reconnect/)).not.toBeInTheDocument();
+    expect(within(report).getByText(/대상 상태 재조회 완료 · 실행 중/)).toBeVisible();
+    expect(within(report).queryByText(/재연결/)).not.toBeInTheDocument();
   });
 
   it.each([
@@ -82,14 +87,28 @@ describe('bulk result outcome presentation', () => {
     const content = within(report);
     expect(report).toHaveClass(tone);
     expect(report).not.toHaveClass(uncertain ? 'outcome-failed' : 'outcome-resultUnknown');
-    expect(content.getByRole('heading', { name: uncertain ? 'Start · 일괄 작업 결과 불명' : 'Start · 일괄 작업 요청 거절' })).toBeVisible();
+    expect(content.getByRole('heading', { name: uncertain ? '시작 · 일괄 작업 결과 불명' : '시작 · 일괄 작업 요청 거절' })).toBeVisible();
     expect(content.queryByText(/성공 \d+개/)).not.toBeInTheDocument();
     if (needsReconnect) {
-      expect(content.getByText('추가 작업이 차단되었습니다. Reconnect로 환경을 다시 검증하세요.')).toBeVisible();
-      expect(content.queryByText('Refresh 후 대상을 다시 선택하세요.')).not.toBeInTheDocument();
+      expect(content.getByText('이 작업 뒤 연결 재확인이 필요해졌습니다. 재연결해도 이 작업 결과는 바뀌지 않습니다.')).toBeVisible();
+      expect(content.queryByText('새로고침 후 대상을 다시 선택하세요.')).not.toBeInTheDocument();
     } else {
-      expect(content.getByText('Refresh 후 대상을 다시 선택하세요.')).toBeVisible();
-      expect(content.queryByText(/Reconnect/)).not.toBeInTheDocument();
+      fireEvent.click(content.getByRole('button', { name: '결과 펼치기' }));
+      expect(content.getByText('새로고침 후 대상을 다시 선택하세요.')).toBeVisible();
+      expect(content.queryByText(/재연결/)).not.toBeInTheDocument();
     }
   });
+});
+
+
+it('summarizes definitive bulk results and leaves uncertain results open', () => {
+  const { rerender } = renderUI(<PreferencesProvider initialPreferences={{ theme: 'dark', language: 'ko' }}><BulkResult operation={resultOperation(['succeeded', 'failed'])} /></PreferencesProvider>);
+  expect(screen.getByText('성공 1개')).toBeVisible();
+  expect(screen.getByText('실패 1개')).toBeVisible();
+  expect(screen.getByText('항목별 결과 · 2개')).not.toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: '결과 펼치기' }));
+  expect(screen.getByText('항목별 결과 · 2개')).toBeVisible();
+  rerender(<PreferencesProvider initialPreferences={{ theme: 'dark', language: 'ko' }}><BulkResult operation={resultOperation(['resultUnknown'])} /></PreferencesProvider>);
+  expect(screen.queryByRole('button', { name: '결과 펼치기' })).not.toBeInTheDocument();
+  expect(screen.getByText(/결과가 불명확하거나 실행되지 않은 대상/)).toBeVisible();
 });
