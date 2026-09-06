@@ -224,14 +224,15 @@ export default function App() {
       if (epoch.current !== requestEpoch) return;
       if (!isBoundBulkResult(result, targetSession, generation, containers, action)) throw { code: 'INVALID_BULK_RESPONSE', message: '요청 대상과 일치하는 전체 일괄 응답을 확인하지 못했습니다.' };
       blocked.current = blocked.current || result.mutationBlocked || result.items.some(item => item.result?.mutationBlocked || item.result?.reconciliation === 'failed');
-      setBulkOperation({ ...context, result });
+      setBulkOperation({ ...context, result, needsReconnect: blocked.current });
     } catch (error) {
       if (epoch.current !== requestEpoch) return;
       const failure = coreError(error);
       // Only these structured native rejections prove that no command was dispatched.
       const preflightRejection = ['Busy', 'StaleSession', 'NeedsValidation', 'StaleHandle', 'InvalidSelection'].includes(failure.code);
-      blocked.current = true;
-      setBulkOperation({ ...context, error: failure, uncertain: !preflightRejection });
+      const recoverableRejection = ['Busy', 'StaleHandle', 'InvalidSelection'].includes(failure.code);
+      blocked.current = blocked.current || !recoverableRejection;
+      setBulkOperation({ ...context, error: failure, uncertain: !preflightRejection, needsReconnect: blocked.current });
     } finally {
       if (epoch.current === requestEpoch) {
         setMutationBlocked(blocked.current);

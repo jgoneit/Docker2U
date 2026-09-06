@@ -94,6 +94,7 @@ button.text-button { background: transparent; border-color: transparent; color: 
 .operation-result { margin-top: 17px; padding: 16px; border: 1px solid #395148; background: #15231e; border-radius: 7px; font-size: 11px; line-height: 1.8; }
 .operation-result h3 { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 7px; }.operation-result p + p { margin-top: 6px; }
 .outcome-resultUnknown { background: #302619; border-color: #685334; }.outcome-failed { background: #2c1c24; border-color: #623742; }
+.outcome-neutral { background: #191921; border-color: #2c2c38; }
 .technical-details { margin-top: 8px; text-align: left; color: #b8b8c9; font-size: 11px; }.technical-details summary { cursor: pointer; padding: 4px 0; }.technical-details pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; font-size: 10px; padding: 10px; background: #0003; border-radius: 4px; }
 .diagnostics-panel { flex-shrink: 0; max-height: min(35vh, 280px); overflow: auto; overscroll-behavior: contain; padding: 0 24px 18px; background: #14141d; border-bottom: 1px solid #30303d; }.diagnostics-panel .section-heading { padding: 14px 0; background: transparent; }
 .diagnostics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 30px; margin: 0 0 20px; font-size: 11px; }.diagnostics-grid dt { color: #8888a0; margin-bottom: 5px; }.diagnostics-grid dd { margin: 0; color: #c4c4d6; overflow-wrap: anywhere; }.diagnostics-panel > p { margin-top: 10px; }
