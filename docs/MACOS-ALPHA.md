@@ -890,3 +890,63 @@ Computer Use로 다음을 확인했다.
 Seal은 이 최종 소스·문서 후보에서 verify/complete하며, 정확한 Run ID·Completion과
 최신 커밋의 원격 CI 결과는 PR 및 작업 응답에 별도로 기록한다. PR #4에 push하되
 merge는 하지 않는다.
+
+### 2026-09-06 무효화된 로그 요청의 연결 오류 반영
+
+PR #4의 [추가 리뷰](https://github.com/jgoneit/Docker2U/pull/4#discussion_r3943298486)를
+기준 커밋 `361fdf5`의 깨끗한 `codex/ui-appearance` 체크아웃에서 보완했다.
+Seal CLI/Plugin 공개 버전은 `0.3.0-rc.4`로 일치했다. 새 Basic Task는
+`docker2u-log-session-invalidation-20260906`이며 risk=medium,
+verifier.required=false, 필수 검사는 frontend-tests/frontend-build다.
+기존 Task/Run은 보존하며 브라우저·네이티브·실제 앱 검증은 별도 완료 조건으로 기록한다.
+
+#### 동작과 회귀 검사
+
+이전 요청의 로그 표시를 폐기하는 조건과 연결 세션 오류를 반영하는 조건을 분리했다.
+로그 요청의 catch에서 오류를 정규화한 뒤 epoch/sessionId가 현재 연결과 같을 때만
+연결 무효화 코드 7종을 반영한다. 이 경우 비우기·선택/필터·generation 변경이나
+목록 갱신 중이어도 재확인 경고와 작업 차단을 설정한다. `blocked.current`를 먼저
+설정하므로 React가 버튼 상태를 갱신하기 전 실행도 막는다.
+
+로그 오류는 기존 최신 요청 및 canReadLogs 조건을 통과할 때만 표시한다. 오래된
+본문·조회 시각·오류를 되살리지 않으며 이전 세션 오류와 일반 로그 오류는 계속
+폐기한다. 실제 IPC 슬롯과 최신 대기 대상 한 개 정책을 유지한다. 경고 이후에도
+읽기는 허용하며 목록/로그 조회 성공은 경고를 해제하지 않는다. 유효한 새 세션을
+얻는 명시적 재연결에서만 해제한다. Docker IPC·Rust 구현과 공개 타입은 변경하지 않았다.
+
+- `pnpm test`: 15개 파일, 303개 통과(10.48초). 이전 274개에서 29개 증가했다.
+  연결 무효화 7종과 일반 오류 7종, 선택 해제·조회 불가·세대 변경·갱신 진행 중
+  지연 응답, 이미 열린 단일/일괄 확인창의 같은 이벤트 순서 실행 차단을 검사했다.
+  재연결 중 session=null, 재연결 실패/거부, 새 세션 이후의 이전 오류 무시와
+  정상 재연결의 경고 해제도 포함한다. 실제 동시 로그 요청 최대 1개와 비우기 후
+  자동 재조회 금지를 유지한다. 지연·실패 경합은 합성 API 증거다.
+- `pnpm build`: TypeScript/Vite 및 배포 fixture 격리 검사 통과(배포 파일 4개).
+- `pnpm test:browser`: 기존 Chromium 9개 화면 조합, 99개 통과(51.5초, retry 없음).
+  로그 표시 경계·현재 일치/마지막 줄 좌표·포커스·Worker/CSP 검사를 유지했다.
+  브라우저 검사는 위 프런트엔드 빌드 이후 실행했다.
+- `pnpm native:build`: 기존 `.docker2u-tools`의 CARGO_HOME/RUSTUP_HOME/PATH를
+  프로세스에 지정해 arm64 앱 빌드 통과. Rust 소스는 변경하지 않았으며 로컬 Rust
+  단위 검사는 재실행하지 않았다.
+
+#### 최종 실행 앱과 실제 확인
+
+앱: `src-tauri/target/release/bundle/macos/Docker2U.app` (arm64).
+실행 파일 SHA-256:
+`d077fc47e9f9c8d43131679017837f1bce67e7d2c5320b9f635452552934e7a9`.
+이전 앱을 종료하고 새 빌드를 실행했으며 프로세스가 이 체크아웃의 앱 경로를
+사용하는 것을 확인했다.
+
+Computer Use로 desktop-linux 로컬 연결·컨테이너 4개, PostgreSQL 로그 조회,
+⌘F의 `database` 검색 20건, 로그 비우기 후 본문/조회 시각 제거·복사 비활성화,
+수동 재조회, 정상 목록 갱신과 명시적 재연결을 확인했다. 최종 앱은 시스템 테마/
+한국어, PostgreSQL 로그 검색 화면으로 실행 중이다.
+
+실제 컨테이너 시작·중지·재시작과 강제 연결 실패/지연 주입은 하지 않았다.
+실제 Windows 앱 검증, 네이티브 Worker/fallback 경로 계측, 클립보드 바이트 비교도
+이번에 수행하지 않았다. 이 항목들을 정상 연결의 macOS UI 증거와 구분한다.
+
+로컬 명령 기록은 `.cache/log-session-invalidation-20260906/`의 tests.log,
+build.log, browser.log, native-build.log에 보관했다. 최종 소스·문서 후보에서
+Seal verify 후 반환된 정확한 Run ID로 complete하며, Completion과 최신 커밋의
+CI 결과는 PR 및 작업 응답에 별도로 기록한다. 수정/테스트/문서는 목적별로 커밋해
+PR #4에 push하며 merge는 하지 않는다.
