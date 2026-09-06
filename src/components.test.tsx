@@ -29,7 +29,7 @@ function ConfirmationHarness({ simulateInertFocusLoss = false, closeOnConfirm = 
         requestAction={(action, returnFocus) => {
           if (action === 'start') return;
           setConfirmation({ container, action, sessionId: snapshot.sessionId, generation: snapshot.generation,
-            profile: 'colima-docker2u', endpoint: 'unix:///fixed/docker.sock', returnFocus });
+            contextName: 'colima-docker2u', endpoint: 'unix:///fixed/docker.sock', engineId: 'engine-1', returnFocus });
         }} />
     </div>
     {confirmation && <ConfirmDialog confirmation={confirmation} onCancel={() => setConfirmation(null)} onConfirm={() => { if (closeOnConfirm) setConfirmation(null); }} />}
@@ -41,7 +41,7 @@ function BulkConfirmationHarness({ leaveOpen = false, onConfirmed }: { leaveOpen
   return <>
     <div inert={!!confirmation}>
       <button onClick={event => setConfirmation({ containers: [container], action: 'stop', sessionId: snapshot.sessionId,
-        generation: snapshot.generation, profile: 'colima-docker2u', endpoint: 'unix:///fixed/docker.sock', returnFocus: event.currentTarget })}>Stop (1)</button>
+        generation: snapshot.generation, contextName: 'colima-docker2u', endpoint: 'unix:///fixed/docker.sock', engineId: 'engine-1', returnFocus: event.currentTarget })}>Stop (1)</button>
     </div>
     {confirmation && <ConfirmDialog confirmation={confirmation} onCancel={() => setConfirmation(null)} onConfirm={() => { onConfirmed(); if (!leaveOpen) setConfirmation(null); }} />}
   </>;

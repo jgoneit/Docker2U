@@ -395,7 +395,7 @@ fn shutdown_releases_bulk_reservation_and_stops_remaining_dispatch() {
 
 /// Creates three uniquely labeled fixtures and cleans up only verified owned IDs.
 #[test]
-#[ignore = "Requires prepared local Colima and DOCKER2U_REAL_BULK_SMOKE=1"]
+#[ignore = "Requires a running local Docker Engine and DOCKER2U_REAL_BULK_SMOKE=1"]
 fn real_bulk_runtime_smoke() {
     assert_eq!(
         std::env::var("DOCKER2U_REAL_BULK_SMOKE").as_deref(),

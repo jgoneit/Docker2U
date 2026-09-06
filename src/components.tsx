@@ -1,14 +1,14 @@
 import { useEffect, useRef } from 'react';
 import type { KeyboardEvent, MouseEvent } from 'react';
 import { AlertTriangle, Boxes, CheckCircle2, Copy, FileText, LoaderCircle, Play, RefreshCw, Square, X } from 'lucide-react';
-import type { Action, Container, ContainerList, CoreError, Environment, MutationResult, RecentLogs } from './api';
+import type { Action, ConnectionTarget, Container, ContainerList, CoreError, Environment, MutationResult, RecentLogs } from './api';
 import { diagnosticsText } from './api';
 
 export const stateLabels: Record<string, string> = { created: 'Created', running: 'Running', paused: 'Paused', restarting: 'Restarting', removing: 'Removing', exited: 'Stopped', dead: 'Error', unknown: 'Unknown' };
 export const actionLabels: Record<Action, string> = { start: 'Start', stop: 'Stop', restart: 'Restart' };
 export const readableStates = new Set(['created', 'running', 'paused', 'restarting', 'exited', 'dead']);
-export type Operation = MutationResult & { fullId: string; name: string; action: Action; profile: string };
-export type Confirmation = { action: 'stop' | 'restart'; sessionId: string; generation: number; profile: string; endpoint: string; returnFocus?: HTMLElement }
+export type Operation = MutationResult & ConnectionTarget & { fullId: string; name: string; action: Action };
+export type Confirmation = ConnectionTarget & { action: 'stop' | 'restart'; sessionId: string; generation: number; returnFocus?: HTMLElement }
   & ({ container: Container; containers?: never } | { containers: Container[]; container?: never });
 export type CopyText = (text: string, label: string) => Promise<void>;
 
@@ -26,6 +26,9 @@ export function State({ value }: { value: string }) {
 }
 export function ErrorDetails({ error }: { error: CoreError }) {
   return <details className="technical-details"><summary>진단 상세 · {error.code}</summary>{error.command && <pre>{error.command}</pre>}{error.stderr && <pre>{error.stderr}</pre>}</details>;
+}
+export function ConnectionFacts({ target }: { target: ConnectionTarget }) {
+  return <dl className="connection-facts"><dt>Context</dt><dd>{target.contextName ?? '확인되지 않음'}</dd><dt>Endpoint</dt><dd>{target.endpoint ?? '확인되지 않음'}</dd><dt>Engine ID</dt><dd>{target.engineId ?? '확인되지 않음'}</dd></dl>;
 }
 export function ConfirmDialog({ confirmation, onCancel, onConfirm }: { confirmation: Confirmation; onCancel: () => void; onConfirm: () => void }) {
   const dialog = useRef<HTMLDivElement>(null);
@@ -61,7 +64,7 @@ export function ConfirmDialog({ confirmation, onCancel, onConfirm }: { confirmat
       <div className="dialog-icon"><AlertTriangle size={24} aria-hidden="true" /></div>
       <h2 id="confirm-title">{actionLabels[confirmation.action]} {targets ? `${targets.length}개 Container` : confirmation.container?.name}?</h2>
       <p id="confirm-description">{confirmation.action === 'stop' ? '서비스가 중단됩니다. 종료 대기 시간이 지나면 강제로 종료될 수 있습니다.' : '서비스가 잠시 중단됩니다. 진행 중인 요청에 영향을 줄 수 있습니다.'}</p>
-      <dl className="confirm-target">{confirmation.container && <><dt>Container</dt><dd>{confirmation.container.name}</dd><dt>ID</dt><dd>{confirmation.container.shortId}</dd></>}<dt>Context</dt><dd>{confirmation.profile}</dd><dt>Endpoint</dt><dd>{confirmation.endpoint}</dd></dl>
+      <div className="confirm-target">{confirmation.container && <dl className="connection-facts"><dt>Container</dt><dd>{confirmation.container.name}</dd><dt>ID</dt><dd>{confirmation.container.shortId}</dd></dl>}<ConnectionFacts target={confirmation} /></div>
       {targets && <div className="confirm-bulk-targets"><h3>실행 대상 · {targets.length}개</h3><ul>{targets.map(container => <li key={container.handle}><strong>{container.name}</strong><code>{container.fullId}</code></li>)}</ul><h3>제외 대상 · {excluded?.length ?? 0}개</h3>{excluded?.length ? <ul>{excluded.map(container => <li key={container.handle}><strong>{container.name}</strong><code>{container.fullId}</code><p>{stateLabels[container.state] ?? 'Unknown'} 상태 · Running에서만 {actionLabels[confirmation.action]} 가능</p></li>)}</ul> : <p>제외되는 대상이 없습니다.</p>}</div>}
       <div className="dialog-actions"><button ref={cancel} onClick={cancelConfirmation}>취소</button><button className="danger-button" onClick={confirm}>{actionLabels[confirmation.action]} 확인</button></div>
     </div>
@@ -70,7 +73,7 @@ export function ConfirmDialog({ confirmation, onCancel, onConfirm }: { confirmat
 export function Diagnostics({ environment, close, copy }: { environment: Environment | null; close: () => void; copy: CopyText }) {
   return <section className="diagnostics-panel" aria-label="환경 진단 상세">
     <div className="section-heading"><h2>환경 진단</h2><button className="icon-button" aria-label="환경 진단 닫기" onClick={close}><X size={16} aria-hidden="true" /></button></div>
-    {environment ? <><dl className="diagnostics-grid">{[['Context', environment.profile], ['Endpoint', environment.endpoint], ['Docker CLI', environment.dockerPath], ['Colima CLI', environment.colimaPath], ['Client', environment.clientVersion], ['Colima', environment.runtimeVersion], ['Server / API', `${environment.serverVersion ?? '—'} / ${environment.apiVersion ?? '—'}`], ['Engine', environment.engineId], ['OS / Architecture', `${environment.osType ?? '—'} / ${environment.architecture ?? '—'}`]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value ?? '확인되지 않음'}</dd></div>)}</dl><button onClick={() => void copy(diagnosticsText(environment), '진단 정보')}><Copy size={14} aria-hidden="true" />Copy diagnostics</button><p className="muted small">버전·경로·연결 정보만 복사합니다. 로그와 환경 변수는 포함하지 않습니다.</p></> : <p className="muted">환경 진단 결과가 아직 없습니다.</p>}
+    {environment ? <><dl className="diagnostics-grid">{[['Context', environment.contextName], ['Endpoint', environment.endpoint], ['Docker CLI', environment.dockerPath], ['Docker config', environment.dockerConfigPath], ['Client', environment.clientVersion], ['Server / API', `${environment.serverVersion ?? '—'} / ${environment.apiVersion ?? '—'}`], ['Engine', environment.engineId], ['OS / Architecture', `${environment.osType ?? '—'} / ${environment.architecture ?? '—'}`]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value ?? '확인되지 않음'}</dd></div>)}</dl>{environment.diagnostics.map((message, index) => <p className="diagnostic-message" key={index}>{message}</p>)}{environment.error && <div role="alert"><p>{environment.error.message}</p><ErrorDetails error={environment.error} /></div>}<button onClick={() => void copy(diagnosticsText(environment), '진단 정보')}><Copy size={14} aria-hidden="true" />Copy diagnostics</button><p className="muted small">버전·경로·연결 정보와 오류 코드만 복사합니다. 로그·원문 진단·환경 변수는 포함하지 않습니다.</p></> : <p className="muted">환경 진단 결과가 아직 없습니다.</p>}
   </section>;
 }
 export function ContainerDetail({ container, snapshot, logs, logsError, loadingLogs, refreshing, mutating, mutationBlocked, mutationAllowed, operation, loadLogs, clearLogs, requestAction, copy }: {
@@ -100,7 +103,7 @@ export function ContainerDetail({ container, snapshot, logs, logsError, loadingL
     {snapshot.stale && <p className="operation-warning">최신 상태를 확인할 수 없어 복구 작업을 잠시 사용할 수 없습니다. Refresh를 실행하세요.</p>}
     {operation && <section className={`operation-result outcome-${operation.outcome}`} aria-label="최근 작업 결과">
       <h3>{operation.outcome === 'succeeded' ? <CheckCircle2 size={16} aria-hidden="true" /> : <AlertTriangle size={16} aria-hidden="true" />}{operation.outcome === 'succeeded' ? 'Succeeded' : operation.outcome === 'failed' ? 'Failed' : 'ResultUnknown · 결과 불확실'}</h3>
-      <p>{operation.action} · {operation.name} · {operation.profile}</p><p>{operation.message}</p>
+      <p>{operation.action} · {operation.name}</p><ConnectionFacts target={operation} /><p>{operation.message}</p>
       {operation.outcome === 'resultUnknown' && <p>명령 결과를 확정할 수 없습니다. 자동 재시도하지 않았습니다. 현재 상태가 같더라도 성공을 의미하지 않습니다.</p>}
       {operation.reconciliation !== 'notNeeded' && <p>{operation.reconciliation === 'succeeded' ? `대상 상태 재조회 완료${operation.observedState ? ` · ${stateLabels[operation.observedState] ?? operation.observedState}` : ''}. 원래 작업 결과는 유지됩니다.` : '대상 상태 재조회 실패. Reconnect가 필요합니다.'}</p>}
       {(operation.command || operation.stderr) && <details className="technical-details"><summary>실행 상세 · Equivalent command</summary>{operation.command && <><pre>{operation.command}</pre><button onClick={() => void copy(operation.command, 'Equivalent command')}><Copy size={13} aria-hidden="true" />명령 복사</button></>}{operation.exitCode != null && <p>Exit code: {operation.exitCode}</p>}{operation.durationMs != null && <p>경과 시간: {operation.durationMs} ms</p>}{operation.stderr && <pre>{operation.stderr}</pre>}</details>}

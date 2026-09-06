@@ -15,7 +15,7 @@ const mutation: MutationResult = {
 function resultOperation(outcomes: BulkMutationItem['outcome'][]): BulkOperation & { result: NonNullable<BulkOperation['result']> } {
   const containers = outcomes.map((_, index) => ({ ...container, handle: `handle-${index}`, fullId: String(index + 1).repeat(64), name: `worker-${index}` }));
   return {
-    action: 'start', profile: 'colima-docker2u', containers, needsReconnect: false,
+    action: 'start', contextName: 'desktop-linux', endpoint: 'unix:///fixed', engineId: 'engine-1', containers, needsReconnect: false,
     result: {
       sessionId: 'session-1', generation: 1, action: 'start', mutationBlocked: false,
       items: outcomes.map((outcome, index) => ({
@@ -78,7 +78,7 @@ describe('bulk result outcome presentation', () => {
     { code: 'NeedsValidation', uncertain: false, needsReconnect: true, tone: 'outcome-failed' },
     { code: 'IPC_FAILURE', uncertain: true, needsReconnect: true, tone: 'outcome-resultUnknown' },
   ])('separates $code error tone from its required recovery action', ({ code, uncertain, needsReconnect, tone }) => {
-    const report = renderResult({ action: 'start', profile: 'colima-docker2u', containers: [container], error: { code, message: '요청 응답 확인' }, uncertain, needsReconnect });
+    const report = renderResult({ action: 'start', contextName: 'desktop-linux', endpoint: 'unix:///fixed', engineId: 'engine-1', containers: [container], error: { code, message: '요청 응답 확인' }, uncertain, needsReconnect });
     const content = within(report);
     expect(report).toHaveClass(tone);
     expect(report).not.toHaveClass(uncertain ? 'outcome-failed' : 'outcome-resultUnknown');

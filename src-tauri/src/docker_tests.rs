@@ -1,7 +1,10 @@
 use super::*;
 use std::{
     fs,
-    os::unix::{fs::PermissionsExt, net::UnixListener},
+    os::unix::{
+        fs::{PermissionsExt, symlink},
+        net::UnixListener,
+    },
     thread,
     time::Instant,
 };
@@ -20,33 +23,39 @@ impl Fixture {
             .canonicalize()
             .unwrap()
             .join(format!("d2u-{}", uuid::Uuid::new_v4().simple()));
-        fs::create_dir_all(dir.join("colima-home/docker2u")).unwrap();
-        fs::create_dir_all(dir.join("lima")).unwrap();
         fs::create_dir_all(dir.join("docker-config")).unwrap();
-        let socket = UnixListener::bind(dir.join("colima-home/docker2u/docker.sock")).unwrap();
-        for name in ["docker", "colima"] {
-            let path = dir.join(name);
-            fs::write(&path, FAKE).unwrap();
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
-        }
+        let socket = UnixListener::bind(dir.join("engine-A.sock")).unwrap();
+        let path = dir.join("docker");
+        fs::write(&path, FAKE).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(
+            dir.join("docker-config/config.json"),
+            r#"{"currentContext":"context-A"}"#,
+        )
+        .unwrap();
         let config = RuntimeConfig {
             docker_path: Some(dir.join("docker")),
-            colima_path: Some(dir.join("colima")),
-            colima_home: Some(dir.join("colima-home")),
-            lima_home: Some(dir.join("lima")),
-            docker_config: Some(dir.join("docker-config")),
+            ..RuntimeConfig::default()
         };
+        let launch_env = HashMap::from([
+            ("HOME".into(), dir.to_string_lossy().into_owned()),
+            (
+                "DOCKER_CONFIG".into(),
+                dir.join("docker-config").to_string_lossy().into_owned(),
+            ),
+        ]);
         Self {
             dir,
             core: Core {
                 config: Some(config),
+                launch_env: Some(launch_env),
                 // Allow interpreter startup under the parallel process suite;
                 // timeout fixtures then block for ten seconds deterministically.
                 mutation_timeout: Some(Duration::from_secs(2)),
                 host: Some(Ok(HostInfo {
                     os: "macos".into(),
                     architecture: "aarch64".into(),
-                    version: Some(APPROVED_MACOS_VERSION.into()),
+                    version: Some("26.6.2".into()),
                 })),
                 ..Core::default()
             },
@@ -55,6 +64,19 @@ impl Fixture {
     }
     fn mode(&self, mode: &str) {
         fs::write(self.dir.join("mode"), mode).unwrap();
+    }
+    fn endpoint(&self, engine: &str) -> String {
+        format!(
+            "unix://{}",
+            self.dir.join(format!("engine-{engine}.sock")).display()
+        )
+    }
+    fn choose(&self, context: &str) {
+        fs::write(
+            self.dir.join("docker-config/config.json"),
+            serde_json::to_vec(&serde_json::json!({"currentContext": context})).unwrap(),
+        )
+        .unwrap();
     }
     fn states(&self, states: &[&str]) {
         fs::write(self.dir.join("count"), states.len().to_string()).unwrap();
@@ -118,18 +140,34 @@ from pathlib import Path
 p=Path(__file__).parent
 a=sys.argv[1:]
 mode=(p/'mode').read_text() if (p/'mode').exists() else ''
-endpoint='unix://'+str(p/'colima-home/docker2u/docker.sock')
-with (p/'trace').open('a') as f: f.write(json.dumps({'cli':Path(__file__).name,'args':a})+'\n')
-if Path(__file__).name=='colima':
-    if a==['version']: print('colima version v0.10.3');sys.exit()
-    print(json.dumps({'runtime':'docker','arch':'aarch64','driver':'macOS Virtualization.Framework','cpu':2,'memory':4294967296,'docker_socket':endpoint}));sys.exit()
-if a==['--version']: print('Docker version 29.8.0, build fake');sys.exit()
-if a==['context','inspect','colima-docker2u']:
-    print(json.dumps([{'Name':'colima-docker2u','Endpoints':{'docker':{'Host':'tcp://evil.example:2375' if mode=='remote' else endpoint}}}]));sys.exit()
-assert a[:2]==['--host',endpoint], repr(a)
+with (p/'trace').open('a') as f: f.write(json.dumps({'cli':Path(__file__).name,'args':a,'env':{k:v for k,v in os.environ.items() if k.startswith('DOCKER_') or k in ['COLIMA_HOME','LIMA_HOME']}})+'\n')
+if a==['--version']:
+    print('Docker version '+('30.0.0' if mode=='client_changed' else '29.8.0')+', build fake');sys.exit()
+if a==['context','inspect']:
+    if mode=='context_fail': print('selected context unavailable',file=sys.stderr);sys.exit(1)
+    if mode=='context_warning': print('WARNING: invalid config; using defaults',file=sys.stderr)
+    if mode=='context_malformed': print('{');sys.exit()
+    config=Path(os.environ['DOCKER_CONFIG'])/'config.json'
+    stored=json.loads(config.read_text()).get('currentContext','context-A') if config.exists() else 'context-A'
+    context=os.environ.get('DOCKER_CONTEXT',stored)
+    endpoint='unix://'+str(p/('engine-B.sock' if context=='context-B' else 'engine-A.sock'))
+    if os.environ.get('DOCKER_HOST'): context='default';endpoint=os.environ['DOCKER_HOST']
+    if (p/'endpoint').exists(): endpoint=(p/'endpoint').read_text()
+    if mode=='remote': endpoint='tcp://evil.example:2375'
+    result=[{'Name':context,'Endpoints':{'docker':{'Host':endpoint}}}]
+    if mode=='context_multiple': result*=2
+    if mode=='context_no_name': del result[0]['Name']
+    print(json.dumps(result));sys.exit()
+assert a[0]=='--host', repr(a)
+endpoint=a[1]
+assert endpoint in ['unix://'+str(p/'engine-A.sock'),'unix://'+str(p/'engine-B.sock')], repr(a)
 a=a[2:]
-if a[0]=='info': print(json.dumps({'ID':'changed' if mode=='engine_changed' else 'engine-A','OSType':'linux','Architecture':'aarch64','Name':'colima-docker2u'}));sys.exit()
-if a[0]=='version': print(json.dumps({'Server':{'Version':'29.5.2','ApiVersion':'1.54'}}));sys.exit()
+if a[0]=='info':
+    if mode=='connection_fail': print('connection reset by peer',file=sys.stderr);sys.exit(1)
+    if mode=='permission_denied': print('permission denied while connecting to Docker socket',file=sys.stderr);sys.exit(1)
+    print(json.dumps({'ID':'' if mode=='empty_engine_id' else ('changed' if mode=='engine_changed' else ('engine-B' if endpoint.endswith('engine-B.sock') else 'engine-A')),'OSType':'windows' if mode=='windows_engine' else 'linux','Architecture':'amd64','Name':'arbitrary-compatible-engine'}));sys.exit()
+if a[0]=='version':
+    print(json.dumps({'Client':{'Version':'29.8.0','ApiVersion':'1.54'},'Server':{'Version':'30.0.0' if mode=='server_changed' else '29.5.2','ApiVersion':'bad' if mode=='bad_api' else '1.54'}}));sys.exit()
 assert a[0]=='container'
 if a[1]=='ls':
     count=int((p/'count').read_text()) if (p/'count').exists() else 1
@@ -179,17 +217,13 @@ raise Exception('unapproved command '+repr(a))
 
 #[test]
 fn missing_cli_is_a_diagnostic_not_a_panic() {
-    let core = Core {
-        config: Some(RuntimeConfig {
-            docker_path: Some("/nonexistent/docker2u-docker".into()),
-            ..RuntimeConfig::default()
-        }),
-        ..Core::default()
-    };
-    let env = core.get_environment().unwrap();
+    let mut fixture = Fixture::new();
+    fixture.core.config.as_mut().unwrap().docker_path = Some("/nonexistent/docker2u-docker".into());
+    let env = fixture.core.get_environment().unwrap();
     assert_eq!(env.status, "unavailable");
     assert!(!env.mutation_allowed);
     assert!(env.session_id.is_none());
+    assert_eq!(env.error.unwrap().code, "CliNotFound");
 }
 
 #[test]
@@ -199,6 +233,464 @@ fn remote_context_never_receives_an_engine_command() {
     let env = fixture.core.get_environment().unwrap();
     assert_eq!(env.status, "unsupported");
     assert!(fixture.trace().iter().all(|row| row["args"][0] != "--host"));
+}
+
+#[test]
+fn discovery_preserves_cli_inputs_but_engine_calls_strip_target_tls_and_api_overrides() {
+    let mut fixture = Fixture::new();
+    let endpoint = fixture.endpoint("A");
+    let config_path = fixture
+        .dir
+        .join("docker-config")
+        .to_string_lossy()
+        .into_owned();
+    let inputs = [
+        ("DOCKER_HOST", endpoint.as_str()),
+        ("DOCKER_CONTEXT", "context-B"),
+        ("DOCKER_TLS", "1"),
+        ("DOCKER_TLS_VERIFY", "1"),
+        ("DOCKER_CERT_PATH", "/not-used-for-local-engine"),
+        ("DOCKER_API_VERSION", "1.01"),
+        ("DOCKER_CLI_PLUGIN_EXTRA_DIRS", "/not-used-plugins"),
+        ("COLIMA_HOME", "/not-used-colima"),
+        ("LIMA_HOME", "/not-used-lima"),
+    ];
+    for (key, value) in inputs {
+        fixture
+            .core
+            .launch_env
+            .as_mut()
+            .unwrap()
+            .insert(key.into(), value.into());
+    }
+    let env = fixture.core.get_environment().unwrap();
+    assert_eq!(env.status, "ready", "{env:?}");
+    assert_eq!(env.context_name.as_deref(), Some("default"));
+    assert_eq!(env.endpoint.as_deref(), Some(endpoint.as_str()));
+    let id = env.session_id.unwrap();
+    let list = fixture.core.list_containers(&id).unwrap();
+    fixture
+        .core
+        .get_recent_logs(&id, &list.containers[0].handle)
+        .unwrap();
+    fixture
+        .core
+        .mutate_container(&id, &list.containers[0].handle, Action::Start)
+        .unwrap();
+    let trace = fixture.trace();
+    let discovery: Vec<_> = trace
+        .iter()
+        .filter(|r| r["args"] == serde_json::json!(["context", "inspect"]))
+        .collect();
+    assert_eq!(discovery.len(), 1);
+    for (key, value) in &inputs[..5] {
+        assert_eq!(discovery[0]["env"][key], *value);
+    }
+    for row in trace.iter().filter(|r| r["args"][0] == "--host") {
+        assert_eq!(row["args"][1], endpoint);
+        assert_eq!(row["env"]["DOCKER_CONFIG"], config_path);
+        for (key, _) in inputs {
+            assert!(row["env"].get(key).is_none(), "{key} leaked into {row}");
+        }
+    }
+}
+
+#[test]
+fn stored_context_and_each_launch_override_are_left_to_cli_selection() {
+    for (context, use_host, expected_context, engine) in [
+        (None, false, "context-A", "A"),
+        (Some("context-B"), false, "context-B", "B"),
+        (None, true, "default", "B"),
+        (Some("context-A"), true, "default", "B"),
+        (Some("default"), false, "default", "A"),
+    ] {
+        let mut fixture = Fixture::new();
+        let _second_socket = UnixListener::bind(fixture.dir.join("engine-B.sock")).unwrap();
+        if let Some(context) = context {
+            fixture
+                .core
+                .launch_env
+                .as_mut()
+                .unwrap()
+                .insert("DOCKER_CONTEXT".into(), context.into());
+        }
+        if use_host {
+            let endpoint = fixture.endpoint("B");
+            fixture
+                .core
+                .launch_env
+                .as_mut()
+                .unwrap()
+                .insert("DOCKER_HOST".into(), endpoint);
+        }
+        let env = fixture.core.get_environment().unwrap();
+        assert_eq!(env.status, "ready", "{env:?}");
+        assert_eq!(env.context_name.as_deref(), Some(expected_context));
+        assert_eq!(env.endpoint, Some(fixture.endpoint(engine)));
+        let contexts: Vec<_> = fixture
+            .trace()
+            .into_iter()
+            .filter(|r| r["args"][0] == "context")
+            .collect();
+        assert_eq!(contexts.len(), 1);
+        assert_eq!(
+            contexts[0]["args"],
+            serde_json::json!(["context", "inspect"])
+        );
+    }
+}
+
+#[test]
+fn absent_user_config_is_allowed_without_creating_a_directory() {
+    let mut fixture = Fixture::new();
+    fixture
+        .core
+        .launch_env
+        .as_mut()
+        .unwrap()
+        .remove("DOCKER_CONFIG");
+    let expected = fixture.dir.join(".docker");
+    let environment = fixture.core.get_environment().unwrap();
+    assert_eq!(environment.status, "ready", "{environment:?}");
+    assert_eq!(environment.docker_config_path.as_deref(), expected.to_str());
+    assert!(!expected.exists());
+}
+
+#[test]
+fn selected_context_and_config_are_resolved_once_until_reconnect() {
+    let fixture = Fixture::new();
+    let _second_socket = UnixListener::bind(fixture.dir.join("engine-B.sock")).unwrap();
+    let id = fixture.connect();
+    let first = fixture.core.list_containers(&id).unwrap();
+    fixture.choose("context-B");
+    let refreshed = fixture.core.list_containers(&id).unwrap();
+    fixture
+        .core
+        .get_recent_logs(&id, &refreshed.containers[0].handle)
+        .unwrap();
+    let single = fixture
+        .core
+        .mutate_container(&id, &refreshed.containers[0].handle, Action::Start)
+        .unwrap();
+    assert_eq!(single.outcome, "succeeded");
+    assert_eq!(
+        fixture.core.active(&id).unwrap().target.fingerprint.id,
+        "engine-A"
+    );
+    let next = fixture.core.list_containers(&id).unwrap();
+    let batch = fixture
+        .core
+        .mutate_containers(
+            &id,
+            next.generation,
+            &[next.containers[0].handle.clone()],
+            Action::Stop,
+        )
+        .unwrap();
+    assert_eq!(batch.items[0].outcome, "succeeded");
+    let trace = fixture.trace();
+    assert_eq!(
+        trace
+            .iter()
+            .filter(|r| r["args"] == serde_json::json!(["context", "inspect"]))
+            .count(),
+        1
+    );
+    assert!(
+        trace
+            .iter()
+            .filter(|r| r["args"][0] == "--host")
+            .all(|r| r["args"][1] == fixture.endpoint("A"))
+    );
+    let boundary = trace.len();
+    let environment = fixture.core.get_environment().unwrap();
+    assert_eq!(environment.context_name.as_deref(), Some("context-B"));
+    assert_eq!(environment.engine_id.as_deref(), Some("engine-B"));
+    let new_id = environment.session_id.unwrap();
+    let replacement = fixture.core.list_containers(&new_id).unwrap();
+    assert_eq!(
+        replacement.containers[0].full_id,
+        first.containers[0].full_id
+    );
+    assert_ne!(replacement.containers[0].handle, first.containers[0].handle);
+    assert_eq!(
+        fixture.core.list_containers(&id).unwrap_err().code,
+        "StaleSession"
+    );
+    assert_eq!(
+        fixture
+            .core
+            .mutate_container(&new_id, &first.containers[0].handle, Action::Start)
+            .unwrap_err()
+            .code,
+        "StaleHandle"
+    );
+    assert!(
+        fixture.trace()[boundary..]
+            .iter()
+            .filter(|r| r["args"][0] == "--host")
+            .all(|r| r["args"][1] == fixture.endpoint("B"))
+    );
+}
+
+#[test]
+fn deleted_context_settings_do_not_reselect_an_active_engine() {
+    let fixture = Fixture::new();
+    let id = fixture.connect();
+    fs::remove_file(fixture.dir.join("docker-config/config.json")).unwrap();
+    fixture.mode("context_fail");
+    let list = fixture.core.list_containers(&id).unwrap();
+    fixture
+        .core
+        .get_recent_logs(&id, &list.containers[0].handle)
+        .unwrap();
+    assert_eq!(
+        fixture
+            .core
+            .mutate_container(&id, &list.containers[0].handle, Action::Start)
+            .unwrap()
+            .outcome,
+        "succeeded"
+    );
+    let env = fixture.core.get_environment().unwrap();
+    assert!(env.session_id.is_none());
+    assert_eq!(env.error.unwrap().code, "ContextSelection");
+    assert_eq!(
+        fixture.core.list_containers(&id).unwrap_err().code,
+        "StaleSession"
+    );
+}
+
+#[test]
+fn obsolete_runtime_paths_are_ignored_without_rewriting_any_config() {
+    let mut fixture = Fixture::new();
+    let missing = fixture.dir.join("never-created");
+    let legacy = serde_json::json!({"dockerPath": fixture.dir.join("docker"), "dockerConfig":missing, "colimaPath":missing, "colimaHome":missing, "limaHome":missing});
+    fixture.core.config = Some(serde_json::from_value(legacy.clone()).unwrap());
+    let runtime_path = fixture.dir.join("runtime.json");
+    let runtime_bytes = serde_json::to_vec(&legacy).unwrap();
+    fs::write(&runtime_path, &runtime_bytes).unwrap();
+    let config_path = fixture.dir.join("docker-config/config.json");
+    let config_bytes = fs::read(&config_path).unwrap();
+    let env = fixture.core.get_environment().unwrap();
+    assert_eq!(env.status, "ready", "{env:?}");
+    assert_eq!(
+        env.docker_config_path.as_deref(),
+        fixture.dir.join("docker-config").to_str()
+    );
+    for key in ["dockerConfig", "colimaPath", "colimaHome", "limaHome"] {
+        assert!(
+            env.diagnostics.iter().any(|message| message.contains(key)),
+            "{env:?}"
+        );
+    }
+    assert_eq!(fs::read(runtime_path).unwrap(), runtime_bytes);
+    assert_eq!(fs::read(config_path).unwrap(), config_bytes);
+    assert!(!missing.exists());
+}
+
+#[test]
+fn malformed_docker_config_and_context_responses_never_reach_the_engine() {
+    for bytes in [b"{".as_slice(), b"[]", b"null"] {
+        let fixture = Fixture::new();
+        let path = fixture.dir.join("docker-config/config.json");
+        fs::write(&path, bytes).unwrap();
+        let env = fixture.core.get_environment().unwrap();
+        assert!(env.session_id.is_none(), "{env:?}");
+        assert!(env.error.is_some());
+        assert!(fixture.trace().iter().all(|r| r["args"][0] != "--host"));
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+    for mode in [
+        "context_fail",
+        "context_warning",
+        "context_malformed",
+        "context_multiple",
+        "context_no_name",
+    ] {
+        let fixture = Fixture::new();
+        fixture.mode(mode);
+        let env = fixture.core.get_environment().unwrap();
+        assert!(env.session_id.is_none(), "{mode}: {env:?}");
+        assert!(env.error.is_some());
+        assert!(fixture.trace().iter().all(|r| r["args"][0] != "--host"));
+        assert_eq!(
+            fixture
+                .trace()
+                .iter()
+                .filter(|r| r["args"] == serde_json::json!(["context", "inspect"]))
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn broken_symlinks_and_non_regular_config_files_fail_before_any_cli_call() {
+    for kind in ["directory_symlink", "file_symlink", "fifo", "directory"] {
+        let mut fixture = Fixture::new();
+        let config = fixture.dir.join("docker-config/config.json");
+        match kind {
+            "directory_symlink" => {
+                let alias = fixture.dir.join("missing-config-directory");
+                symlink(fixture.dir.join("nonexistent"), &alias).unwrap();
+                fixture
+                    .core
+                    .launch_env
+                    .as_mut()
+                    .unwrap()
+                    .insert("DOCKER_CONFIG".into(), alias.to_string_lossy().into_owned());
+            }
+            "file_symlink" => {
+                fs::remove_file(&config).unwrap();
+                symlink(fixture.dir.join("nonexistent.json"), &config).unwrap();
+            }
+            "fifo" => {
+                fs::remove_file(&config).unwrap();
+                let path = std::ffi::CString::new(config.to_str().unwrap()).unwrap();
+                // SAFETY: path is an owned, NUL-terminated fixture path and the
+                // permissions apply only to this newly created named pipe.
+                assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+            }
+            "directory" => {
+                fs::remove_file(&config).unwrap();
+                fs::create_dir(&config).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let started = Instant::now();
+        let environment = fixture.core.get_environment().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(2), "{kind} blocked");
+        assert!(environment.session_id.is_none(), "{kind}: {environment:?}");
+        assert!(!environment.mutation_allowed);
+        assert_eq!(environment.error.unwrap().code, "Configuration", "{kind}");
+        assert!(fixture.trace().is_empty(), "{kind} reached the Docker CLI");
+    }
+    // Filesystem permission failures must keep their actionable classification,
+    // independently of the process error/stderr classification covered above.
+    assert_eq!(
+        filesystem_error(
+            "Configuration",
+            "Docker config.json",
+            std::io::Error::from_raw_os_error(libc::EACCES),
+        )
+        .code,
+        "PermissionDenied"
+    );
+}
+
+#[test]
+fn endpoint_must_be_an_absolute_existing_unix_socket() {
+    for endpoint in [
+        "unix://relative.sock",
+        "ssh://some-host",
+        "tcp://localhost:2375",
+        "unix:///nonexistent/docker2u.sock",
+    ] {
+        let fixture = Fixture::new();
+        fs::write(fixture.dir.join("endpoint"), endpoint).unwrap();
+        let env = fixture.core.get_environment().unwrap();
+        assert!(env.session_id.is_none(), "{env:?}");
+        assert!(!env.mutation_allowed);
+        assert!(fixture.trace().iter().all(|r| r["args"][0] != "--host"));
+    }
+    let fixture = Fixture::new();
+    let regular = fixture.dir.join("regular-file");
+    fs::write(&regular, "not a socket").unwrap();
+    fs::write(
+        fixture.dir.join("endpoint"),
+        format!("unix://{}", regular.display()),
+    )
+    .unwrap();
+    let env = fixture.core.get_environment().unwrap();
+    assert!(env.session_id.is_none());
+    assert!(fixture.trace().iter().all(|r| r["args"][0] != "--host"));
+}
+
+#[test]
+fn socket_symlink_reselection_cannot_move_the_pinned_session() {
+    let fixture = Fixture::new();
+    let _second_socket = UnixListener::bind(fixture.dir.join("engine-B.sock")).unwrap();
+    let alias = fixture.dir.join("selected.sock");
+    symlink(fixture.dir.join("engine-A.sock"), &alias).unwrap();
+    fs::write(
+        fixture.dir.join("endpoint"),
+        format!("unix://{}", alias.display()),
+    )
+    .unwrap();
+    let id = fixture.connect();
+    fs::remove_file(&alias).unwrap();
+    symlink(fixture.dir.join("engine-B.sock"), &alias).unwrap();
+    fixture.core.list_containers(&id).unwrap();
+    assert_eq!(
+        fixture.core.active(&id).unwrap().target.endpoint,
+        fixture.endpoint("A")
+    );
+    let new_id = fixture.connect();
+    assert_eq!(
+        fixture.core.active(&new_id).unwrap().target.endpoint,
+        fixture.endpoint("B")
+    );
+}
+
+#[test]
+fn missing_pinned_socket_and_upgraded_cli_or_engine_require_reconnect() {
+    for mode in ["client_changed", "server_changed"] {
+        let fixture = Fixture::new();
+        let id = fixture.connect();
+        let list = fixture.core.list_containers(&id).unwrap();
+        fixture.mode(mode);
+        assert_eq!(
+            fixture
+                .core
+                .mutate_container(&id, &list.containers[0].handle, Action::Start)
+                .unwrap_err()
+                .code,
+            "EnvironmentChanged"
+        );
+        assert_eq!(fixture.mutations(), 0);
+        let new_id = fixture.connect();
+        assert_ne!(new_id, id);
+        assert!(!fixture.core.active(&new_id).unwrap().needs_validation);
+    }
+    let fixture = Fixture::new();
+    let id = fixture.connect();
+    let list = fixture.core.list_containers(&id).unwrap();
+    fs::remove_file(fixture.dir.join("engine-A.sock")).unwrap();
+    assert!(
+        fixture
+            .core
+            .mutate_container(&id, &list.containers[0].handle, Action::Start)
+            .is_err()
+    );
+    assert_eq!(fixture.mutations(), 0);
+    assert!(fixture.core.active(&id).unwrap().needs_validation);
+}
+
+#[test]
+fn incompatible_engine_responses_never_grant_a_mutation_session() {
+    for mode in [
+        "windows_engine",
+        "empty_engine_id",
+        "bad_api",
+        "connection_fail",
+        "permission_denied",
+    ] {
+        let fixture = Fixture::new();
+        fixture.mode(mode);
+        let env = fixture.core.get_environment().unwrap();
+        assert!(env.session_id.is_none(), "{mode}: {env:?}");
+        assert!(!env.mutation_allowed);
+        let error = env.error.unwrap();
+        if mode == "permission_denied" {
+            assert_eq!(error.code, "PermissionDenied");
+        }
+        if mode == "connection_fail" {
+            assert_eq!(error.stderr.as_deref(), Some("connection reset by peer\n"));
+            assert!(error.command.unwrap().contains("info"));
+        }
+        assert_eq!(fixture.mutations(), 0);
+    }
 }
 
 #[test]
@@ -457,22 +949,28 @@ fn macos_version_parser_requires_one_numeric_version() {
 
 #[test]
 fn approved_host_receives_a_session_and_mutation_permission() {
-    let fixture = Fixture::new();
-    let env = fixture.core.get_environment().unwrap();
-    assert_eq!(env.status, "ready");
-    assert!(env.mutation_allowed);
-    assert!(env.session_id.is_some());
-    assert_eq!(fixture.mutations(), 0);
+    for version in ["14.0", "15.0", "26.5.1", "26.5.3", "26.6.2", "27.0"] {
+        let mut fixture = Fixture::new();
+        fixture
+            .core
+            .host
+            .as_mut()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .version = Some(version.into());
+        let env = fixture.core.get_environment().unwrap();
+        assert_eq!(env.status, "ready", "{version}: {env:?}");
+        assert!(env.mutation_allowed);
+        assert!(env.session_id.is_some());
+        assert_eq!(fixture.mutations(), 0);
+    }
 }
 
 #[test]
 fn unapproved_hosts_cannot_replace_an_active_session() {
     for (os, architecture, version) in [
-        ("macos", "aarch64", Some("14.0")),
-        ("macos", "aarch64", Some("15.0")),
-        ("macos", "aarch64", Some("26.5.1")),
-        ("macos", "aarch64", Some("26.5.3")),
-        ("macos", "aarch64", Some("27.0")),
+        ("macos", "aarch64", Some("13.6.9")),
         ("macos", "x86_64", Some("26.5.2")),
         ("linux", "aarch64", None),
     ] {
@@ -488,8 +986,8 @@ fn unapproved_hosts_cannot_replace_an_active_session() {
         assert_eq!(env.status, "unsupported", "{env:?}");
         assert!(!env.mutation_allowed);
         assert!(env.session_id.is_none());
-        assert!(env.diagnostics[0].contains(APPROVED_MACOS_VERSION));
-        assert!(env.diagnostics[0].contains(architecture));
+        assert!(env.error.as_ref().unwrap().message.contains("14"));
+        assert!(env.error.as_ref().unwrap().message.contains(architecture));
         assert_eq!(
             fixture
                 .core
@@ -527,7 +1025,8 @@ fn host_detection_failures_never_grant_a_session() {
         assert_eq!(env.status, "unavailable");
         assert!(!env.mutation_allowed);
         assert!(env.session_id.is_none());
-        assert_eq!(env.diagnostics, vec![reason]);
+        assert_eq!(env.error.as_ref().unwrap().message, reason);
+        assert!(env.diagnostics.is_empty());
         assert_eq!(fixture.mutations(), 0);
     }
     assert_eq!(
@@ -572,6 +1071,57 @@ fn logs_are_plain_text_and_do_not_expose_stderr_as_error_on_success() {
 }
 
 #[test]
+fn log_identity_or_socket_failure_requires_reconnect_after_successful_refresh() {
+    for expected_code in ["EnvironmentChanged", "SocketMissing"] {
+        let fixture = Fixture::new();
+        let id = fixture.connect();
+        let first = fixture.core.list_containers(&id).unwrap();
+        let socket_path = fixture.dir.join("engine-A.sock");
+        if expected_code == "EnvironmentChanged" {
+            fixture.mode("engine_changed");
+        } else {
+            fs::remove_file(&socket_path).unwrap();
+        }
+        assert_eq!(
+            fixture
+                .core
+                .get_recent_logs(&id, &first.containers[0].handle)
+                .unwrap_err()
+                .code,
+            expected_code
+        );
+        let failed = fixture.core.active(&id).unwrap();
+        assert!(failed.stale);
+        assert!(failed.needs_validation);
+        fixture.mode("");
+        // Keep the replacement socket alive through the refresh/reconnect checks.
+        let _replacement_socket =
+            (expected_code == "SocketMissing").then(|| UnixListener::bind(&socket_path).unwrap());
+        let refreshed = fixture.core.list_containers(&id).unwrap();
+        assert_eq!(
+            fixture
+                .core
+                .mutate_container(&id, &refreshed.containers[0].handle, Action::Start)
+                .unwrap_err()
+                .code,
+            "NeedsValidation"
+        );
+        assert_eq!(fixture.mutations(), 0);
+        let new_id = fixture.connect();
+        let reconnected = fixture.core.list_containers(&new_id).unwrap();
+        assert_eq!(
+            fixture
+                .core
+                .mutate_container(&new_id, &reconnected.containers[0].handle, Action::Start)
+                .unwrap()
+                .outcome,
+            "succeeded"
+        );
+        assert_eq!(fixture.mutations(), 1);
+    }
+}
+
+#[test]
 fn complete_daemon_error_is_failed_but_transport_error_is_unknown() {
     for (mode, outcome) in [
         ("daemon_error", "failed"),
@@ -591,9 +1141,9 @@ fn complete_daemon_error_is_failed_but_transport_error_is_unknown() {
     }
 }
 
-/// Opt-in only. Creates one test-labeled container, then removes only its verified full ID.
+/// Opt-in read-only comparison against CLI IDs on the selected, pinned Engine.
 #[test]
-#[ignore = "Read-only live Colima probe; requires DOCKER2U_REAL_PROBE=1"]
+#[ignore = "Read-only live Docker probe; requires DOCKER2U_REAL_PROBE=1"]
 fn real_environment_probe() {
     assert_eq!(std::env::var("DOCKER2U_REAL_PROBE").as_deref(), Ok("1"));
     let core = Core::default();
@@ -604,6 +1154,26 @@ fn real_environment_probe() {
     let list = core
         .list_containers(env.session_id.as_deref().unwrap())
         .unwrap();
+    let session = core.active(env.session_id.as_deref().unwrap()).unwrap();
+    let cli = core
+        .docker(
+            &session.target,
+            &["container", "ls", "--all", "--quiet", "--no-trunc"],
+            15,
+        )
+        .unwrap();
+    let cli_ids: HashSet<_> = String::from_utf8(cli)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    assert!(cli_ids.iter().all(|id| valid_id(id)));
+    let app_ids: HashSet<_> = list
+        .containers
+        .iter()
+        .map(|container| container.full_id.clone())
+        .collect();
+    assert_eq!(app_ids, cli_ids, "App and pinned CLI full ID sets differ");
     eprintln!(
         "read-only list: {} containers, generation {}",
         list.containers.len(),
@@ -613,7 +1183,7 @@ fn real_environment_probe() {
 
 /// Opt-in only. Creates one test-labeled container, then removes only its verified full ID.
 #[test]
-#[ignore = "Requires the prepared local Colima profile and DOCKER2U_REAL_SMOKE=1"]
+#[ignore = "Requires a running local Docker Engine and DOCKER2U_REAL_SMOKE=1"]
 fn real_runtime_smoke() {
     assert_eq!(std::env::var("DOCKER2U_REAL_SMOKE").as_deref(), Ok("1"));
     let core = Core::default();
@@ -726,9 +1296,12 @@ fn real_runtime_smoke() {
         "real runtime: list, health, recent logs/tail 300, start, stop, restart passed for {full_id}"
     );
     drop(cleanup);
+    let remaining = core.list_containers(&id).unwrap();
     assert!(
-        core.docker(&session.target, &["container", "inspect", &full_id], 15)
-            .is_err(),
+        remaining
+            .containers
+            .iter()
+            .all(|container| container.full_id != full_id),
         "Owned test container remains after cleanup"
     );
 }

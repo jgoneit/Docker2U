@@ -13,8 +13,7 @@ use std::{
 #[path = "docker_tests.rs"]
 mod tests;
 
-const CONTEXT: &str = "colima-docker2u";
-const APPROVED_MACOS_VERSION: &str = "26.5.2";
+const MINIMUM_MACOS_MAJOR: u32 = 14;
 const INSPECT_FORMAT: &str = r#"{"Id":{{json .Id}},"Name":{{json .Name}},"Image":{{json .Config.Image}},"Created":{{json .Created}},"State":{{json .State.Status}},"Health":{{with index .State "Health"}}{{json .Status}}{{else}}null{{end}},"Ports":{{json (index .NetworkSettings "Ports")}}}"#;
 
 #[derive(Debug, Serialize, Clone)]
@@ -42,12 +41,11 @@ type Result<T> = std::result::Result<T, ApiError>;
 pub struct Environment {
     pub status: String,
     pub session_id: Option<String>,
-    pub profile: String,
+    pub context_name: Option<String>,
     pub endpoint: Option<String>,
     pub docker_path: Option<String>,
-    pub colima_path: Option<String>,
+    pub docker_config_path: Option<String>,
     pub client_version: Option<String>,
-    pub runtime_version: Option<String>,
     pub server_version: Option<String>,
     pub api_version: Option<String>,
     pub engine_id: Option<String>,
@@ -55,18 +53,18 @@ pub struct Environment {
     pub architecture: Option<String>,
     pub mutation_allowed: bool,
     pub diagnostics: Vec<String>,
+    pub error: Option<ApiError>,
 }
 impl Default for Environment {
     fn default() -> Self {
         Self {
             status: "unavailable".into(),
             session_id: None,
-            profile: CONTEXT.into(),
+            context_name: None,
             endpoint: None,
             docker_path: None,
-            colima_path: None,
+            docker_config_path: None,
             client_version: None,
-            runtime_version: None,
             server_version: None,
             api_version: None,
             engine_id: None,
@@ -74,6 +72,7 @@ impl Default for Environment {
             architecture: None,
             mutation_allowed: false,
             diagnostics: vec![],
+            error: None,
         }
     }
 }
@@ -203,49 +202,197 @@ impl RuntimeConfig {
             )),
         }
     }
-    fn env(&self) -> Result<Vec<(String, String)>> {
-        let mut env = vec![];
-        for (name, value) in [
-            ("COLIMA_HOME", &self.colima_home),
-            ("LIMA_HOME", &self.lima_home),
-            ("DOCKER_CONFIG", &self.docker_config),
-        ] {
-            if let Some(path) = value {
-                if !path.is_absolute() || !path.is_dir() {
+    fn ignored_keys(&self) -> Vec<&'static str> {
+        [
+            ("colimaPath", &self.colima_path),
+            ("colimaHome", &self.colima_home),
+            ("limaHome", &self.lima_home),
+            ("dockerConfig", &self.docker_config),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.as_ref().map(|_| key))
+        .collect()
+    }
+}
+
+// Only discovery receives ambient target/TLS inputs. The resolved config directory
+// is shared with execution, but its currentContext can never override --host.
+struct ConnectionInputs {
+    docker_config: PathBuf,
+    discovery_env: Vec<(String, String)>,
+    execution_env: Vec<(String, String)>,
+}
+impl ConnectionInputs {
+    fn from_env(environment: &HashMap<String, String>) -> Result<Self> {
+        let config = environment
+            .get("DOCKER_CONFIG")
+            .filter(|value| !value.is_empty());
+        let path = if let Some(config) = config {
+            PathBuf::from(config)
+        } else {
+            let home = environment
+                .get("HOME")
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| ApiError::new("Configuration", "Home directory is unavailable"))?;
+            PathBuf::from(home).join(".docker")
+        };
+        let path = if path.is_absolute() {
+            path
+        } else {
+            std::env::current_dir()
+                .map_err(|error| ApiError::new("Configuration", error.to_string()))?
+                .join(path)
+        };
+        let docker_config = match path.canonicalize() {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if std::fs::symlink_metadata(&path).is_ok() {
                     return Err(ApiError::new(
                         "Configuration",
-                        format!("{name} must be an existing absolute directory"),
+                        "Docker config directory is a broken symbolic link",
                     ));
                 }
-                env.push((name.into(), path.to_string_lossy().into_owned()));
+                path
+            }
+            Err(error) => {
+                return Err(filesystem_error(
+                    "Configuration",
+                    "Docker config directory",
+                    error,
+                ));
+            }
+        };
+        validate_docker_config(&docker_config)?;
+        let execution_env = vec![(
+            "DOCKER_CONFIG".into(),
+            docker_config.to_string_lossy().into_owned(),
+        )];
+        let mut discovery_env = execution_env.clone();
+        for key in [
+            "DOCKER_CONTEXT",
+            "DOCKER_HOST",
+            "DOCKER_TLS",
+            "DOCKER_TLS_VERIFY",
+            "DOCKER_CERT_PATH",
+        ] {
+            if let Some(value) = environment.get(key) {
+                discovery_env.push((key.into(), value.clone()));
             }
         }
-        let mut paths = self
-            .colima_path
-            .as_ref()
-            .and_then(|p| p.parent())
-            .map(|p| vec![p.to_path_buf()])
-            .unwrap_or_default();
-        paths.extend(
-            [
-                "/opt/homebrew/bin",
-                "/usr/local/bin",
-                "/usr/bin",
-                "/bin",
-                "/usr/sbin",
-                "/sbin",
-            ]
-            .map(PathBuf::from),
-        );
-        env.push((
-            "PATH".into(),
-            std::env::join_paths(paths)
-                .map_err(|e| ApiError::new("Configuration", e.to_string()))?
-                .to_string_lossy()
-                .into_owned(),
-        ));
-        Ok(env)
+        Ok(Self {
+            docker_config,
+            discovery_env,
+            execution_env,
+        })
     }
+}
+
+fn filesystem_error(default: &str, subject: &str, error: std::io::Error) -> ApiError {
+    let code = if error.kind() == std::io::ErrorKind::PermissionDenied {
+        "PermissionDenied"
+    } else {
+        default
+    };
+    ApiError::new(code, format!("Cannot access {subject}: {error}"))
+}
+
+fn validate_docker_config(directory: &Path) -> Result<()> {
+    use std::io::Read;
+    if directory.exists() && !directory.is_dir() {
+        return Err(ApiError::new(
+            "Configuration",
+            "Docker config path is not a directory",
+        ));
+    }
+    let path = directory.join("config.json");
+    match std::fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(filesystem_error(
+                "Configuration",
+                "Docker config.json",
+                error,
+            ));
+        }
+        Ok(_) => {}
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) => {
+            return Err(filesystem_error(
+                "Configuration",
+                "Docker config.json",
+                error,
+            ));
+        }
+    };
+    if !file
+        .metadata()
+        .map_err(|error| filesystem_error("Configuration", "Docker config.json", error))?
+        .is_file()
+    {
+        return Err(ApiError::new(
+            "Configuration",
+            "Docker config.json is not a regular file",
+        ));
+    }
+    // Never return config contents: this file can contain credentials.
+    let mut bytes = Vec::new();
+    file.take(process::STDOUT_LIMIT as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| filesystem_error("Configuration", "Docker config.json", error))?;
+    if bytes.len() > process::STDOUT_LIMIT {
+        return Err(ApiError::new(
+            "Configuration",
+            "Docker config.json exceeds the read limit",
+        ));
+    }
+    let valid = serde_json::from_slice::<Value>(&bytes).is_ok_and(|value| value.is_object());
+    if !valid {
+        return Err(ApiError::new(
+            "Configuration",
+            "Docker config.json must contain a valid JSON object",
+        ));
+    }
+    Ok(())
+}
+
+fn local_endpoint(endpoint: &str) -> Result<String> {
+    let socket = endpoint
+        .strip_prefix("unix://")
+        .filter(|path| path.starts_with('/') && !path.contains('\0'))
+        .ok_or_else(|| {
+            ApiError::new(
+                "RemoteEndpoint",
+                "Only an absolute local Unix socket is supported",
+            )
+        })?;
+    let actual = Path::new(socket)
+        .canonicalize()
+        .map_err(|error| filesystem_error("SocketMissing", "Docker socket", error))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        if !actual
+            .metadata()
+            .map_err(|error| filesystem_error("SocketMissing", "Docker socket", error))?
+            .file_type()
+            .is_socket()
+        {
+            return Err(ApiError::new(
+                "EndpointMismatch",
+                "Docker endpoint is not a Unix socket",
+            ));
+        }
+    }
+    Ok(format!("unix://{}", actual.display()))
 }
 
 fn discover(name: &str, configured: &Option<PathBuf>) -> Result<PathBuf> {
@@ -258,7 +405,10 @@ fn discover(name: &str, configured: &Option<PathBuf>) -> Result<PathBuf> {
                 .map(|p| p.join(name))
                 .collect();
         if let Some(home) = std::env::var_os("HOME") {
-            paths.push(PathBuf::from(home).join(".local/bin").join(name));
+            paths.push(PathBuf::from(&home).join(".local/bin").join(name));
+            if name == "docker" {
+                paths.push(PathBuf::from(home).join(".docker/bin/docker"));
+            }
         }
         paths.extend(
             ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"].map(|p| Path::new(p).join(name)),
@@ -285,7 +435,7 @@ fn discover(name: &str, configured: &Option<PathBuf>) -> Result<PathBuf> {
         }
     }
     Err(ApiError::new(
-        "CliMissing",
+        "CliNotFound",
         format!(
             "{name} CLI not found. Install an independent CLI or configure its absolute path in the native runtime.json."
         ),
@@ -304,11 +454,18 @@ struct Fingerprint {
 #[derive(Clone)]
 struct Target {
     docker: PathBuf,
-    colima: PathBuf,
+    client_version: String,
     endpoint: String,
     env: Vec<(String, String)>,
-    config: RuntimeConfig,
+    docker_config: PathBuf,
     fingerprint: Fingerprint,
+}
+impl Target {
+    fn engine_args(&self, arguments: &[&str]) -> Vec<String> {
+        let mut all = args(&["--host", &self.endpoint]);
+        all.extend(args(arguments));
+        all
+    }
 }
 #[derive(Clone)]
 struct Session {
@@ -372,6 +529,8 @@ pub struct Core {
     mutation_timeout: Option<Duration>,
     #[cfg(test)]
     host: Option<Result<HostInfo>>,
+    #[cfg(test)]
+    launch_env: Option<HashMap<String, String>>,
 }
 
 fn args(values: &[&str]) -> Vec<String> {
@@ -380,15 +539,29 @@ fn args(values: &[&str]) -> Vec<String> {
 fn malformed(message: impl Into<String>) -> ApiError {
     ApiError::new("MalformedOutput", message)
 }
+fn connection_invalidated(error: &ApiError) -> bool {
+    matches!(
+        error.code.as_str(),
+        "EnvironmentChanged"
+            | "Disconnected"
+            | "SocketMissing"
+            | "PermissionDenied"
+            | "Configuration"
+            | "EndpointMismatch"
+            | "RemoteEndpoint"
+    )
+}
 fn parse_macos_version(bytes: &[u8]) -> Result<String> {
     let version = std::str::from_utf8(bytes)
         .map_err(|_| malformed("Host macOS version is not UTF-8"))?
         .trim();
     let parts: Vec<_> = version.split('.').collect();
     if !(2..=3).contains(&parts.len())
-        || parts
-            .iter()
-            .any(|part| part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()))
+        || parts.iter().any(|part| {
+            part.is_empty()
+                || !part.bytes().all(|byte| byte.is_ascii_digit())
+                || part.parse::<u32>().is_err()
+        })
     {
         return Err(malformed("Host macOS version is missing or malformed"));
     }
@@ -401,14 +574,19 @@ fn validate_host(host: &HostInfo) -> Result<()> {
             "Host macOS version could not be determined",
         ));
     }
+    let major = host
+        .version
+        .as_deref()
+        .and_then(|version| version.split('.').next())
+        .and_then(|major| major.parse::<u32>().ok());
     if host.os != "macos"
         || host.architecture != "aarch64"
-        || host.version.as_deref() != Some(APPROVED_MACOS_VERSION)
+        || !major.is_some_and(|major| major >= MINIMUM_MACOS_MAJOR)
     {
         return Err(ApiError::new(
             "UnsupportedRuntime",
             format!(
-                "This local alpha requires macOS {APPROVED_MACOS_VERSION} on ARM64; detected {} {} ({})",
+                "Docker2U requires macOS 14 or later on ARM64; detected {} {} ({})",
                 host.os,
                 host.version.as_deref().unwrap_or("version unavailable"),
                 host.architecture,
@@ -481,29 +659,36 @@ impl Core {
         Ok(host)
     }
 
-    fn checked(
+    fn checked_output(
         &self,
         path: &Path,
         arguments: &[String],
         env: &[(String, String)],
         timeout: u64,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<process::Output> {
         let command = command_label(path, arguments);
         let out = self
             .runner
             .run(path, arguments, env, Duration::from_secs(timeout), false)
-            .map_err(|e| ApiError {
+            .map_err(|error| ApiError {
                 code: "StartFailed".into(),
-                message: e,
+                message: error,
                 command: Some(command.clone()),
                 stderr: None,
             })?;
+        let stderr = process::plain_text(&out.stderr, process::STDERR_LIMIT);
         let code = if out.interrupted || out.code.is_none() {
             Some("TimedOut")
         } else if out.truncated {
             Some("OutputLimitExceeded")
         } else if out.code != Some(0) {
-            Some("CommandFailed")
+            Some(
+                if stderr.to_ascii_lowercase().contains("permission denied") {
+                    "PermissionDenied"
+                } else {
+                    "CommandFailed"
+                },
+            )
         } else {
             None
         };
@@ -512,120 +697,71 @@ impl Core {
                 code: code.into(),
                 message: format!("Command could not complete ({code})"),
                 command: Some(command),
-                stderr: Some(process::plain_text(&out.stderr, process::STDERR_LIMIT)),
+                stderr: Some(stderr),
             });
         }
-        Ok(out.stdout)
+        Ok(out)
+    }
+    fn checked(
+        &self,
+        path: &Path,
+        arguments: &[String],
+        env: &[(String, String)],
+        timeout: u64,
+    ) -> Result<Vec<u8>> {
+        self.checked_output(path, arguments, env, timeout)
+            .map(|output| output.stdout)
     }
     fn docker(&self, target: &Target, arguments: &[&str], timeout: u64) -> Result<Vec<u8>> {
-        let mut all = args(&["--host", &target.endpoint]);
-        all.extend(args(arguments));
-        self.checked(&target.docker, &all, &target.env, timeout)
+        self.checked(
+            &target.docker,
+            &target.engine_args(arguments),
+            &target.env,
+            timeout,
+        )
     }
-    fn runtime_endpoint(
+    fn client_version(&self, docker: &Path, env: &[(String, String)]) -> Result<String> {
+        let data = self.checked(docker, &args(&["--version"]), env, 5)?;
+        let version = std::str::from_utf8(&data)
+            .map_err(|_| malformed("Docker version is not UTF-8"))?
+            .trim()
+            .strip_prefix("Docker version ")
+            .and_then(|value| value.split(',').next())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| malformed("Not a Docker CLI version response"))?;
+        Ok(version.to_owned())
+    }
+    fn selected_context(
         &self,
         docker: &Path,
-        colima: &Path,
-        config: &RuntimeConfig,
         env: &[(String, String)],
-    ) -> Result<String> {
-        let data = self.checked(colima, &args(&["status", "docker2u", "--json"]), env, 10)?;
-        let status: Value =
-            serde_json::from_slice(&data).map_err(|e| malformed(format!("Colima status: {e}")))?;
-        if !required(&status, "runtime")?.eq_ignore_ascii_case("docker") {
-            return Err(ApiError::new(
-                "UnsupportedRuntime",
-                "The docker2u Colima profile must use Docker",
-            ));
+    ) -> Result<(String, String)> {
+        let arguments = args(&["context", "inspect"]);
+        let output = self
+            .checked_output(docker, &arguments, env, 10)
+            .map_err(|mut error| {
+                if error.code == "CommandFailed" {
+                    error.code = "ContextSelection".into();
+                }
+                error
+            })?;
+        // The CLI can print a configuration warning and silently use defaults with
+        // exit zero. Do not accept that as an unambiguous target selection.
+        if !output.stderr.is_empty() {
+            return Err(ApiError { code: "ContextSelection".into(), message: "Docker CLI reported a warning while selecting the connection; resolve it before reconnecting".into(), command: Some(command_label(docker, &arguments)), stderr: Some(process::plain_text(&output.stderr, process::STDERR_LIMIT)) });
         }
-        let arch = required(&status, "arch")?;
-        if !matches!(arch, "aarch64" | "arm64") {
-            return Err(ApiError::new(
-                "UnsupportedRuntime",
-                "This local alpha requires an ARM64 Colima profile",
-            ));
+        let contexts: Vec<Value> = serde_json::from_slice(&output.stdout)
+            .map_err(|_| malformed("Invalid context inspect JSON"))?;
+        if contexts.len() != 1 {
+            return Err(malformed("Expected exactly one current Docker context"));
         }
-        if required(&status, "driver")? != "macOS Virtualization.Framework"
-            || status.get("cpu").and_then(Value::as_u64) != Some(2)
-            || status.get("memory").and_then(Value::as_u64) != Some(4 * 1024 * 1024 * 1024)
-        {
-            return Err(ApiError::new(
-                "UnsupportedRuntime",
-                "This local alpha requires the VZ Colima profile with 2 CPUs and 4 GiB memory",
-            ));
-        }
-        let data = self.checked(docker, &args(&["context", "inspect", CONTEXT]), env, 10)?;
-        let contexts: Vec<Value> = serde_json::from_slice(&data)
-            .map_err(|e| malformed(format!("Context inspect: {e}")))?;
-        if contexts.len() != 1 || required(&contexts[0], "Name")? != CONTEXT {
-            return Err(malformed("Expected exactly the colima-docker2u context"));
-        }
+        let name = required(&contexts[0], "Name")?.to_owned();
         let endpoint = contexts[0]
             .pointer("/Endpoints/docker/Host")
             .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
             .ok_or_else(|| malformed("Context has no Docker endpoint"))?;
-        let socket = endpoint
-            .strip_prefix("unix://")
-            .filter(|s| s.starts_with('/') && !s.contains('\0'))
-            .ok_or_else(|| {
-                ApiError::new(
-                    "RemoteEndpoint",
-                    "Only the development profile's local Unix socket is allowed",
-                )
-            })?;
-        let base = config
-            .colima_home
-            .clone()
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".colima")))
-            .ok_or_else(|| ApiError::new("Configuration", "Home directory unavailable"))?;
-        let expected = base
-            .join("docker2u/docker.sock")
-            .canonicalize()
-            .map_err(|e| {
-                ApiError::new(
-                    "Disconnected",
-                    format!("Development profile socket unavailable: {e}"),
-                )
-            })?;
-        let actual = Path::new(socket).canonicalize().map_err(|e| {
-            ApiError::new("Disconnected", format!("Context socket unavailable: {e}"))
-        })?;
-        if expected != actual {
-            return Err(ApiError::new(
-                "EndpointMismatch",
-                "Context does not point to the docker2u profile socket",
-            ));
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::FileTypeExt;
-            if !actual
-                .metadata()
-                .map_err(|e| ApiError::new("Disconnected", e.to_string()))?
-                .file_type()
-                .is_socket()
-            {
-                return Err(ApiError::new(
-                    "EndpointMismatch",
-                    "The profile endpoint is not a Unix socket",
-                ));
-            }
-        }
-        let reported = required(&status, "docker_socket")?
-            .strip_prefix("unix://")
-            .ok_or_else(|| {
-                ApiError::new(
-                    "EndpointMismatch",
-                    "Colima did not report a local Docker socket",
-                )
-            })?;
-        if Path::new(reported).canonicalize().ok().as_ref() != Some(&actual) {
-            return Err(ApiError::new(
-                "EndpointMismatch",
-                "Colima status and context sockets differ",
-            ));
-        }
-        Ok(format!("unix://{}", actual.display()))
+        Ok((name, endpoint.to_owned()))
     }
     fn fingerprint(&self, target: &Target) -> Result<Fingerprint> {
         let info: Value = serde_json::from_slice(&self.docker(
@@ -643,34 +779,35 @@ impl Core {
         let server = version
             .get("Server")
             .ok_or_else(|| malformed("Missing Docker Server version"))?;
+        let api = required(server, "ApiVersion")?;
+        let parts: Vec<_> = api.split('.').collect();
+        if parts.len() != 2
+            || parts.iter().any(|part| {
+                part.is_empty()
+                    || !part.bytes().all(|byte| byte.is_ascii_digit())
+                    || part.parse::<u32>().is_err()
+            })
+        {
+            return Err(malformed("Invalid Docker Server API version"));
+        }
         Ok(Fingerprint {
             id: required(&info, "ID")?.into(),
             server: required(server, "Version")?.into(),
-            api: required(server, "ApiVersion")?.into(),
+            api: api.into(),
             os: required(&info, "OSType")?.into(),
             arch: required(&info, "Architecture")?.into(),
             name: required(&info, "Name")?.into(),
         })
     }
     fn verify(&self, target: &Target) -> Result<()> {
-        let client = self.checked(&target.docker, &args(&["--version"]), &target.env, 5)?;
-        let runtime = self.checked(&target.colima, &args(&["version"]), &target.env, 5)?;
-        if !String::from_utf8_lossy(&client).starts_with("Docker version 29.8.0,")
-            || !String::from_utf8_lossy(&runtime)
-                .lines()
-                .any(|line| line.trim() == "colima version v0.10.3")
+        validate_docker_config(&target.docker_config)?;
+        if local_endpoint(&target.endpoint)? != target.endpoint
+            || self.client_version(&target.docker, &target.env)? != target.client_version
+            || self.fingerprint(target)? != target.fingerprint
         {
             return Err(ApiError::new(
                 "EnvironmentChanged",
-                "CLI or Colima version changed. Reconnect before another operation.",
-            ));
-        }
-        let endpoint =
-            self.runtime_endpoint(&target.docker, &target.colima, &target.config, &target.env)?;
-        if endpoint != target.endpoint || self.fingerprint(target)? != target.fingerprint {
-            return Err(ApiError::new(
-                "EnvironmentChanged",
-                "Runtime identity changed. Reconnect before another operation.",
+                "CLI or Engine identity changed. Reconnect before another operation.",
             ));
         }
         Ok(())
@@ -719,15 +856,43 @@ impl Core {
                 ) {
                     result.status = "unsupported".into();
                 }
-                result.diagnostics.push(error.message);
-                if let Some(stderr) = error.stderr.filter(|s| !s.is_empty()) {
-                    result.diagnostics.push(stderr);
-                }
+                result.error = Some(error);
             }
         }
         Ok(result)
     }
+    fn connection_environment(&self) -> Result<HashMap<String, String>> {
+        #[cfg(test)]
+        if let Some(environment) = &self.launch_env {
+            return Ok(environment.clone());
+        }
+        let mut environment = HashMap::new();
+        for key in [
+            "HOME",
+            "DOCKER_CONFIG",
+            "DOCKER_CONTEXT",
+            "DOCKER_HOST",
+            "DOCKER_TLS",
+            "DOCKER_TLS_VERIFY",
+            "DOCKER_CERT_PATH",
+        ] {
+            match std::env::var(key) {
+                Ok(value) => {
+                    environment.insert(key.into(), value);
+                }
+                Err(std::env::VarError::NotPresent) => {}
+                Err(_) => {
+                    return Err(ApiError::new(
+                        "Configuration",
+                        format!("{key} is not valid UTF-8"),
+                    ));
+                }
+            }
+        }
+        Ok(environment)
+    }
     fn diagnose(&self, result: &mut Environment) -> Result<Target> {
+        validate_host(&self.detect_host()?)?;
         #[cfg(test)]
         let config = self
             .config
@@ -736,50 +901,35 @@ impl Core {
             .unwrap_or_else(RuntimeConfig::load)?;
         #[cfg(not(test))]
         let config = RuntimeConfig::load()?;
+        let ignored = config.ignored_keys();
+        if !ignored.is_empty() {
+            result.diagnostics.push(format!("Legacy runtime.json settings are ignored: {}. Docker CLI settings now select the connection; no settings files were changed.", ignored.join(", ")));
+        }
         let docker = discover("docker", &config.docker_path)?;
         result.docker_path = Some(docker.display().to_string());
-        let env = config.env()?;
-        let client = self.checked(&docker, &args(&["--version"]), &env, 5)?;
-        let client = std::str::from_utf8(&client)
-            .map_err(|_| malformed("Docker version is not UTF-8"))?
-            .trim();
-        let client_version = client
-            .strip_prefix("Docker version ")
-            .and_then(|s| s.split(',').next())
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| malformed("Not a Docker CLI version response"))?
-            .to_owned();
+        let inputs = ConnectionInputs::from_env(&self.connection_environment()?)?;
+        result.docker_config_path = Some(inputs.docker_config.display().to_string());
+        let client_version = self.client_version(&docker, &inputs.execution_env)?;
         result.client_version = Some(client_version.clone());
-        let colima = discover("colima", &config.colima_path)?;
-        result.colima_path = Some(colima.display().to_string());
-        let runtime = self.checked(&colima, &args(&["version"]), &env, 5)?;
-        let runtime =
-            std::str::from_utf8(&runtime).map_err(|_| malformed("Colima version is not UTF-8"))?;
-        let runtime_version = runtime
-            .lines()
-            .find_map(|s| s.strip_prefix("colima version "))
-            .ok_or_else(|| malformed("Not a Colima version response"))?
-            .trim()
-            .trim_start_matches('v')
-            .to_owned();
-        result.runtime_version = Some(runtime_version.clone());
-        let endpoint = self.runtime_endpoint(&docker, &colima, &config, &env)?;
+        let (context_name, endpoint) = self.selected_context(&docker, &inputs.discovery_env)?;
+        result.context_name = Some(context_name);
         result.endpoint = Some(endpoint.clone());
-        let empty = Fingerprint {
-            id: String::new(),
-            server: String::new(),
-            api: String::new(),
-            os: String::new(),
-            arch: String::new(),
-            name: String::new(),
-        };
+        let endpoint = local_endpoint(&endpoint)?;
+        result.endpoint = Some(endpoint.clone());
         let mut target = Target {
             docker,
-            colima,
+            client_version,
             endpoint,
-            env,
-            config,
-            fingerprint: empty,
+            env: inputs.execution_env,
+            docker_config: inputs.docker_config,
+            fingerprint: Fingerprint {
+                id: String::new(),
+                server: String::new(),
+                api: String::new(),
+                os: String::new(),
+                arch: String::new(),
+                name: String::new(),
+            },
         };
         let fingerprint = self.fingerprint(&target)?;
         result.server_version = Some(fingerprint.server.clone());
@@ -787,21 +937,12 @@ impl Core {
         result.engine_id = Some(fingerprint.id.clone());
         result.os_type = Some(fingerprint.os.clone());
         result.architecture = Some(fingerprint.arch.clone());
-        // A deliberately narrow local alpha contract; additional combinations require validation.
-        if client_version != "29.8.0"
-            || runtime_version != "0.10.3"
-            || fingerprint.server != "29.5.2"
-            || fingerprint.api != "1.54"
-            || fingerprint.os != "linux"
-            || !matches!(fingerprint.arch.as_str(), "aarch64" | "arm64")
-            || fingerprint.name != CONTEXT
-        {
+        if fingerprint.os != "linux" {
             return Err(ApiError::new(
                 "UnsupportedRuntime",
-                "This alpha requires Docker CLI 29.8.0, Colima 0.10.3, and the Linux ARM64 colima-docker2u Engine 29.5.2/API 1.54",
+                "This release supports local Linux Docker Engines",
             ));
         }
-        validate_host(&self.detect_host()?)?;
         target.fingerprint = fingerprint;
         Ok(target)
     }
@@ -974,10 +1115,7 @@ impl Core {
             }
             Err(error) => {
                 active.stale = true;
-                if matches!(
-                    error.code.as_str(),
-                    "EnvironmentChanged" | "Disconnected" | "EndpointMismatch" | "RemoteEndpoint"
-                ) {
+                if connection_invalidated(&error) {
                     active.needs_validation = true;
                 }
                 Err(error)
@@ -995,10 +1133,17 @@ impl Core {
                 "Logs are unavailable for this state",
             ));
         }
-        self.verify(&session.target)?;
-        let arguments = args(&[
-            "--host",
-            &session.target.endpoint,
+        if let Err(error) = self.verify(&session.target) {
+            if connection_invalidated(&error) {
+                let mut state = self.state.lock().unwrap();
+                if let Some(active) = state.session.as_mut().filter(|active| active.id == id) {
+                    active.stale = true;
+                    active.needs_validation = true;
+                }
+            }
+            return Err(error);
+        }
+        let arguments = session.target.engine_args(&[
             "container",
             "logs",
             "--tail",
@@ -1231,13 +1376,10 @@ impl Core {
                 "Recovery target was superseded",
             ));
         }
-        let arguments = args(&[
-            "--host",
-            &session.target.endpoint,
-            "container",
-            action.name(),
-            &container.full_id,
-        ]);
+        let arguments =
+            session
+                .target
+                .engine_args(&["container", action.name(), &container.full_id]);
         let command = command_label(&session.target.docker, &arguments);
         #[cfg(test)]
         let timeout = self.mutation_timeout.unwrap_or(Duration::from_secs(30));

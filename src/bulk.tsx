@@ -1,7 +1,7 @@
 import { useEffect, type RefObject } from 'react';
 import { AlertTriangle, LoaderCircle, Play, RefreshCw, Square } from 'lucide-react';
-import type { Action, BulkMutationResult, Container, CoreError } from './api';
-import { actionLabels, ErrorDetails, stateLabels } from './components';
+import type { Action, BulkMutationResult, ConnectionTarget, Container, CoreError } from './api';
+import { actionLabels, ConnectionFacts, ErrorDetails, stateLabels } from './components';
 
 export function canApply(container: Container, action: Action) {
   return action === 'start' ? ['created', 'exited'].includes(container.state) : container.state === 'running';
@@ -11,10 +11,9 @@ export function exclusionReason(container: Container, action: Action) {
 }
 export type BulkOperation = {
   action: Action;
-  profile: string;
   containers: Container[];
   needsReconnect: boolean;
-} & ({ result: BulkMutationResult; error?: never; uncertain?: never } | { result?: never; error: CoreError; uncertain: boolean });
+} & ConnectionTarget & ({ result: BulkMutationResult; error?: never; uncertain?: never } | { result?: never; error: CoreError; uncertain: boolean });
 
 // Tauri's generic return type does not validate the received JSON at runtime.
 // Keep an unbound or incomplete response from being presented as a known result.
@@ -66,7 +65,7 @@ export function BulkResult({ operation }: { operation: BulkOperation }) {
   const { result } = operation;
   return <section className={`bulk-result operation-result ${resultClass(operation)}`} aria-label="최근 일괄 작업 결과">
     <h3>{!result && <AlertTriangle size={16} aria-hidden="true" />}{actionLabels[operation.action]} · 일괄 작업 {result ? '결과' : operation.uncertain ? '결과 불명' : '요청 거절'}</h3>
-    <p>{operation.containers.length}개 선택 · {operation.profile}</p>
+    <p>{operation.containers.length}개 선택</p><ConnectionFacts target={operation} />
     {result ? <><p role="status" className="bulk-summary">{Object.entries(outcomeLabels).map(([outcome, label]) => <span key={outcome}>{label} {result.items.filter(item => item.outcome === outcome).length}개</span>)}</p><details className="technical-details" open><summary>항목별 결과 · {result.items.length}개</summary><ul className="bulk-result-items">{result.items.map(item => <li key={item.handle}><div><strong>{item.name}</strong><span className={`bulk-outcome bulk-outcome-${item.outcome}`}>{outcomeLabels[item.outcome]}</span></div><code title={item.fullId}>{item.fullId}</code><p>{item.message}</p>{item.outcome === 'resultUnknown' && <p>현재 상태 재조회는 원래 명령의 성공을 의미하지 않습니다. 자동 재시도하지 않았습니다.</p>}{item.result?.reconciliation === 'failed' && <p>대상 상태 재조회 실패. Reconnect가 필요합니다.</p>}{item.result?.reconciliation === 'succeeded' && <p>대상 상태 재조회 완료{item.result.observedState ? ` · ${stateLabels[item.result.observedState] ?? item.result.observedState}` : ''}. 원래 작업 결과는 유지됩니다.</p>}{item.error && <ErrorDetails error={item.error} />}{item.result && (item.result.command || item.result.stderr) && <details className="technical-details"><summary>실행 상세</summary>{item.result.command && <pre>{item.result.command}</pre>}{item.result.stderr && <pre>{item.result.stderr}</pre>}</details>}</li>)}</ul></details></> : <><p>{operation.error.message}</p><p>{operation.uncertain ? '일괄 응답을 확인하지 못해 개별 대상의 결과를 확정할 수 없습니다. 자동 재시도하지 않았습니다. 현재 목록의 상태를 성공 여부로 해석하지 마세요.' : '실행 전에 요청이 거절되어 이 요청의 조작은 실행되지 않았습니다.'}</p><ErrorDetails error={operation.error} /></>}
     {operation.needsReconnect ? <p>추가 작업이 차단되었습니다. Reconnect로 환경을 다시 검증하세요.</p> : !result && <p>Refresh 후 대상을 다시 선택하세요.</p>}
   </section>;

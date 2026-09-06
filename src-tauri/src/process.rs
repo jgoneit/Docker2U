@@ -96,7 +96,8 @@ impl Runner {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        // Ambient Docker target, TLS, API, config and plugin overrides never select an Engine.
+        // Core supplies a small discovery allowlist, or only the pinned config for
+        // Engine commands. Never inherit other ambient Docker/provider overrides.
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("DOCKER_")
                 || key == "COLIMA_HOME"
