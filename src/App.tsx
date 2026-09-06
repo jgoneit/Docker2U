@@ -269,14 +269,16 @@ function AppContent() {
       if (result.sessionId !== list.sessionId || result.generation !== list.generation || result.handle !== container.handle) throw frontendError('staleLogs');
       setLogs({ ...result, fetchedAt: new Date().toISOString() });
     } catch (error) {
+      const failure = coreError(error);
+      if (epoch.current !== requestEpoch || session.current !== list.sessionId) return;
+      // The session can need revalidation even after this log display was invalidated.
+      if (connectionInvalidatingErrors.has(failure.code)) {
+        blocked.current = true;
+        setMutationBlocked(true);
+        setReconnectRequired(true);
+      }
       if (request === logSequence.current && canReadLogs(container, list, requestEpoch)) {
-        const failure = coreError(error);
         setLogsError(failure);
-        if (connectionInvalidatingErrors.has(failure.code)) {
-          blocked.current = true;
-          setMutationBlocked(true);
-          setReconnectRequired(true);
-        }
       }
     } finally {
       if (epoch.current === requestEpoch && request === logSequence.current) setLoadingLogs(false);
