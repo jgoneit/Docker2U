@@ -309,7 +309,7 @@ describe('logs when a selected container becomes unreadable', () => {
     expect(mock.getRecentLogs).toHaveBeenCalledTimes(2);
   });
 
-  it.each(['success', 'failure'])('ignores a late log %s after accepting the unreadable state', async outcome => {
+  it.each(['success', 'failure'])('discards a late log %s view after accepting unreadable state while preserving session warnings', async outcome => {
     const user = userEvent.setup();
     render(<App />);
     await connected();
@@ -334,7 +334,7 @@ describe('logs when a selected container becomes unreadable', () => {
     expect(document.querySelector('.log-fetched-at')).not.toBeInTheDocument();
     expect(screen.queryByText(/로그 앞부분이 잘렸습니다/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '표시된 로그 복사' })).toBeDisabled();
-    expectConnection('로컬 · 연결됨');
+    expectConnection(outcome === 'failure' ? '연결 재확인 필요' : '로컬 · 연결됨');
     expect(mock.getRecentLogs).toHaveBeenCalledTimes(2);
   });
 

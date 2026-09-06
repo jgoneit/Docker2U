@@ -35,14 +35,24 @@ function controlledLogs() {
       const request = requests[index]!;
       await act(async () => request.resolve({ sessionId: request.sessionId, generation: Number(request.handle.split('-').at(-1)), handle: request.handle, text, byteCount: text.length, truncated: false, command: 'docker logs', stderr: '' }));
     },
-    async fail(index: number) {
-      await act(async () => requests[index]!.reject({ code: 'EnvironmentChanged', message: 'discarded old connection failure' }));
+    async fail(index: number, code = 'EnvironmentChanged') {
+      await act(async () => requests[index]!.reject({ code, message: 'discarded old log failure' }));
     },
   };
 }
 const fetchLogs = () => screen.getByRole('button', { name: '로그 조회' });
 const clearLogs = () => screen.getByRole('button', { name: '로그 화면 비우기' });
 const output = () => screen.getByLabelText('최근 로그 내용');
+function expectConnection(warning: boolean) {
+  const label = warning ? '연결 재확인 필요' : '로컬 · 연결됨';
+  expect(within(screen.getByRole('region', { name: '연결 환경' })).getByRole('status')).toHaveTextContent(label);
+  expect(document.querySelector('.footer-connection')).toHaveTextContent(label);
+}
+function expectRecoveryBlocked() {
+  const recovery = within(screen.getByRole('region', { name: '서비스 복구' }));
+  expect(recovery.getByRole('button', { name: '중지' })).toBeDisabled();
+  expect(recovery.getByRole('button', { name: '재시작' })).toBeDisabled();
+}
 async function select(user: ReturnType<typeof userEvent.setup>, name: string) { await user.click(screen.getByRole('button', { name: `${name} 상세` })); }
 async function refresh(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: '새로고침' }));
@@ -57,7 +67,52 @@ beforeEach(() => {
 });
 
 describe('native log request lifetime', () => {
-  it.each(['success', 'failure'] as const)('keeps the execution slot after clearing and discards late %s without automatically reloading', async outcome => {
+  it.each(['EnvironmentChanged', 'Disconnected', 'SocketMissing', 'PermissionDenied', 'Configuration', 'EndpointMismatch', 'RemoteEndpoint'])('latches current-session %s after Clear without restoring the log view or reloading', async code => {
+    const user = userEvent.setup();
+    const logs = controlledLogs();
+    render(<App />);
+    await waitFor(() => expect(logs.requests).toHaveLength(1));
+    await user.click(clearLogs());
+    expect(fetchLogs()).toBeDisabled();
+    await logs.fail(0, code);
+
+    expectConnection(true);
+    expectRecoveryBlocked();
+    expect(output()).toHaveTextContent('로그 조회를 눌러 로그를 확인하세요.');
+    expect(output()).toHaveAttribute('aria-busy', 'false');
+    expect(screen.queryByText('discarded old log failure')).not.toBeInTheDocument();
+    expect(screen.queryByText('최근 로그를 읽지 못했습니다.')).not.toBeInTheDocument();
+    expect(document.querySelector('.log-fetched-at')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '표시된 로그 복사' })).toBeDisabled();
+    expect(fetchLogs()).toBeEnabled();
+    expect(logs.requests).toHaveLength(1);
+    expect(logs.maximumActive()).toBe(1);
+    await user.click(screen.getByRole('checkbox', { name: '보이는 컨테이너 전체 선택' }));
+    expect(screen.getByRole('button', { name: '중지 (3)' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '재시작 (3)' })).toBeDisabled();
+    expect(mock.mutateContainer).not.toHaveBeenCalled();
+    expect(mock.mutateContainers).not.toHaveBeenCalled();
+  });
+
+  it.each(['CommandFailed', 'TimedOut', 'StartFailed', 'StaleHandle', 'StaleSession', 'MalformedOutput', 'IPC_FAILURE'])('discards invalidated %s without treating it as a session invalidation', async code => {
+    const user = userEvent.setup();
+    const logs = controlledLogs();
+    render(<App />);
+    await waitFor(() => expect(logs.requests).toHaveLength(1));
+    await user.click(clearLogs());
+    await logs.fail(0, code);
+
+    expectConnection(false);
+    expect(within(screen.getByRole('region', { name: '서비스 복구' })).getByRole('button', { name: '중지' })).toBeEnabled();
+    expect(screen.queryByText('최근 로그를 읽지 못했습니다.')).not.toBeInTheDocument();
+    expect(output()).toHaveTextContent('로그 조회를 눌러 로그를 확인하세요.');
+    expect(output()).toHaveAttribute('aria-busy', 'false');
+    expect(fetchLogs()).toBeEnabled();
+    expect(logs.requests).toHaveLength(1);
+    expect(logs.maximumActive()).toBe(1);
+  });
+
+  it.each(['success', 'failure'] as const)('keeps the execution slot after clearing and discards the late %s log view without automatically reloading', async outcome => {
     const user = userEvent.setup();
     const logs = controlledLogs();
     render(<App />);
@@ -75,7 +130,7 @@ describe('native log request lifetime', () => {
     expect(fetchLogs()).toBeEnabled();
     expect(output()).toHaveAttribute('aria-busy', 'false');
     expect(output()).toHaveTextContent('로그 조회를 눌러 로그를 확인하세요.');
-    expect(screen.queryByText('연결 재확인 필요')).not.toBeInTheDocument();
+    expectConnection(outcome === 'failure');
     expect(screen.queryByText('최근 로그를 읽지 못했습니다.')).not.toBeInTheDocument();
     expect(logs.requests).toHaveLength(1);
 
@@ -83,6 +138,7 @@ describe('native log request lifetime', () => {
     expect(logs.requests).toHaveLength(2);
     await logs.succeed(1);
     expect(output()).toHaveTextContent('accepted alpha-1');
+    expectConnection(outcome === 'failure');
     expect(logs.maximumActive()).toBe(1);
   });
 
@@ -97,27 +153,34 @@ describe('native log request lifetime', () => {
     expect(fetchLogs()).toBeDisabled();
     await logs.fail(0);
     expect(logs.requests.map(request => request.handle)).toEqual(['alpha-1', 'gamma-1']);
-    expect(screen.queryByText('연결 재확인 필요')).not.toBeInTheDocument();
+    expectConnection(true);
+    expectRecoveryBlocked();
+    expect(screen.queryByText('최근 로그를 읽지 못했습니다.')).not.toBeInTheDocument();
     await logs.succeed(1);
     expect(output()).toHaveTextContent('accepted gamma-1');
+    expectConnection(true);
     expect(logs.maximumActive()).toBe(1);
   });
 
-  it.each(['clear', 'hide'] as const)('drops the queued target when the user chooses to %s', async action => {
+  it.each(['clear', 'hide', 'filter'].flatMap(action => ['success', 'failure'].map(outcome => ({ action, outcome }))))('drops the queued target after $action but preserves current-session warnings on $outcome', async ({ action, outcome }) => {
     const user = userEvent.setup();
     const logs = controlledLogs();
     render(<App />);
     await waitFor(() => expect(logs.requests).toHaveLength(1));
     await select(user, 'beta');
     if (action === 'clear') await user.click(clearLogs());
-    else await user.type(screen.getByRole('textbox', { name: '컨테이너 검색' }), 'no match');
-    await logs.succeed(0);
+    else if (action === 'hide') await user.type(screen.getByRole('textbox', { name: '컨테이너 검색' }), 'no match');
+    else await user.click(within(screen.getByLabelText('컨테이너 필터')).getByRole('button', { name: '중지' }));
+    if (outcome === 'success') await logs.succeed(0);
+    else await logs.fail(0);
     expect(logs.requests).toHaveLength(1);
+    expectConnection(outcome === 'failure');
+    expect(screen.queryByText('최근 로그를 읽지 못했습니다.')).not.toBeInTheDocument();
     if (action === 'clear') expect(output()).toHaveAttribute('aria-busy', 'false');
     else expect(screen.queryByLabelText('최근 로그 내용')).not.toBeInTheDocument();
   });
 
-  it('replaces pending refresh requests with the latest generation and handle', async () => {
+  it.each(['success', 'failure'])('replaces pending refresh requests with the latest generation and handle after old %s', async outcome => {
     const user = userEvent.setup();
     const logs = controlledLogs();
     render(<App />);
@@ -125,14 +188,17 @@ describe('native log request lifetime', () => {
     await refresh(user);
     await refresh(user);
     expect(logs.requests).toHaveLength(1);
-    await logs.succeed(0, 'discarded generation 1');
+    if (outcome === 'success') await logs.succeed(0, 'discarded generation 1');
+    else await logs.fail(0);
     expect(logs.requests.map(request => request.handle)).toEqual(['alpha-1', 'alpha-3']);
     await logs.succeed(1);
     expect(output()).toHaveTextContent('accepted alpha-3');
+    expectConnection(outcome === 'failure');
+    if (outcome === 'failure') expectRecoveryBlocked();
     expect(logs.maximumActive()).toBe(1);
   });
 
-  it('does not drain a request while its replacement inventory is still loading', async () => {
+  it.each(['success', 'failure'])('does not drain a request while its replacement inventory is loading after old %s', async outcome => {
     const user = userEvent.setup();
     const logs = controlledLogs();
     const inventory = deferred<ContainerList>();
@@ -140,16 +206,20 @@ describe('native log request lifetime', () => {
     await waitFor(() => expect(logs.requests).toHaveLength(1));
     mock.listContainers.mockReturnValueOnce(inventory.promise);
     await user.click(screen.getByRole('button', { name: '새로고침' }));
-    await logs.succeed(0);
+    if (outcome === 'success') await logs.succeed(0);
+    else await logs.fail(0);
+    expectConnection(outcome === 'failure');
     expect(logs.requests).toHaveLength(1);
     expect(fetchLogs()).toBeDisabled();
     await act(async () => inventory.resolve(list(2)));
     expect(logs.requests.map(request => request.handle)).toEqual(['alpha-1', 'alpha-2']);
     await logs.succeed(1);
+    expectConnection(outcome === 'failure');
+    if (outcome === 'failure') expectRecoveryBlocked();
     expect(logs.maximumActive()).toBe(1);
   });
 
-  it.each(['removing', 'unknown', 'removed', 'stale'] as const)('does not execute a queued target that becomes %s', async state => {
+  it.each(['removing', 'unknown', 'removed', 'stale'].flatMap(state => ['success', 'failure'].map(outcome => ({ state, outcome }))))('does not execute a queued $state target after old $outcome', async ({ state, outcome }) => {
     const user = userEvent.setup();
     const logs = controlledLogs();
     render(<App />);
@@ -158,8 +228,11 @@ describe('native log request lifetime', () => {
     if (state === 'stale') mock.listContainers.mockRejectedValueOnce({ code: 'CommandFailed', message: 'list unavailable' });
     else mock.listContainers.mockResolvedValueOnce(list(2, state === 'removed' ? containers.filter(container => container.name !== 'beta') : containers.map(container => container.name === 'beta' ? { ...container, state } : container)));
     await refresh(user);
-    await logs.succeed(0);
+    if (outcome === 'success') await logs.succeed(0);
+    else await logs.fail(0);
     expect(logs.requests).toHaveLength(1);
+    expectConnection(outcome === 'failure');
+    expect(screen.queryByText('최근 로그를 읽지 못했습니다.')).not.toBeInTheDocument();
     if (state === 'removed') expect(screen.queryByLabelText('최근 로그 내용')).not.toBeInTheDocument();
     else {
       expect(fetchLogs()).toBeDisabled();
@@ -185,7 +258,65 @@ describe('native log request lifetime', () => {
     expect(logs.maximumActive()).toBe(1);
   });
 
-  it('waits for a mutation and its refresh before starting a pending target', async () => {
+  it.each(['unavailable', 'rejected'])('ignores an old connection error while reconnect has no session and then becomes %s', async outcome => {
+    const user = userEvent.setup();
+    const logs = controlledLogs();
+    const connection = deferred<Environment>();
+    render(<App />);
+    await waitFor(() => expect(logs.requests).toHaveLength(1));
+    expectConnection(false);
+    mock.getEnvironment.mockReturnValueOnce(connection.promise);
+    await user.click(screen.getByRole('button', { name: '다시 연결' }));
+    await logs.fail(0);
+    expect(within(screen.getByRole('region', { name: '연결 환경' })).getByRole('status')).toHaveTextContent('환경 확인 중');
+
+    await act(async () => {
+      if (outcome === 'unavailable') connection.resolve({ ...environment, status: 'unavailable', sessionId: null, mutationAllowed: false });
+      else connection.reject({ code: 'CliNotFound', message: 'new connection could not start' });
+    });
+    // A successful reconnect clears the latch, and "checking" has display priority;
+    // ending without a session proves that neither concealed an old-request latch.
+    expect(within(screen.getByRole('region', { name: '연결 환경' })).getByRole('status')).toHaveTextContent('연결되지 않음');
+    expect(document.querySelector('.footer-connection')).toHaveTextContent('연결되지 않음');
+    expect(screen.queryByText('연결 재확인 필요')).not.toBeInTheDocument();
+    expect(screen.queryByText('discarded old log failure')).not.toBeInTheDocument();
+    expect(screen.queryByText('최근 로그를 읽지 못했습니다.')).not.toBeInTheDocument();
+    expect(logs.requests).toHaveLength(1);
+    expect(mock.listContainers).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['single', 'bulk'])('blocks an already-open %s confirmation before React renders an invalidated log connection failure', async mode => {
+    const user = userEvent.setup();
+    const pending = deferred<RecentLogs>();
+    mock.getRecentLogs.mockReturnValueOnce(pending.promise);
+    mock.mutateContainer.mockReturnValue(new Promise(() => {}));
+    mock.mutateContainers.mockReturnValue(new Promise(() => {}));
+    render(<App />);
+    await waitFor(() => expect(mock.getRecentLogs).toHaveBeenCalledTimes(1));
+    await user.click(clearLogs());
+    if (mode === 'bulk') {
+      await user.click(screen.getByRole('checkbox', { name: '보이는 컨테이너 전체 선택' }));
+      await user.click(screen.getByRole('button', { name: '중지 (3)' }));
+    } else await user.click(within(screen.getByRole('region', { name: '서비스 복구' })).getByRole('button', { name: '중지' }));
+    const confirm = within(screen.getByRole('dialog')).getByRole<HTMLButtonElement>('button', { name: '중지 확인' });
+
+    await act(async () => {
+      pending.reject({ code: 'EnvironmentChanged', message: 'invalidated request detected an engine change' });
+      await Promise.resolve();
+      // Direct deferred IPC keeps the catch before this microtask and React's render after it.
+      expect(confirm).toBeEnabled();
+      confirm.click();
+    });
+    expect(mock.mutateContainer).not.toHaveBeenCalled();
+    expect(mock.mutateContainers).not.toHaveBeenCalled();
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '취소' }));
+    expectConnection(true);
+    expectRecoveryBlocked();
+    expect(output()).toHaveTextContent('로그 조회를 눌러 로그를 확인하세요.');
+    expect(mock.getRecentLogs).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['success', 'failure'])('waits for a mutation and refresh while preserving an old log %s', async outcome => {
     const user = userEvent.setup();
     const logs = controlledLogs();
     const mutation = deferred<MutationResult>();
@@ -195,11 +326,15 @@ describe('native log request lifetime', () => {
     await select(user, 'beta');
     await user.click(within(screen.getByRole('region', { name: '서비스 복구' })).getByRole('button', { name: '중지' }));
     await user.click(screen.getByRole('button', { name: '중지 확인' }));
-    await logs.succeed(0);
+    if (outcome === 'success') await logs.succeed(0);
+    else await logs.fail(0);
     expect(logs.requests).toHaveLength(1);
+    expectConnection(outcome === 'failure');
     await act(async () => mutation.resolve({ outcome: 'succeeded', message: 'completed', command: 'docker stop', stderr: '', reconciliation: 'notNeeded', mutationBlocked: false }));
     expect(logs.requests.map(request => request.handle)).toEqual(['alpha-1', 'beta-2']);
     await logs.succeed(1);
+    expectConnection(outcome === 'failure');
+    if (outcome === 'failure') expectRecoveryBlocked();
     expect(logs.maximumActive()).toBe(1);
   });
 
