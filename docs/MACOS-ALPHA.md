@@ -1,35 +1,36 @@
 # Docker2U macOS 로컬 알파
 
-사용자 문제 검증은 완료되었다. 현재 목표는 Apple Silicon Mac에서 개발 전용
-Colima Container를 조회하고 복구할 수 있는 `Docker2U.app`을 만드는 것이다.
+사용자 문제 검증은 완료되었다. 현재 목표는 Apple Silicon Mac에서 Docker CLI가
+선택한 로컬 Linux Engine의 Container를 조회하고 복구할 수 있는 `Docker2U.app`이다.
 이 문서는 [개발 정의서](DEVELOPMENT-DEFINITION.md)의 현재 단계별 적용 기준이다.
+2026-09-06 연결 정책 개정과 2026-09-05의 Colima 고정 알파 검증 이력을 구분한다.
 
 ## 구현 범위
 
 | 항목 | 로컬 알파 결정 |
 | --- | --- |
 | Stack | React + TypeScript strict + Tauri 2 + Rust |
-| Host 검증 대상 | 현재 macOS 26.5.2 / Apple Silicon |
-| Host 조작 허용 범위 | macOS `26.5.2` / ARM64만 허용하며 Core에서 실제 버전 검사 |
-| Runtime | Colima `docker2u` 개발 프로파일, Docker runtime |
-| VM 기본값 | ARM64, VZ, CPU 2개, 메모리 4 GiB, `--activate=false` |
-| 대상 context | Core가 지정한 `colima-docker2u` |
-| 대상 endpoint | 해당 context와 Colima 상태를 대조한 local Unix socket |
+| Host 호환 범위 | macOS 14 이상 / Apple Silicon, Core에서 실제 버전·architecture 검사 |
+| Runtime | 사용자가 이미 준비한 로컬 Linux Docker Engine |
+| 호환성 판단 | 필요한 CLI·Engine 응답 확인, 정확한 버전·provider·VM 설정·Engine 이름 제한 없음 |
+| 대상 context | 시작·Reconnect에서 인자 없는 `docker context inspect`가 반환한 선택 |
+| 대상 endpoint | 실제 Unix socket 검증 후 canonical 경로를 세션에 고정 |
 | UI | 제공된 React 패널의 어두운 테마, 검색·필터, 왼쪽 목록·오른쪽 상세 |
 | 창 | 기본 1280×800, 최소 1024×680 |
 | 기능 | 환경 진단, 목록·Health, 최근 로그, Refresh, 단건·다중 Start·Stop·Restart |
 | 로그 | 최근 300줄 요청, stdout/stderr 합계 마지막 2 MiB 표시 |
 | 산출물 | 로컬 `.app`, 소스, 자동 검사·실환경 검증 결과 |
 
-전역 Docker 기본 context를 바꾸거나 자동으로 따라가지 않는다. 같은 이름의
-context가 없으면 환경 진단을 반환하고 다른 Engine으로 fallback하지 않는다.
-Docker Desktop의 기존 Container·Volume과 Runtime은 이동하거나 수정하지 않는다.
-Colima 설치·시작은 개발 환경 준비이며 앱에서 Runtime을 관리하지 않는다.
+앱은 전역 Docker 기본 context를 변경하지 않는다. 연결 중 외부 context가 바뀌어도
+Refresh·로그·단건 및 다중 복구는 기존 세션의 Engine을 사용한다. Reconnect에서만
+CLI의 새 선택을 반영하며, 실패하면 이전 세션과 handle을 사용할 수 없다.
+선택을 해석할 수 없거나 endpoint가 미지원·원격이면 진단을 반환하고 다른 Engine으로
+fallback하지 않는다. 앱은 Container·Volume을 이동하거나 Runtime을 설치·시작하지 않는다.
 
 전체 초기화, Delete/Prune, 대상 확인 없는 전체 중지, Terminal/Exec, Compose 실행, 호스트 Port
 Inspector, 자동 갱신, 실시간 로그, 환경 변수 표시와 Local-only 해제 설정은
-제외한다. Windows·Intel Mac·macOS 14+ 전체 범위, 외부 서명·notarization,
-DMG·공개 GitHub Release는 후속 검증이다.
+제외한다. Windows·Intel Mac, 외부 서명·notarization, DMG·공개 GitHub Release는
+후속 검증이다. macOS 14+ 호환성 허용은 모든 OS·CLI·provider 조합의 인증을 뜻하지 않는다.
 
 현재 보이는 목록을 명시적으로 전체 선택한 뒤 확인창을 거치는 Stop은 허용한다.
 검색·필터로 숨겨진 Container나 다른 context를 일괄 작업에 포함하지 않는다.
@@ -55,8 +56,8 @@ Rust toolchain 및 Cargo/frontend lockfile을 고정한다. 최초 설치와 빌
 실제 실행한다. 설치 완료나 캐시 준비를 검사 통과로 대신하지 않는다.
 각 기능 단위는 관련 자동 검사와 실제 Mac 검증으로 확인한다.
 
-1. 환경 진단·실행 계층: CLI 탐색, 고정 context의 local endpoint 검증,
-   실제 Colima·CLI·Engine 버전 수집, typed `get_environment()`와 화면 연결.
+1. 환경 진단·실행 계층: CLI 탐색, CLI의 context 선택과 local endpoint 검증,
+   CLI·Engine metadata 수집, typed `get_environment()`와 화면 연결.
 2. 목록·로그: batch inspect로 State·Health 확인, 원자적 Refresh, 검색·필터,
    최근 로그 한도·정규화·잘림 표시, Stale·빈 결과·연결 오류 화면.
 3. 복구·재조회: Start → Stop → Restart, 확인창, 정확한 대상 재검증,
@@ -68,27 +69,31 @@ Rust toolchain 및 Cargo/frontend lockfile을 고정한다. 최초 설치와 빌
 
 Rust가 CLI 절대경로·endpoint·session·handle→full ID mapping을 소유한다.
 UI는 typed IPC로 session ID와 opaque handle만 전달한다. Shell을 사용하지
-않으며 모든 Engine 명령에 검증된 `--host`를 명시하고 대상·TLS·API 환경
-변수 override를 정리한다. stdout/stderr를 동시에 소비하고 한도, timeout,
-프로세스 종료·정리를 적용한다.
+않는다. 시작·Reconnect의 context discovery에는 앱이 상속한 Docker 대상·TLS 설정을
+전달하여 CLI 자체의 선택을 확인한다. 이후 모든 Engine 명령에는 검증된 canonical
+`--host`를 명시하고 대상·TLS·API 환경변수 override를 제거한다. stdout/stderr를
+동시에 소비하고 한도, timeout, 프로세스 종료·정리를 적용한다.
 
-실제 Colima 상태·버전, context socket, Engine ID·OS·architecture·Server/API
-버전을 대조해 현재 profile을 고정한다. 다른 환경은 진단만 허용한다. 목록은
-전체 조회 성공 시에만 새 generation으로 교체하고 실패하면 마지막 목록을
+discovery 결과의 local Unix socket이 절대경로이고 실제 socket인지 검증한 뒤
+canonical 경로를 저장한다. 세션에는 CLI 경로, Docker config 경로, context 이름과
+Engine ID·OS·architecture·Server/API metadata를 기록한다. 후속 작업은 저장된
+endpoint와 Engine identity만 확인하며 context 또는 legacy Runtime 설정을 재해석하지 않는다.
+목록은 전체 조회 성공 시에만 새 generation으로 교체하고 실패하면 마지막 목록을
 Stale로 표시한다. 이전 session·generation의 결과가 최신 상태를 덮지 않는다.
 
 세션을 발급하기 전에 Core가 `/usr/bin/sw_vers -productVersion`을 Shell 없이
-기존 실행 계층으로 호출하며 제한 시간은 5초다. macOS `26.5.2` / ARM64만
+기존 실행 계층으로 호출하며 제한 시간은 5초다. macOS 14 이상 / ARM64를
 허용하고, 다른 정상 OS·버전·architecture는 `unsupported`, 탐지 실패나 잘못된
 출력은 `unavailable`로 반환한다. 두 경우 모두 세션이 없고 `mutationAllowed=false`다.
-앱의 `minimumSystemVersion: 14.0`은 실행 최소 조건이며 조작 허용 범위가 아니다.
-OS 업데이트 후 허용 범위를 넓히려면 해당 조합 검증과 profile 변경이 필요하다.
+앱의 `minimumSystemVersion: 14.0`과 Core의 최소 Host 기준을 일치시킨다.
+read-only 진단과 목록·inspect 호환성 검사는 개별 Start·Stop·Restart의 권한이나
+성공을 보증하지 않는다. 실제 실행 오류와 재조회 결과는 각각 표시한다.
 
 Refresh 중 Reconnect는 UI와 Core에서 차단한다. Core는 기존 세션·epoch·목록
 generation을 보존하고 `Busy`를 반환한다. 기존 Refresh가 성공하거나 실패한 뒤
 재연결할 수 있으며, UI 함수의 ref 검사로 화면 재렌더링 전 연속 클릭도 차단한다.
 
-Mutation 직전에 full ID, session, generation, endpoint, profile, Engine
+Mutation 직전에 full ID, session, generation, endpoint, Engine
 fingerprint를 확인한다. 단건·다중 mutation은 Core의 전역 lock을 공유하고
 작업 중 다른 mutation·Refresh·Reconnect를 `Busy`로 거부한다.
 Stop·Restart는 대상과 연결 환경의 확인창을 표시한다.
@@ -101,6 +106,10 @@ CLI 없음, 미지원·연결 실패, 빈 목록, 검색 결과 없음, Stale, B
 `ResultUnknown`, 재조회 실패를 구분한다. 목록 키보드 선택, 확인창 focus
 이동·복원과 Escape를 검증한다. UX 시뮬레이터·mock은 개발·테스트 전용이다.
 외부 폰트 요청과 사용하지 않는 서버·AI SDK 의존성은 포함하지 않는다.
+
+환경 응답은 nullable `contextName`, `dockerConfigPath`, 구조화된 `error`와
+기존 CLI·Engine metadata를 제공한다. context 해석 전에 실패하면 이름을 추정해
+표시하지 않는다. 진단에서 실제 config 경로와 오류를 확인할 수 있다.
 
 ### 다중 선택과 일괄 복구
 
@@ -121,6 +130,9 @@ Engine identity 변경, 연결 단절 또는 상태 재조회 실패는 후속 �
 종료 후 한 번 수행한다. Compose 의존성 순서나 전체 작업의 원자성은 보장하지 않는다.
 
 ## 완료 체크리스트
+
+이 절은 2026-09-05의 고정 Colima 연결 정책에서 수행한 단건 알파 검증 이력이다.
+2026-09-06 CLI 선택 연결 변경의 통과 근거로 재사용하지 않는다.
 
 각 항목은 실제로 확인한 범위만 체크한다. 서명·Windows 검증은 현재 로컬 알파의
 완료 조건이 아니다. 화면 검증은 자동 테스트·프로세스 기동과 구분한다.
@@ -151,6 +163,9 @@ Engine identity 변경, 연결 단절 또는 상태 재조회 실패는 후속 �
 
 ## 실환경 기록
 
+2026-09-05 초기 단건 알파의 고정 `colima-docker2u` 환경 기록이다.
+아래 수치와 GUI 결과는 현재 CLI 선택 연결 변경의 검증 결과가 아니다.
+
 환경 진단·목록·최근 로그·Start·Stop·Restart와 재조회 기능을 구현했다.
 아래 결과는 이 Mac에서 확인한 범위이며 다른 OS나 외부 배포를 보증하지 않는다.
 
@@ -176,6 +191,8 @@ Engine identity 변경, 연결 단절 또는 상태 재조회 실패는 후속 �
 | 기본 context | 준비 전후 `desktop-linux` 유지 |
 
 ## 검증 내용과 한계
+
+이 절의 실행·복원·잔류 상태는 2026-09-05 초기 알파 검증 종료 시점의 기록이다.
 
 - Rust 자동 검사: remote endpoint 차단, 고정 `--host`, malformed/batch inspect의
   원자성, stale handle·session·generation, 중복 mutation, Engine 변경,
@@ -261,19 +278,27 @@ Container 수도 0임을 확인했다. 원래 Engine이 계속 응답했고 전�
 
 `~/Library/Application Support/io.github.jgoneit.docker2u/runtime.json`
 
-키는 `dockerPath`, `colimaPath`, `colimaHome`, `limaHome`, `dockerConfig`이며
-각 값은 이미 준비된 도구·디렉터리의 절대경로다. WebView에서 이 경로나 raw Docker
-인자를 전달하는 IPC는 제공하지 않는다. 설정이 없으면 표준 설치 경로를 탐색한다.
+현재 적용하는 키는 이미 준비한 Docker CLI 절대경로인 `dockerPath`뿐이다.
+설정이 없으면 앱 프로세스의 PATH와 알려진 설치 후보 경로를 탐색한다.
+이전 `colimaPath`, `colimaHome`, `limaHome`, `dockerConfig`는 읽어도 무시하고
+`runtime.json`을 자동 수정하지 않는다. 특히 이전 private `dockerConfig`는
+사용자의 Docker CLI 선택을 덮어쓰지 않는다. WebView에서 이 경로나 raw Docker
+인자를 전달하는 IPC는 제공하지 않는다.
 
-현재 개발 장비에서는 `../.docker2u-tools/bin/{docker,colima}`와 같은 도구
-디렉터리의 `colima`, `lima`, `docker-config`를 지정했다. 이 설정은 저장소 밖에
-0600 mode로 작성했으며 앱 bundle에는 포함하지 않는다. Docker private config는
-개발용 `colima-docker2u` context를 갖고, 사용자의 기본 Docker config는 보존한다.
-Colima VM은 앱이 아닌 개발 준비 단계에서 시작한다.
+Docker config 경로는 앱이 상속한 `DOCKER_CONFIG` 또는 기본 `$HOME/.docker`다.
+선택된 CLI가 이 설정과 앱 환경을 해석하며, 앱은 Docker 환경변수 우선순위를
+별도 구현하지 않는다. 명령에 context 인자를 넣지 않고 반환된 이름과 endpoint를
+같은 discovery 결과에서 가져온다.
 
-현재 프로파일은 `docker2u`, ARM64, VZ, CPU 2개, 메모리 4 GiB,
-`autoActivate: false`다. 기존 실패로 생성된 프로파일을 정상 stop/start하여
-준비를 마쳤으며 새로운 VM backend나 Docker Desktop 자원으로 전환하지 않았다.
+Finder 실행은 interactive shell의 PATH·환경과 다를 수 있다. 실행 후 별도
+터미널에서 `export DOCKER_HOST=…` 등을 해도 이미 실행 중인 앱에는 반영되지 않는다.
+환경변수 변경은 앱의 실행 환경에 설정하고 다시 시작한다. `docker context use`로
+Docker 설정의 선택을 바꿨다면 앱의 Reconnect에서 반영한다. 진단에 표시된
+context·config 경로·endpoint를 기준으로 연결 대상을 확인한다.
+
+2026-09-05에는 별도 `../.docker2u-tools` 도구와 private config를 사용하고
+Colima `docker2u`를 ARM64·VZ·CPU 2개·메모리 4 GiB·`autoActivate: false`로
+준비했다. 이는 위 과거 검증의 환경 설명이며 현재 앱의 준비 조건이 아니다.
 
 ## 재현 명령
 
@@ -288,9 +313,10 @@ pnpm native:build
 pnpm native:dev
 ```
 
-실환경 smoke는 아래 명령으로 명시적으로 실행한다. 준비한 `docker2u` Engine에
-테스트 label이 붙은 BusyBox Container 하나를 만들며, 검사가 만든 정확한 대상만
-정리한다. 제품 IPC에는 생성·삭제 기능이 없다.
+아래 명령 이름은 기존 opt-in 실환경 검사 진입점이다. 변경을 일으키는 smoke는
+현재 연결 정책 변경의 기본 검증에 포함하지 않는다. 별도로 승인된 개발용 Engine과
+테스트 대상에서만 실행하고 해당 실행이 만든 정확한 대상만 정리한다.
+제품 IPC에는 생성·삭제 기능이 없다.
 
 ```sh
 DOCKER2U_REAL_SMOKE=1 node scripts/with-toolchain.mjs cargo test --manifest-path src-tauri/Cargo.toml --locked real_runtime_smoke -- --ignored --nocapture
@@ -316,12 +342,15 @@ DOCKER2U_REAL_PROBE=1 node scripts/with-toolchain.mjs cargo test --manifest-path
   artifact로 7일간 보관하며 release로 게시하지 않는다.
 
 CI에는 개발 장비의 도구 디렉터리·native runtime 설정·Colima VM·서명 credential이
-필요하지 않다. 실제 Colima 검사 두 개는 기본 실행의 ignored 상태를 유지한다.
-CI의 macOS 빌드·fake CLI 검사 성공은 실제 Colima 연결, Finder GUI, 서명 배포 또는
+필요하지 않다. 실제 Engine opt-in 검사는 기본 실행의 ignored 상태를 유지한다.
+CI의 macOS 빌드·fake CLI 검사 성공은 실제 Engine 연결, Finder GUI, 서명 배포 또는
 macOS 지원 범위 확대의 증거가 아니다. 각 원격 실행 결과는 PR의 checks와 Actions에서
 확인하며, workflow 추가 자체를 검사 통과로 기록하지 않는다.
 
 ## PR #1 리뷰 회귀 검사
+
+2026-09-05의 정확한 Host 버전·Colima 고정 정책에 대한 과거 검사 기록이다.
+현재의 macOS 14+·CLI 선택 연결 정책에 대한 재검증과 구분한다.
 
 - React/IPC 테스트 44건과 TypeScript strict 검사를 통과했다. Refresh 중 목록 유지와
   재연결 차단, 렌더링 전 연속 클릭, 성공·일반 오류·timeout 후 재연결을 검사한다.
@@ -343,6 +372,7 @@ macOS 지원 범위 확대의 증거가 아니다. 각 원격 실행 결과는 P
 2026-09-05 다중 복구 변경에서 실제 실행한 범위만 기록한다. 아래 체크리스트는
 전체 접근이 적용된 새 작업에서 수행한 재검증 결과다. 기존 단건 실환경 기록 및
 앞선 권한 오류 이력과 구분한다.
+이때의 고정 Colima 연결·GUI 결과를 2026-09-06 CLI 선택 연결 변경의 증거로 사용하지 않는다.
 
 - [x] UI: 개별 체크·전체 선택·부분 선택, 검색·필터 변경과 Refresh·Reconnect 후
   체크 해제, 단일 상세 선택 보존, 상태별 실행 가능 개수와 버튼 정책.
@@ -459,3 +489,38 @@ Windows·다른 Host 검증은 이번 다중 복구 검증 범위에 포함하�
 
 Windows 실환경, Apple Developer ID 서명, notarization·stapling, DMG,
 clean-machine 설치와 외부 Pilot은 후속 단계다.
+
+## 2026-09-06 Docker CLI 연결 전환 검증
+
+이번 변경은 기존 다중 선택 구현을 보존한 별도 `codex/docker-cli-context` 작업공간에서
+검증했다. 실행 환경은 macOS 26.6.2 / ARM64이며, native `dockerPath`의 Docker CLI
+29.8.0이 사용자 `~/.docker`의 `desktop-linux`를 선택했다. Docker Desktop Engine은
+29.7.2 / API 1.55, Linux aarch64였다. 이는 macOS 14+ 전체 조합의 실검증을 의미하지 않는다.
+
+| 검사 | 이번 변경 결과 |
+| --- | --- |
+| Frontend / IPC | 3개 파일, 91개 테스트 통과 |
+| Rust 포맷 및 전체 테스트 | 포맷 통과, 50개 통과, opt-in 실환경 3개는 기본 실행에서 ignored |
+| Frontend / native build | TypeScript·Vite 통과, ARM64 `.app` 생성 |
+| 실제 환경 probe | 별도 실행 1개 통과, CLI와 Core의 전체 container full ID 집합 일치 |
+| 실제 단건 smoke | 별도 실행 1개 통과, 목록·Health·최근 로그·Start·Stop·Restart 및 정확한 ID 정리 |
+| 실제 일괄 smoke | 별도 실행 1개 통과, 혼합 Start의 skipped와 순차 Restart·Stop·Start 및 정리 |
+| 실제 native GUI | 새 빌드 경로의 `tauri://localhost`에서 소켓 없음 안내, Reconnect, Desktop 연결·목록 4개·진단 정보 확인 |
+| 원본과 환경 보존 | 원본 42개 파일·index·unstaged diff 보존, native/Docker 설정 해시·mode 유지, 기존 컨테이너 4개의 ID·이름·상태·StartedAt·FinishedAt 유지 |
+
+새 자동 회귀 검사는 discovery 입력 전달과 실행 환경 차단, context A→B 전환과
+기존 session 고정, 잘못된 설정·소켓, CLI/Engine 변경을 포함한다. Refresh 또는
+로그 검증에서 연결 이상을 감지한 경우 소켓 복구와 성공한 Refresh만으로 조작을
+다시 허용하지 않고 Reconnect까지 차단하는 Core/UI 경로도 검사했다.
+
+중첩 작업공간에서는 기존 `CARGO_HOME`·`RUSTUP_HOME`·PATH를 명시했다.
+기존 node_modules를 재사용하면서 pnpm의 경로 metadata 자동 재설치를 피하려고
+`pnpm_config_verify_deps_before_run=false`를 사용했다. 새 의존성 설치는 하지 않았다.
+
+처음에는 Desktop 소켓이 없었고, 이후 소켓과 Engine이 응답하는 것을 확인한 뒤
+실환경 검사를 진행했다. Agent가 Docker Desktop이나 Colima를 시작하지 않았다.
+검증용 컨테이너는 모두 제거됐으며 smoke에 사용한 `busybox:1.37.0` 이미지는 남을 수 있다.
+실제 GUI 버튼을 통한 컨테이너 조작·장애 주입·서로 다른 Engine 사이 전환은 이번에
+수행하지 않았다. 해당 동작은 자동 Core/IPC/UI 검사와 별도 실제 Core smoke의 증거로
+구분한다. Colima는 미실행 상태여서 새 연결 정책의 Colima 실환경 검증은 미수행이다.
+서명·notarization·외부 배포·커밋·push는 수행하지 않았다.
