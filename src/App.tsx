@@ -151,7 +151,16 @@ function AppContent() {
       const criteria = searchCriteria.current;
       const matching = result.containers.filter(container => matchesContainer(container, criteria.query, criteria.filter));
       if (initialSelection.current) { initialSelection.current = false; selectContainer(matching[0]?.fullId ?? null); }
-      else if (!matching.some(container => container.fullId === selectedIdRef.current)) selectContainer(null);
+      else {
+        const retained = matching.find(container => container.fullId === selectedIdRef.current);
+        if (!retained) selectContainer(null);
+        else if (!result.stale && !readableStates.has(retained.state)) {
+          // The identity can remain selected after its previous logs become unreadable.
+          setLogs(null);
+          setLogsError(null);
+          setLoadingLogs(false);
+        }
+      }
     } catch (error) {
       if (epoch.current !== requestEpoch || session.current !== sessionId || request !== listSequence.current) return;
       const failure = coreError(error);
