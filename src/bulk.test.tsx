@@ -10,7 +10,7 @@ function render(ui: ReactNode) { return renderUI(<PreferencesProvider initialPre
 
 const container: Container = {
   handle: 'handle-1', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'worker',
-  image: 'worker:1', state: 'exited', health: null, ports: [], createdAt: '2026-09-05T03:00:00Z',
+  image: 'worker:1', state: 'exited', health: null, ports: [], composeProject: null, composeService: null, createdAt: '2026-09-05T03:00:00Z',
 };
 const mutation: MutationResult = {
   outcome: 'succeeded', message: '명령이 완료되었습니다.', command: 'docker --host unix:///fixed container start target',

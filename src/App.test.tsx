@@ -1,3 +1,4 @@
+import { installSnapshotStreams } from './test/snapshotStreams';
 import { StrictMode } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -8,7 +9,7 @@ import type { Action, BulkMutationResult, Container, ContainerList, Environment,
 
 vi.mock('./api', async importOriginal => ({
   ...await importOriginal<typeof import('./api')>(),
-  api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() },
+  api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), startLogStream: vi.fn(), readLogStream: vi.fn(), stopLogStream: vi.fn(), getContainerStats: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() },
 }));
 const mock = vi.mocked(api);
 const actionName = (action: string) => ({ Start: '시작', Stop: '중지', Restart: '재시작' } as Record<string, string>)[action] ?? action;
@@ -18,7 +19,7 @@ const environment: Environment = {
   dockerPath: '/opt/homebrew/bin/docker', dockerConfigPath: '/Users/test/.docker', clientVersion: '29.8.0',
   serverVersion: '29.8.0', apiVersion: '1.54', engineId: 'engine-1', osType: 'linux', architecture: 'aarch64', mutationAllowed: true, error: null, diagnostics: [],
 };
-const backend: Container = { handle: 'handle-1', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'backend', image: 'company-api:1', state: 'running', health: 'healthy', ports: ['127.0.0.1:8080->8080/tcp'], createdAt: '2026-09-05T03:00:00Z' };
+const backend: Container = { handle: 'handle-1', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'backend', image: 'company-api:1', state: 'running', health: 'healthy', ports: ['127.0.0.1:8080->8080/tcp'], composeProject: null, composeService: null, createdAt: '2026-09-05T03:00:00Z' };
 const redis: Container = { ...backend, handle: 'handle-2', fullId: 'b'.repeat(64), shortId: 'b'.repeat(12), name: 'redis', image: 'redis:7', state: 'exited', health: 'none', ports: [] };
 function list(generation = 1, containers = [backend, redis], sessionId = 'session-1'): ContainerList {
   return { sessionId, generation, containers: containers.map(container => ({ ...container, handle: `${container.handle}-g${generation}` })), refreshedAt: '2026-09-05T04:20:00Z', stale: false };
@@ -58,6 +59,7 @@ async function confirmBulkWithKeyboard(user: ReturnType<typeof userEvent.setup>,
 }
 beforeEach(() => {
   vi.resetAllMocks();
+  installSnapshotStreams(mock);
   localStorage.setItem('docker2u.preferences.v1', JSON.stringify({ theme: 'dark', language: 'ko' }));
   let generation = 0;
   mock.getEnvironment.mockResolvedValue(environment);
@@ -531,8 +533,10 @@ describe('environment and inventory', () => {
     expect(mock.listContainers).toHaveBeenCalledWith('session-1');
     expect(screen.getByRole('heading', { name: 'Docker2U' })).toBeVisible();
     expect(within(screen.getByRole('region', { name: '컨테이너 상세' })).getByText('정상')).toBeVisible();
+    expect(screen.getByText(/목록 갱신 시각/)).not.toBeVisible();
+    fireEvent.click(screen.getByText('컨테이너 정보'));
     expect(screen.getByText(/목록 갱신 시각/)).toBeVisible();
-    expect(within(screen.getByRole('list', { name: '컨테이너 목록' })).queryByRole('button', { name: '중지' })).not.toBeInTheDocument();
+    expect(within(screen.getByRole('table', { name: '컨테이너 목록' })).queryByRole('button', { name: '중지' })).not.toBeInTheDocument();
   });
   it.each([
     ['CliNotFound', 'Docker CLI를 확인할 수 없습니다.'],
@@ -573,8 +577,11 @@ describe('environment and inventory', () => {
     await connected();
     const connection = within(screen.getByRole('region', { name: '연결 환경' }));
     expect(connection.getByText(contextName ?? 'Context 확인 전')).toBeVisible();
-    expect(connection.getByText('unix:///Users/test/.docker/run/docker.sock')).toBeVisible();
+    expect(connection.getByText(contextName ?? 'Context 확인 전')).toHaveAttribute('title', 'unix:///Users/test/.docker/run/docker.sock');
+    expect(screen.queryByText('새로고침은 현재 연결 갱신 · 다시 연결은 CLI 설정 다시 적용')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '환경 진단 보기' }));
     expect(screen.getByText('새로고침은 현재 연결 갱신 · 다시 연결은 CLI 설정 다시 적용')).toBeVisible();
+    expect(screen.getByText('unix:///Users/test/.docker/run/docker.sock')).toBeVisible();
     expect(screen.queryByText('colima-docker2u')).not.toBeInTheDocument();
   });
   it('renders a recoverable transport failure and reconnects', async () => {
@@ -592,15 +599,15 @@ describe('environment and inventory', () => {
     render(<App />);
     await connected();
     await user.type(screen.getByRole('textbox', { name: '컨테이너 검색' }), '8080');
-    expect(within(screen.getByRole('list', { name: '컨테이너 목록' })).getAllByRole('button')).toHaveLength(1);
-    expect(within(screen.getByRole('list', { name: '컨테이너 목록' })).getByRole('button')).toHaveTextContent('backend');
+    expect(within(screen.getByRole('table', { name: '컨테이너 목록' })).getAllByRole('button')).toHaveLength(1);
+    expect(within(screen.getByRole('table', { name: '컨테이너 목록' })).getByRole('button')).toHaveTextContent('backend');
     await user.clear(screen.getByRole('textbox', { name: '컨테이너 검색' }));
     await user.type(screen.getByRole('textbox'), 'missing');
     expect(screen.getByText('검색 결과가 없습니다.')).toBeVisible();
     await user.click(screen.getByRole('button', { name: '검색·필터 초기화' }));
     await user.click(within(screen.getByLabelText('컨테이너 필터')).getByRole('button', { name: '중지' }));
-    expect(within(screen.getByRole('list', { name: '컨테이너 목록' })).getAllByRole('button')).toHaveLength(1);
-    expect(within(screen.getByRole('list', { name: '컨테이너 목록' })).getByRole('button')).toHaveTextContent('redis');
+    expect(within(screen.getByRole('table', { name: '컨테이너 목록' })).getAllByRole('button')).toHaveLength(1);
+    expect(within(screen.getByRole('table', { name: '컨테이너 목록' })).getByRole('button')).toHaveTextContent('redis');
     mock.listContainers.mockResolvedValueOnce(list(2, []));
     await user.click(screen.getByRole('button', { name: '새로고침' }));
     expect(await screen.findByRole('heading', { name: '아직 컨테이너가 없습니다.' })).toBeVisible();
@@ -628,7 +635,7 @@ describe('environment and inventory', () => {
     mock.listContainers.mockRejectedValueOnce({ code: 'MalformedOutput', message: '전체 목록을 해석하지 못했습니다.' });
     await user.click(screen.getByRole('button', { name: '새로고침' }));
     expect(await screen.findByText('오래된 정보 · 마지막 정상 목록입니다.')).toBeVisible();
-    expect(within(screen.getByRole('list', { name: '컨테이너 목록' })).getAllByRole('button')).toHaveLength(2);
+    expect(within(screen.getByRole('table', { name: '컨테이너 목록' })).getAllByRole('button')).toHaveLength(2);
     expect(recovery().getByRole('button', { name: '중지' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '로그 조회' })).toBeDisabled();
     await user.click(screen.getByRole('button', { name: '새로고침' }));
@@ -650,7 +657,7 @@ describe('environment and inventory', () => {
     await user.click(reconnectButton);
     expect(mock.getEnvironment).toHaveBeenCalledTimes(1);
     expect(mock.listContainers).toHaveBeenCalledTimes(2);
-    expect(within(screen.getByRole('list', { name: '컨테이너 목록' })).getAllByRole('button')).toHaveLength(2);
+    expect(within(screen.getByRole('table', { name: '컨테이너 목록' })).getAllByRole('button')).toHaveLength(2);
     expect(screen.getByRole('button', { name: /backend/ })).toBeVisible();
     expect(screen.getByRole('button', { name: /redis/ })).toBeVisible();
     expect(recovery().getByRole('button', { name: '중지' })).toBeDisabled();
@@ -683,14 +690,14 @@ describe('environment and inventory', () => {
     await user.click(reconnectButton);
     expect(mock.getEnvironment).toHaveBeenCalledTimes(1);
     expect(mock.listContainers).toHaveBeenCalledTimes(2);
-    expect(within(screen.getByRole('list', { name: '컨테이너 목록' })).getAllByRole('button')).toHaveLength(2);
+    expect(within(screen.getByRole('table', { name: '컨테이너 목록' })).getAllByRole('button')).toHaveLength(2);
     expect(screen.getByRole('button', { name: /backend/ })).toBeVisible();
     expect(screen.getByRole('button', { name: /redis/ })).toBeVisible();
     await act(async () => { pending.reject(failure); });
     await user.click(screen.getByText(`진단 상세 · ${failure.code}`));
     expect(screen.getByText(failure.message)).toBeVisible();
     expect(screen.getByText('오래된 정보 · 마지막 정상 목록입니다.')).toBeVisible();
-    expect(within(screen.getByRole('list', { name: '컨테이너 목록' })).getAllByRole('button')).toHaveLength(2);
+    expect(within(screen.getByRole('table', { name: '컨테이너 목록' })).getAllByRole('button')).toHaveLength(2);
     expect(refreshButton).toBeEnabled();
     expect(reconnectButton).toBeEnabled();
     mock.getEnvironment.mockResolvedValueOnce({ ...environment, sessionId: 'session-2' });
@@ -719,7 +726,7 @@ describe('environment and inventory', () => {
     });
     expect(mock.getEnvironment).toHaveBeenCalledTimes(1);
     expect(mock.listContainers).toHaveBeenCalledTimes(2);
-    expect(within(screen.getByRole('list', { name: '컨테이너 목록' })).getAllByRole('button')).toHaveLength(2);
+    expect(within(screen.getByRole('table', { name: '컨테이너 목록' })).getAllByRole('button')).toHaveLength(2);
     expect(screen.getByRole('button', { name: /backend/ })).toBeVisible();
     expect(screen.getByRole('button', { name: /redis/ })).toBeVisible();
     expect(reconnectButton).toBeDisabled();
@@ -992,7 +999,7 @@ describe('latest operation survives detail selection independently', () => {
 });
 
 describe('CLI connection session replacement', () => {
-  it.each(['EnvironmentChanged', 'SocketMissing'])('keeps log verification %s blocked after logs and Refresh recover until Reconnect', async code => {
+  it.each(['EnvironmentChanged', 'SocketMissing'])('keeps log verification %s blocked through log retries and Refresh until Reconnect', async code => {
     const user = userEvent.setup();
     render(<App />);
     await connected();
@@ -1003,8 +1010,9 @@ describe('CLI connection session replacement', () => {
     expect(screen.getByText('로그 연결 검증 실패')).toBeVisible();
     expect(screen.getByText('추가 복구 작업이 차단되었습니다. 재연결로 환경을 다시 검증하세요.')).toBeVisible();
     expect(recovery().getByRole('button', { name: '중지' })).toBeDisabled();
+    const beforeRetry = mock.startLogStream.mock.calls.length;
     await user.click(screen.getByRole('button', { name: '로그 조회' }));
-    expect(await screen.findByText('service ready')).toBeVisible();
+    expect(mock.startLogStream).toHaveBeenCalledTimes(beforeRetry);
     await user.click(screen.getByRole('button', { name: '새로고침' }));
     await waitFor(() => expect(screen.getByRole('button', { name: '새로고침' })).toBeEnabled());
     expect(recovery().getByRole('button', { name: '중지' })).toBeDisabled();
@@ -1017,11 +1025,11 @@ describe('CLI connection session replacement', () => {
   });
   it('blocks a queued bulk request as soon as background log verification fails after a successful Refresh', async () => {
     const user = userEvent.setup();
-    const backgroundLogs = deferred<RecentLogs>();
+    const backgroundLogs = deferred<Awaited<ReturnType<typeof api.startLogStream>>>();
     render(<App />);
     await connected();
     await waitFor(() => expect(screen.getByRole('button', { name: '로그 조회' })).toBeEnabled());
-    mock.getRecentLogs.mockReturnValueOnce(backgroundLogs.promise);
+    mock.startLogStream.mockReturnValueOnce(backgroundLogs.promise);
     await user.click(screen.getByRole('button', { name: '새로고침' }));
     await waitFor(() => expect(screen.getByRole('button', { name: '새로고침' })).toBeEnabled());
     await user.click(screen.getByRole('checkbox', { name: '보이는 컨테이너 전체 선택' }));

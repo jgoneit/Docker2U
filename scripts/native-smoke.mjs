@@ -57,6 +57,37 @@ if (command === 'build') {
     override,
   }, null, 2) + '\n');
   console.log(`Validation bundle: ${app}\nProduction CSP and Rust IPC are unchanged. This is a test-only bundle.`);
+} else if (['live-on', 'live-off'].includes(command)) {
+  // Reuse the fixture's controller ownership check. Only the exact live run in
+  // /tmp can receive a gate; no Docker endpoint or user config is modified.
+  await run('/usr/bin/python3', ['-c', `
+import importlib.util, json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("fixture", path)
+fixture = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fixture)
+manifest = json.loads(fixture.ACTIVE.read_text())
+root = Path(manifest["fixtureRoot"])
+if manifest.get("marker") != "NATIVE_SMOKE_HARNESS" or not fixture.owned_controller(manifest):
+    raise RuntimeError("No owned native smoke run is active")
+if root.resolve() != root or root.parent != Path("/tmp").resolve() or not root.name.startswith("d2u-smoke-") or root.name != manifest["runId"]:
+    raise RuntimeError("The active fixture root is not an owned native smoke directory")
+launch = json.loads((root / "launch.json").read_text())
+if any(launch.get(key) != manifest.get(key) for key in ["runId", "binarySha256", "startedAtMs", "controllerPid"]):
+    raise RuntimeError("Native smoke launch identity does not match")
+gate = root / "follow-live"
+if gate.is_symlink():
+    raise RuntimeError("Refusing a linked follow gate")
+enabled = sys.argv[2] == "live-on"
+if enabled:
+    gate.write_text("enabled\\n")
+    gate.chmod(0o600)
+else:
+    gate.unlink(missing_ok=True)
+fixture.control_event(root, sys.argv[2])
+print(json.dumps({"command": sys.argv[2], "fixtureRoot": str(root), "liveOutput": enabled}))
+`, resolve(repository, 'scripts/native-smoke-fixture.py'), command]);
 } else if (['launch', 'status', 'arm-engine-change', 'socket-off', 'socket-on', 'stop', 'report'].includes(command)) {
   const appArguments = [];
   if (command === 'launch' && !args.some(value => value === '--app' || value.startsWith('--app='))) {
@@ -73,9 +104,15 @@ if (command === 'build') {
   pnpm native:smoke arm-engine-change  Delay the next info response for 3s, then change identity
   pnpm native:smoke socket-off   Remove only the fixture socket before a log read
   pnpm native:smoke socket-on    Restore the fixture socket before recovery checks
+  pnpm native:smoke live-on      Emit fixture stdout/stderr ticks for live/pause/resume checks
+  pnpm native:smoke live-off     Keep follow connected with no new fixture ticks
   pnpm native:smoke report [--ui-results path.json]  Combine CLI trace with the UI JSON report
   pnpm native:smoke stop         Stop only the owned validation run and archive evidence
 
+The fixture exposes two Compose services and one standalone container, plus
+explicit batched CPU/memory samples. Follow starts with the stable 2 MiB search
+payload; live-on enables new stdout/stderr output every 250ms. Keep live-off for
+dense search probes and resubscribe after live ticks evict the identity header.
 The test page offers search, Clear/connection, socket-error and recovery probes.
 Read the page report through Computer Use and save its JSON for the combined report.
 Never use this validation bundle as the final production app.`);

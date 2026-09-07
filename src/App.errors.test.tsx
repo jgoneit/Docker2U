@@ -1,3 +1,4 @@
+import { installSnapshotStreams } from './test/snapshotStreams';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,10 +10,10 @@ import { PREFERENCES_KEY } from './preferences';
 
 vi.mock('./api', async importOriginal => ({
   ...await importOriginal<typeof import('./api')>(),
-  api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() },
+  api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), startLogStream: vi.fn(), readLogStream: vi.fn(), stopLogStream: vi.fn(), getContainerStats: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() },
 }));
 const mock = vi.mocked(api);
-const container: Container = { handle: 'backend-handle', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'backend', image: 'local/api:1', state: 'exited', health: null, ports: [], createdAt: '2026-09-06T00:00:00Z' };
+const container: Container = { handle: 'backend-handle', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'backend', image: 'local/api:1', state: 'exited', health: null, ports: [], composeProject: null, composeService: null, createdAt: '2026-09-06T00:00:00Z' };
 const environment: Environment = { status: 'ready', sessionId: 'session-1', contextName: 'local', endpoint: 'unix:///local.sock', dockerPath: '/local/docker', dockerConfigPath: '/local/config', clientVersion: '29', serverVersion: '29', apiVersion: '1.54', engineId: 'engine-1', osType: 'linux', architecture: 'arm64', mutationAllowed: true, error: null, diagnostics: [] };
 const snapshot: ContainerList = { sessionId: 'session-1', generation: 1, containers: [container], refreshedAt: '2026-09-06T00:00:00Z', stale: false };
 const logs: RecentLogs = { sessionId: 'session-1', generation: 1, handle: container.handle, text: 'retained original log', truncated: false, byteCount: 21, command: 'docker logs exact-id', stderr: '' };
@@ -26,6 +27,7 @@ async function changeLanguage(user: ReturnType<typeof userEvent.setup>, from: 'k
 }
 beforeEach(() => {
   vi.resetAllMocks();
+  installSnapshotStreams(mock);
   generation = 0;
   window.localStorage.clear();
   window.localStorage.setItem(PREFERENCES_KEY, JSON.stringify({ theme: 'dark', language: 'ko' }));

@@ -3,12 +3,12 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { api } from './api';
-import type { Container, ContainerList, Environment, MutationResult, RecentLogs } from './api';
+import type { Container, ContainerList, Environment, MutationResult, RecentLogs, LogStreamStart } from './api';
 
-vi.mock('./api', async importOriginal => ({ ...await importOriginal<typeof import('./api')>(), api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() } }));
+vi.mock('./api', async importOriginal => ({ ...await importOriginal<typeof import('./api')>(), api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), startLogStream: vi.fn(), readLogStream: vi.fn(), stopLogStream: vi.fn(), getContainerStats: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() } }));
 const mock = vi.mocked(api);
 const environment: Environment = { status: 'ready', sessionId: 'session-1', contextName: 'local', endpoint: 'unix:///local.sock', dockerPath: '/local/docker', dockerConfigPath: '/local/config', clientVersion: '29', serverVersion: '29', apiVersion: '1.54', engineId: 'engine-1', osType: 'linux', architecture: 'arm64', mutationAllowed: true, error: null, diagnostics: [] };
-const containers: Container[] = ['alpha', 'beta', 'gamma'].map((name, index) => ({ handle: name, fullId: String(index + 1).repeat(64), shortId: String(index + 1).repeat(12), name, image: 'local/service:1', state: 'running', health: 'healthy', ports: [], createdAt: '2026-09-06T00:00:00Z' }));
+const containers: Container[] = ['alpha', 'beta', 'gamma'].map((name, index) => ({ handle: name, fullId: String(index + 1).repeat(64), shortId: String(index + 1).repeat(12), composeProject: null, composeService: null, name, image: 'local/service:1', state: 'running', health: 'healthy', ports: [], createdAt: '2026-09-06T00:00:00Z' }));
 function list(generation = 1, rows = containers, sessionId = 'session-1'): ContainerList {
   return { sessionId, generation, containers: rows.map(container => ({ ...container, handle: `${container.handle}-${generation}` })), refreshedAt: '2026-09-06T00:00:00Z', stale: false };
 }
@@ -22,12 +22,17 @@ function controlledLogs() {
   const requests: Array<ReturnType<typeof deferred<RecentLogs>> & { sessionId: string; handle: string }> = [];
   let active = 0;
   let maximumActive = 0;
-  mock.getRecentLogs.mockImplementation((sessionId, handle) => {
+  const frames = new Map<string, RecentLogs>();
+  mock.startLogStream.mockImplementation((sessionId, _generation, handle) => {
     const pending = { ...deferred<RecentLogs>(), sessionId, handle };
     requests.push(pending);
     maximumActive = Math.max(maximumActive, ++active);
-    return pending.promise.finally(() => { --active; });
+    return pending.promise.then(logs => {
+      const streamId = `${sessionId}/${handle}`; frames.set(streamId, logs);
+      return { sessionId, streamId, fullId: containers.find(container => handle.startsWith(container.handle))!.fullId };
+    }).finally(() => { --active; });
   });
+  mock.readLogStream.mockImplementation(async (sessionId, streamId) => ({ sessionId, streamId, sequence: 1, text: frames.get(streamId)?.text ?? '', terminal: false, truncated: false, error: null }));
   return {
     requests,
     maximumActive: () => maximumActive,
@@ -46,7 +51,6 @@ const output = () => screen.getByLabelText('최근 로그 내용');
 function expectConnection(warning: boolean) {
   const label = warning ? '연결 재확인 필요' : '로컬 · 연결됨';
   expect(within(screen.getByRole('region', { name: '연결 환경' })).getByRole('status')).toHaveTextContent(label);
-  expect(document.querySelector('.footer-connection')).toHaveTextContent(label);
 }
 function expectRecoveryBlocked() {
   const recovery = within(screen.getByRole('region', { name: '서비스 복구' }));
@@ -63,6 +67,8 @@ beforeEach(() => {
   localStorage.setItem('docker2u.preferences.v1', JSON.stringify({ theme: 'dark', language: 'ko' }));
   let generation = 0;
   mock.getEnvironment.mockResolvedValue(environment);
+  mock.stopLogStream.mockResolvedValue();
+  mock.getContainerStats.mockReturnValue(new Promise(() => {}));
   mock.listContainers.mockImplementation(async sessionId => list(++generation, containers, sessionId));
 });
 
@@ -135,9 +141,13 @@ describe('native log request lifetime', () => {
     expect(logs.requests).toHaveLength(1);
 
     await user.click(fetchLogs());
-    expect(logs.requests).toHaveLength(2);
-    await logs.succeed(1);
-    expect(output()).toHaveTextContent('accepted alpha-1');
+    if (outcome === 'failure') {
+      // A connection-invalidating failure requires Reconnect before another stream.
+      expect(logs.requests).toHaveLength(1); expectRecoveryBlocked();
+    } else {
+      expect(logs.requests).toHaveLength(2);
+      await logs.succeed(1); expect(output()).toHaveTextContent('accepted alpha-1');
+    }
     expectConnection(outcome === 'failure');
     expect(logs.maximumActive()).toBe(1);
   });
@@ -151,14 +161,13 @@ describe('native log request lifetime', () => {
     await select(user, 'gamma');
     expect(logs.requests).toHaveLength(1);
     expect(fetchLogs()).toBeDisabled();
-    await logs.fail(0);
+    await logs.fail(0, 'TimedOut');
     expect(logs.requests.map(request => request.handle)).toEqual(['alpha-1', 'gamma-1']);
-    expectConnection(true);
-    expectRecoveryBlocked();
+    expectConnection(false);
     expect(screen.queryByText('최근 로그를 읽지 못했습니다.')).not.toBeInTheDocument();
     await logs.succeed(1);
     expect(output()).toHaveTextContent('accepted gamma-1');
-    expectConnection(true);
+    expectConnection(false);
     expect(logs.maximumActive()).toBe(1);
   });
 
@@ -180,7 +189,7 @@ describe('native log request lifetime', () => {
     else expect(screen.queryByLabelText('최근 로그 내용')).not.toBeInTheDocument();
   });
 
-  it.each(['success', 'failure'])('replaces pending refresh requests with the latest generation and handle after old %s', async outcome => {
+  it.each(['success', 'failure'])('keeps a pending stream pinned across repeated inventory refresh after %s', async outcome => {
     const user = userEvent.setup();
     const logs = controlledLogs();
     render(<App />);
@@ -190,15 +199,14 @@ describe('native log request lifetime', () => {
     expect(logs.requests).toHaveLength(1);
     if (outcome === 'success') await logs.succeed(0, 'discarded generation 1');
     else await logs.fail(0);
-    expect(logs.requests.map(request => request.handle)).toEqual(['alpha-1', 'alpha-3']);
-    await logs.succeed(1);
-    expect(output()).toHaveTextContent('accepted alpha-3');
+    expect(logs.requests.map(request => request.handle)).toEqual(['alpha-1']);
+    if (outcome === 'success') expect(output()).toHaveTextContent('discarded generation 1');
     expectConnection(outcome === 'failure');
     if (outcome === 'failure') expectRecoveryBlocked();
     expect(logs.maximumActive()).toBe(1);
   });
 
-  it.each(['success', 'failure'])('does not drain a request while its replacement inventory is loading after old %s', async outcome => {
+  it.each(['success', 'failure'])('preserves the existing stream while replacement inventory loads after %s', async outcome => {
     const user = userEvent.setup();
     const logs = controlledLogs();
     const inventory = deferred<ContainerList>();
@@ -212,8 +220,8 @@ describe('native log request lifetime', () => {
     expect(logs.requests).toHaveLength(1);
     expect(fetchLogs()).toBeDisabled();
     await act(async () => inventory.resolve(list(2)));
-    expect(logs.requests.map(request => request.handle)).toEqual(['alpha-1', 'alpha-2']);
-    await logs.succeed(1);
+    expect(logs.requests.map(request => request.handle)).toEqual(['alpha-1']);
+    if (outcome === 'success') expect(output()).toHaveTextContent('accepted alpha-1');
     expectConnection(outcome === 'failure');
     if (outcome === 'failure') expectRecoveryBlocked();
     expect(logs.maximumActive()).toBe(1);
@@ -277,7 +285,7 @@ describe('native log request lifetime', () => {
     // A successful reconnect clears the latch, and "checking" has display priority;
     // ending without a session proves that neither concealed an old-request latch.
     expect(within(screen.getByRole('region', { name: '연결 환경' })).getByRole('status')).toHaveTextContent('연결되지 않음');
-    expect(document.querySelector('.footer-connection')).toHaveTextContent('연결되지 않음');
+    expect(document.querySelector('.connection-status')).toHaveTextContent('연결되지 않음');
     expect(screen.queryByText('연결 재확인 필요')).not.toBeInTheDocument();
     expect(screen.queryByText('discarded old log failure')).not.toBeInTheDocument();
     expect(screen.queryByText('최근 로그를 읽지 못했습니다.')).not.toBeInTheDocument();
@@ -287,12 +295,12 @@ describe('native log request lifetime', () => {
 
   it.each(['single', 'bulk'])('blocks an already-open %s confirmation before React renders an invalidated log connection failure', async mode => {
     const user = userEvent.setup();
-    const pending = deferred<RecentLogs>();
-    mock.getRecentLogs.mockReturnValueOnce(pending.promise);
+    const pending = deferred<LogStreamStart>();
+    mock.startLogStream.mockReturnValueOnce(pending.promise);
     mock.mutateContainer.mockReturnValue(new Promise(() => {}));
     mock.mutateContainers.mockReturnValue(new Promise(() => {}));
     render(<App />);
-    await waitFor(() => expect(mock.getRecentLogs).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mock.startLogStream).toHaveBeenCalledTimes(1));
     await user.click(clearLogs());
     if (mode === 'bulk') {
       await user.click(screen.getByRole('checkbox', { name: '보이는 컨테이너 전체 선택' }));
@@ -321,7 +329,7 @@ describe('native log request lifetime', () => {
     expectConnection(true);
     expectRecoveryBlocked();
     expect(output()).toHaveTextContent('로그 조회를 눌러 로그를 확인하세요.');
-    expect(mock.getRecentLogs).toHaveBeenCalledTimes(1);
+    expect(mock.startLogStream).toHaveBeenCalledTimes(1);
   });
 
   it.each(['success', 'failure'])('waits for a mutation and refresh while preserving an old log %s', async outcome => {
@@ -339,8 +347,9 @@ describe('native log request lifetime', () => {
     expect(logs.requests).toHaveLength(1);
     expectConnection(outcome === 'failure');
     await act(async () => mutation.resolve({ outcome: 'succeeded', message: 'completed', command: 'docker stop', stderr: '', reconciliation: 'notNeeded', mutationBlocked: false }));
-    expect(logs.requests.map(request => request.handle)).toEqual(['alpha-1', 'beta-2']);
-    await logs.succeed(1);
+    if (outcome === 'success') {
+      expect(logs.requests.map(request => request.handle)).toEqual(['alpha-1', 'beta-2']); await logs.succeed(1);
+    } else expect(logs.requests.map(request => request.handle)).toEqual(['alpha-1']);
     expectConnection(outcome === 'failure');
     if (outcome === 'failure') expectRecoveryBlocked();
     expect(logs.maximumActive()).toBe(1);
@@ -350,7 +359,7 @@ describe('native log request lifetime', () => {
     const logs = controlledLogs();
     render(<App />);
     await waitFor(() => expect(logs.requests).toHaveLength(1));
-    await logs.fail(0);
+    await logs.fail(0, 'TimedOut');
     expect(fetchLogs()).toBeEnabled();
     expect(screen.getByText('최근 로그를 읽지 못했습니다.')).toBeVisible();
     const fetch = fetchLogs();
