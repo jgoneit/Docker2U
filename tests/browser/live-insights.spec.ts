@@ -221,6 +221,12 @@ test('preserves frozen search across preferences and Clear stops reads until exp
   expect(later.readLogStream).toBe(cleared.readLogStream);
   expect(later.startLogStream).toBe(cleared.startLogStream);
   await page.getByRole('button', { name: next.load, exact: true }).click();
+  await expect.poll(async () => (await calls(page)).startLogStream).toBe(cleared.startLogStream! + 1);
+  await moreReads(page, cleared.readLogStream!);
+  await expect(page.getByRole('button', { name: next.resume, exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.log-content')).toHaveText(nextLanguage === 'ko' ? '최근 로그가 없습니다.' : 'No recent logs.');
+  await expect(page.getByRole('button', { name: next.copy, exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: next.resume, exact: true }).click();
   await expect(page.locator('.log-content')).toContainText('LIVE 2');
   expect((await calls(page)).startLogStream).toBe(cleared.startLogStream! + 1);
 });

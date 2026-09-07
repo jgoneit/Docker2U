@@ -496,7 +496,10 @@ test('lets the keyboard reach and scroll long error details in expanded logs', a
   const modal = page.getByRole('dialog');
   const close = modal.getByRole('button', { name: t.closeLogs, exact: true });
   const summary = modal.locator('.technical-details summary');
+  const content = modal.locator('.log-content');
   await expect(close).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(content).toBeFocused();
   await page.keyboard.press('Shift+Tab');
   await expect(summary).toBeFocused();
   await page.keyboard.press('Enter');
@@ -512,6 +515,8 @@ test('lets the keyboard reach and scroll long error details in expanded logs', a
   await expect(stderr).toBeFocused();
   await page.keyboard.press('End');
   await visibleTextRange(stderr, 'LAST_STDERR_LINE');
+  await page.keyboard.press('Tab');
+  await expect(content).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(close).toBeFocused();
   await page.keyboard.press('Escape');
