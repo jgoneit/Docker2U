@@ -3,7 +3,10 @@ mod process;
 #[cfg(all(test, unix))]
 mod process_tests;
 
-use docker::{Action, ApiError, BulkMutation, ContainerList, Core, Environment, Logs, Mutation};
+use docker::{
+    Action, ApiError, BulkMutation, ContainerList, Core, Environment, LogStreamChunk,
+    LogStreamStarted, Logs, Mutation, StatsSnapshot,
+};
 use tauri::Manager;
 
 async fn worker<T: Send + 'static>(
@@ -42,6 +45,43 @@ async fn get_recent_logs(
     worker(move || core.get_recent_logs(&session_id, &handle)).await
 }
 #[tauri::command]
+async fn get_container_stats(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    generation: u64,
+    handles: Vec<String>,
+) -> Result<StatsSnapshot, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.get_container_stats(&session_id, generation, &handles)).await
+}
+#[tauri::command]
+async fn start_log_stream(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    generation: u64,
+    handle: String,
+) -> Result<LogStreamStarted, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.start_log_stream(&session_id, generation, &handle)).await
+}
+#[tauri::command]
+async fn read_log_stream(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    stream_id: String,
+) -> Result<LogStreamChunk, ApiError> {
+    core.read_log_stream(&session_id, &stream_id)
+}
+#[tauri::command]
+async fn stop_log_stream(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    stream_id: String,
+) -> Result<(), ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.stop_log_stream(&session_id, &stream_id)).await
+}
+#[tauri::command]
 async fn mutate_container(
     core: tauri::State<'_, Core>,
     session_id: String,
@@ -71,6 +111,10 @@ pub fn run() {
             get_environment,
             list_containers,
             get_recent_logs,
+            get_container_stats,
+            start_log_stream,
+            read_log_stream,
+            stop_log_stream,
             mutate_container,
             mutate_containers
         ])
@@ -99,6 +143,10 @@ mod ipc_tests {
                 "allow-get-environment",
                 "allow-list-containers",
                 "allow-get-recent-logs",
+                "allow-get-container-stats",
+                "allow-start-log-stream",
+                "allow-read-log-stream",
+                "allow-stop-log-stream",
                 "allow-mutate-container",
                 "allow-mutate-containers"
             ])

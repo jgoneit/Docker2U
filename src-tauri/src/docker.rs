@@ -9,12 +9,19 @@ use std::{
     time::Duration,
 };
 
+#[path = "docker_stats.rs"]
+mod stats;
+#[path = "docker_stream.rs"]
+mod stream;
+pub use stats::StatsSnapshot;
+pub use stream::{LogStreamChunk, LogStreamStarted};
+
 #[cfg(all(test, unix))]
 #[path = "docker_tests.rs"]
 mod tests;
 
 const MINIMUM_MACOS_MAJOR: u32 = 14;
-const INSPECT_FORMAT: &str = r#"{"Id":{{json .Id}},"Name":{{json .Name}},"Image":{{json .Config.Image}},"Created":{{json .Created}},"State":{{json .State.Status}},"Health":{{with index .State "Health"}}{{json .Status}}{{else}}null{{end}},"Ports":{{json (index .NetworkSettings "Ports")}}}"#;
+const INSPECT_FORMAT: &str = r#"{"Id":{{json .Id}},"Name":{{json .Name}},"Image":{{json .Config.Image}},"Created":{{json .Created}},"State":{{json .State.Status}},"Health":{{with index .State "Health"}}{{json .Status}}{{else}}null{{end}},"Ports":{{json (index .NetworkSettings "Ports")}},"ComposeProject":{{with index .Config.Labels "com.docker.compose.project"}}{{json .}}{{else}}null{{end}},"ComposeService":{{with index .Config.Labels "com.docker.compose.service"}}{{json .}}{{else}}null{{end}}}"#;
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -89,6 +96,8 @@ pub struct Container {
     pub health: Option<String>,
     pub ports: Vec<String>,
     pub created_at: String,
+    pub compose_project: Option<String>,
+    pub compose_service: Option<String>,
 }
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -483,6 +492,9 @@ struct State {
     refreshing: bool,
     diagnosing: bool,
     mutating: bool,
+    stats_running: bool,
+    stream_starting: bool,
+    log_stream: Option<stream::ActiveLogStream>,
 }
 
 /// Owns the global mutation reservation without holding a mutex during CLI work.
@@ -538,6 +550,12 @@ fn args(values: &[&str]) -> Vec<String> {
 }
 fn malformed(message: impl Into<String>) -> ApiError {
     ApiError::new("MalformedOutput", message)
+}
+fn compose_label(row: &Value, key: &str) -> Option<String> {
+    row.get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
 }
 fn connection_invalidated(error: &ApiError) -> bool {
     matches!(
@@ -628,6 +646,7 @@ fn command_label(path: &Path, args: &[String]) -> String {
 
 impl Core {
     pub fn shutdown(&self) {
+        self.cancel_log_stream();
         self.runner.shutdown();
     }
 
@@ -824,6 +843,7 @@ impl Core {
             state.diagnosing = true;
             state.epoch
         };
+        self.cancel_log_stream();
         let mut result = Environment::default();
         let target = self.diagnose(&mut result);
         let mut state = self.state.lock().unwrap();
@@ -1041,6 +1061,8 @@ impl Core {
                     health: Some(health.into()),
                     ports,
                     created_at: created.into(),
+                    compose_project: compose_label(&row, "ComposeProject"),
+                    compose_service: compose_label(&row, "ComposeService"),
                 });
             }
         }
@@ -1097,7 +1119,7 @@ impl Core {
             .ok_or_else(|| {
                 ApiError::new("StaleSession", "Refresh belongs to a previous environment")
             })?;
-        match fetched {
+        let result = match fetched {
             Ok(containers) => {
                 active.generation += 1;
                 active.stale = false;
@@ -1120,7 +1142,10 @@ impl Core {
                 }
                 Err(error)
             }
-        }
+        };
+        drop(state);
+        self.reconcile_log_stream();
+        result
     }
     pub fn get_recent_logs(&self, id: &str, handle: &str) -> Result<Logs> {
         let session = self.active(id)?;
@@ -1134,13 +1159,7 @@ impl Core {
             ));
         }
         if let Err(error) = self.verify(&session.target) {
-            if connection_invalidated(&error) {
-                let mut state = self.state.lock().unwrap();
-                if let Some(active) = state.session.as_mut().filter(|active| active.id == id) {
-                    active.stale = true;
-                    active.needs_validation = true;
-                }
-            }
+            self.invalidate_observation(id, &error);
             return Err(error);
         }
         let arguments = session.target.engine_args(&[
@@ -1239,6 +1258,7 @@ impl Core {
             Ok(result) => result.mutation_blocked,
             Err(_) => true,
         });
+        self.reconcile_log_stream();
         result
     }
 
@@ -1341,6 +1361,7 @@ impl Core {
             items.push(item);
         }
         reservation.finish(mutation_blocked);
+        self.reconcile_log_stream();
         Ok(BulkMutation {
             session_id: id.into(),
             generation,
