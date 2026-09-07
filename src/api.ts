@@ -31,6 +31,21 @@ export interface Container {
   health: string | null;
   ports: string[];
   createdAt: string;
+  composeProject: string | null;
+  composeService: string | null;
+}
+export interface LogStreamStart { sessionId: string; streamId: string; fullId: string }
+export interface LogStreamRead {
+  sessionId: string; streamId: string; sequence: number; text: string;
+  truncated: boolean; terminal: boolean; error: CoreError | null;
+}
+export interface ContainerStatsItem {
+  handle: string; fullId: string; cpuPercent: number | null;
+  memoryUsage: string | null; memoryPercent: number | null; available: boolean;
+}
+export interface ContainerStats {
+  sessionId: string; generation: number; sampledAt: string;
+  items: ContainerStatsItem[]; error: CoreError | null;
 }
 export interface ContainerList {
   sessionId: string;
@@ -90,6 +105,10 @@ export const api = {
   getEnvironment: () => call<Environment>('get_environment'),
   listContainers: (sessionId: string) => call<ContainerList>('list_containers', { sessionId }),
   getRecentLogs: (sessionId: string, handle: string) => call<RecentLogs>('get_recent_logs', { sessionId, handle }),
+  startLogStream: (sessionId: string, generation: number, handle: string) => call<LogStreamStart>('start_log_stream', { sessionId, generation, handle }),
+  readLogStream: (sessionId: string, streamId: string) => call<LogStreamRead>('read_log_stream', { sessionId, streamId }),
+  stopLogStream: (sessionId: string, streamId: string) => call<void>('stop_log_stream', { sessionId, streamId }),
+  getContainerStats: (sessionId: string, generation: number, handles: string[]) => call<ContainerStats>('get_container_stats', { sessionId, generation, handles }),
   mutateContainer: (sessionId: string, handle: string, action: Action) => call<MutationResult>('mutate_container', { sessionId, handle, action }),
   mutateContainers: (sessionId: string, generation: number, handles: string[], action: Action) => call<BulkMutationResult>('mutate_containers', { sessionId, generation, handles, action }),
 };

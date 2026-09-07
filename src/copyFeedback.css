@@ -1,0 +1,11 @@
+.app-footer { min-height: 44px; padding-block: 4px; }
+.copy-feedback-slot { min-width: 0; }
+.copy-feedback { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border: 1px solid var(--feedback-border); border-radius: 10px; background: var(--feedback-bg); color: var(--feedback-text); font-size: 12px; line-height: 16px; font-weight: 600; box-shadow: 0 3px 12px var(--brand-shadow); animation: copy-feedback-enter 220ms cubic-bezier(.2, .7, .2, 1); }
+.copy-feedback svg { flex: none; }
+.copy-feedback span { min-width: 0; overflow-wrap: anywhere; }
+.copy-feedback-error { background: var(--feedback-error-bg); color: var(--feedback-error-text); border-color: var(--feedback-error-border); }
+.clipboard-feedback { margin-left: auto; }
+.logs-modal .copy-feedback-slot { display: flex; align-items: center; flex: 0 0 50px; height: 50px; overflow: auto; padding: 8px 12px; border: 0; border-top: 1px solid var(--border-subtle); background: var(--surface); }
+.logs-modal .copy-feedback { width: fit-content; max-width: 100%; margin-left: auto; }
+@keyframes copy-feedback-enter { from { transform: translateY(5px) scale(.98); } to { transform: translateY(0) scale(1); } }
+@media (prefers-reduced-motion: reduce) { .copy-feedback { animation: none; } }

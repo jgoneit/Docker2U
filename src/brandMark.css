@@ -1,0 +1,3 @@
+.brand-mark { display: block; flex: none; object-fit: contain; user-select: none; }
+.brand .brand-mark { width: 36px; height: 36px; }
+.startup-icon:has(.brand-mark) { background: transparent; border: 0; }

@@ -1,5 +1,18 @@
 import type { Messages } from '../i18n';
 export const logMessages = {
+  pause: { ko: '일시정지', en: 'Pause' }, resume: { ko: '재개', en: 'Resume' },
+  pauseDetails: { ko: '수집을 유지하고 표시만 일시정지합니다.', en: 'Pause the display while logs continue to arrive.' },
+  resumeDetails: { ko: '수집된 최신 로그를 표시합니다.', en: 'Show the latest collected logs.' },
+  latest: { ko: '최신 로그로', en: 'Latest logs' },
+  following: { ko: '실시간 수집 중', en: 'Following live logs' }, connecting: { ko: '로그 연결 중', en: 'Connecting logs' },
+  ended: { ko: '수집 종료', en: 'Stream ended' }, streamError: { ko: '수집 오류', en: 'Stream error' }, idle: { ko: '대기', en: 'Idle' },
+  displayPaused: { ko: '표시 일시정지 · 수집 유지', en: 'Display paused · collection continues' },
+  searchPaused: { ko: '검색 중 · 표시 고정', en: 'Searching · display frozen' },
+  liveLimits: { ko: '최근 2 MiB', en: 'Latest 2 MiB' },
+  liveLimitDetails: { ko: '수집과 표시 버퍼는 각각 최대 2 MiB입니다. 오래된 로그부터 제거합니다.', en: 'Collection and display buffers each retain up to 2 MiB. Oldest logs are dropped first.' },
+  lastReceived: { ko: '마지막 수신', en: 'Last received' },
+  pendingDropped: { ko: '표시를 멈춘 사이 일부 로그가 버퍼에서 제거되었습니다. 재개하면 남아 있는 최신 로그를 표시합니다.', en: 'Some logs were dropped while the display was frozen. Resuming shows the latest retained logs.' },
+  resumedDropped: { ko: '일부 오래된 로그를 건너뛰고 최신 로그로 재개했습니다.', en: 'Resumed with the latest logs; some older logs were skipped.' },
   openSearch: { ko: '로그 검색 열기', en: 'Open log search' }, closeSearch: { ko: '로그 검색 닫기', en: 'Close log search' },
   search: { ko: '로그 검색', en: 'Search logs' }, searchArea: { ko: '로그 탐색', en: 'Log navigation' },
   previousMatch: { ko: '이전 일치', en: 'Previous match' }, nextMatch: { ko: '다음 일치', en: 'Next match' },

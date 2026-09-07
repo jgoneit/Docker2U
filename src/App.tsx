@@ -1,14 +1,21 @@
+import { connectionInvalidatingErrors } from './frontendSession';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { AlertTriangle, Boxes, Cable, ChevronRight, Info, LoaderCircle, Monitor, RefreshCw, Search, Settings, X } from 'lucide-react';
+import { AlertTriangle, Cable, Info, LoaderCircle, RefreshCw, Search, Settings, X } from 'lucide-react';
 import { api, coreError } from './api';
 import { frontendError, frontendErrorDescriptor, type FrontendErrorDescriptor } from './frontendErrors';
 import type { Action, ConnectionTarget, Container, ContainerList, CoreError, Environment, MutationResult } from './api';
-import { ConfirmDialog, ContainerDetail, ContainerSummary, Diagnostics, ErrorDetails, OperationResult, Health, State, readableStates } from './components';
+import { ConfirmDialog, ContainerDetail, ContainerSummary, Diagnostics, ErrorDetails, OperationResult } from './components';
 import type { Confirmation, Operation, CopyLabel } from './components';
 import { BulkResult, BulkSelection, canApply, isBoundBulkResult } from './bulk';
 import type { BulkOperation } from './bulk';
-import type { LogSnapshot } from './logSnapshot';
+import { useLiveLogs } from './useLiveLogs';
+import { useContainerStats } from './useContainerStats';
+import { ContainerTable } from './ContainerTable';
+import { BrandMark } from './BrandMark';
+import { CopyFeedback } from './CopyFeedback';
+import { usePaneResize } from './usePaneResize';
+import { allProjects, groupContainers, matchesContainer, parseProjectFilter, projectFilterValue, type ProjectFilter, type ContainerFilter as Filter } from './projects';
 import { RefreshAge } from './RefreshAge';
 import { bulkResultIssue, errorIssue, resultIssue, retainSessionIssue, type FrontendSession, type SessionIssue } from './frontendSession';
 
@@ -17,14 +24,7 @@ import { SettingsDialog } from './SettingsDialog';
 import { useI18n } from './i18n';
 import { appMessages } from './messages/app';
 
-type Filter = 'all' | 'running' | 'stopped' | 'attention';
-type LogRequest = { container: Container; list: ContainerList; epoch: number; sequence: number };
-function matchesContainer(container: Container, query: string, filter: Filter) {
-  const searchMatches = `${container.name} ${container.image} ${container.shortId} ${container.fullId} ${container.ports.join(' ')}`.toLowerCase().includes(query.trim().toLowerCase());
-  const filterMatches = filter === 'all' || (filter === 'running' && container.state === 'running') || (filter === 'stopped' && ['created', 'exited'].includes(container.state)) || (filter === 'attention' && (container.health === 'unhealthy' || ['dead', 'paused', 'restarting', 'removing', 'unknown'].includes(container.state)));
-  return searchMatches && filterMatches;
-}
-const connectionInvalidatingErrors = new Set(['EnvironmentChanged', 'Disconnected', 'SocketMissing', 'PermissionDenied', 'Configuration', 'EndpointMismatch', 'RemoteEndpoint']);
+
 function connectionIssue(error: CoreError | null, unsupported: boolean): [keyof typeof appMessages, keyof typeof appMessages] {
   const issues: Record<string, [keyof typeof appMessages, keyof typeof appMessages]> = {
     CliNotFound: ['cliTitle', 'cliHelp'], Configuration: ['configTitle', 'configHelp'],
@@ -43,6 +43,7 @@ export default function App() {
 }
 function AppContent() {
   const t = useI18n(appMessages);
+  const pane = usePaneResize();
   const [environment, setEnvironment] = useState<Environment | null>(null);
   const [connecting, setConnecting] = useState(true);
   const [environmentError, setEnvironmentError] = useState<CoreError | null>(null);
@@ -53,10 +54,9 @@ function AppContent() {
   const [checkedHandles, setCheckedHandles] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
-  const [logs, setLogs] = useState<LogSnapshot | null>(null);
-  const [logsError, setLogsError] = useState<CoreError | null>(null);
-  const [loadingLogs, setLoadingLogs] = useState(false);
-  const [logRequestPending, setLogRequestPending] = useState(false);
+  const [project, setProject] = useState<ProjectFilter>(allProjects);
+  const [logRestartVersion, setLogRestartVersion] = useState(0);
+  const [logReplaceVersion, setLogReplaceVersion] = useState(0);
   const [mutating, setMutating] = useState(false);
   const [reconnectRequired, setReconnectRequired] = useState(false);
   const [mutationBlocked, setMutationBlocked] = useState(false);
@@ -66,27 +66,25 @@ function AppContent() {
   const [bulkPending, setBulkPending] = useState<{ action: Action; count: number } | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
-  const [clipboardMessage, setClipboardMessage] = useState<{ key: 'copied'; label: CopyLabel } | { key: 'copyFailure' } | null>(null);
+  const [clipboardMessage, setClipboardMessage] = useState<{ id: number; key: 'copied'; label: CopyLabel } | { id: number; key: 'copyFailure' } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [logsExpanded, setLogsExpanded] = useState(false);
+  const clipboardAttempt = useRef(0);
   const settingsTrigger = useRef<HTMLButtonElement>(null);
   const reconnectTrigger = useRef<HTMLButtonElement>(null);
   const session = useRef<string | null>(null);
   const currentSnapshot = useRef<ContainerList | null>(null);
   const epoch = useRef(0);
   const listSequence = useRef(0);
-  const logSequence = useRef(0);
-  const activeLogRequest = useRef<LogRequest | null>(null);
-  const queuedLogRequest = useRef<LogRequest | null>(null);
   const busy = useRef(false);
   const refreshBusy = useRef(false);
   const blocked = useRef(false);
   const selectedIdRef = useRef<string | null>(null);
-  const searchCriteria = useRef<{ query: string; filter: Filter }>({ query: '', filter: 'all' });
+  const searchCriteria = useRef<{ query: string; filter: Filter; project: ProjectFilter }>({ query: '', filter: 'all', project: allProjects });
   const initialSelection = useRef(true);
   const pendingRemovedFocus = useRef<Element | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
-  const inventory = useRef<HTMLUListElement>(null);
+  const inventory = useRef<HTMLTableSectionElement>(null);
   const bulkSelectAll = useRef<HTMLInputElement>(null);
   const bulkRegion = useRef<HTMLElement>(null);
   const pendingBulkFocus = useRef<{ epoch: number } | null>(null);
@@ -114,19 +112,30 @@ function AppContent() {
     if (bulkSelectAll.current && !bulkSelectAll.current.disabled) bulkSelectAll.current.focus();
     else bulkRegion.current?.focus();
   }, [mutating, refreshing, confirmation, settingsOpen, logsExpanded, snapshot]);
-  const visible = (snapshot?.containers ?? []).filter(container => matchesContainer(container, query, filter));
+  const groups = groupContainers((snapshot?.containers ?? []).filter(container => matchesContainer(container, query, filter, project)));
+  const visible = groups.flatMap(group => group.containers);
+  const projectOptions = groupContainers(snapshot?.containers ?? []);
   const selected = visible.find(container => container.fullId === selectedId) ?? null;
   const checked = visible.filter(container => checkedHandles.has(container.handle));
-  const invalidateLogs = useCallback(() => {
-    ++logSequence.current;
-    queuedLogRequest.current = null;
-    setLoadingLogs(false);
-  }, []);
-  const clearLogs = useCallback(() => {
-    invalidateLogs();
-    setLogs(null);
-    setLogsError(null);
-  }, [invalidateLogs]);
+  const onReadError = useCallback((stage: 'logs' | 'stats', original: unknown, failure: CoreError, sessionId: string) => {
+    if (session.current !== sessionId) return;
+    const invalidates = connectionInvalidatingErrors.has(failure.code);
+    if (invalidates) {
+      blocked.current = true;
+      setMutationBlocked(true);
+      setReconnectRequired(true);
+    }
+    recordIssue(errorIssue(stage, original, failure, invalidates));
+    return invalidates;
+  }, [recordIssue]);
+  const onLogError = useCallback((original: unknown, failure: CoreError, sessionId: string) => onReadError('logs', original, failure, sessionId), [onReadError]);
+  const onStatsError = useCallback((original: unknown, failure: CoreError, sessionId: string) => onReadError('stats', original, failure, sessionId), [onReadError]);
+  const { logs, logsError, loadingLogs, logRequestPending, liveStatus, loadLogs, clearLogs } = useLiveLogs({
+    container: selected, snapshot, enabled: !connecting && !refreshing && !mutating && !reconnectRequired,
+    invalidated: !!snapshot?.stale || reconnectRequired, restartVersion: logRestartVersion, replaceVersion: logReplaceVersion, onError: onLogError,
+  });
+  const stats = useContainerStats({ snapshot, containers: visible,
+    enabled: !connecting && !refreshing && !mutating && !reconnectRequired, onError: onStatsError });
   const selectContainer = useCallback((id: string | null) => {
     if (selectedIdRef.current === id) return;
     selectedIdRef.current = id;
@@ -134,14 +143,15 @@ function AppContent() {
     clearLogs();
     setLogsExpanded(false);
   }, [clearLogs]);
-  function updateSearch(nextQuery: string, nextFilter: Filter) {
+  function updateSearch(nextQuery: string, nextFilter: Filter, nextProject: ProjectFilter = searchCriteria.current.project) {
     if (busy.current) return;
     pendingRemovedFocus.current = document.activeElement;
-    searchCriteria.current = { query: nextQuery, filter: nextFilter };
+    searchCriteria.current = { query: nextQuery, filter: nextFilter, project: nextProject };
+    setProject(nextProject);
     setQuery(nextQuery);
     setFilter(nextFilter);
     setCheckedHandles(new Set());
-    if (!currentSnapshot.current?.containers.some(container => container.fullId === selectedIdRef.current && matchesContainer(container, nextQuery, nextFilter))) selectContainer(null);
+    if (!currentSnapshot.current?.containers.some(container => container.fullId === selectedIdRef.current && matchesContainer(container, nextQuery, nextFilter, nextProject))) selectContainer(null);
   }
   useLayoutEffect(() => {
     const previous = pendingRemovedFocus.current;
@@ -150,37 +160,38 @@ function AppContent() {
       const firstRow = inventory.current?.querySelector<HTMLButtonElement>('.container-row');
       (firstRow ?? searchInput.current)?.focus();
     }
-  }, [snapshot, query, filter]);
+  }, [snapshot, query, filter, project]);
   const refresh = useCallback(async (sessionId: string) => {
     const requestEpoch = epoch.current;
     const request = ++listSequence.current;
     refreshBusy.current = true;
     setCheckedHandles(new Set());
-    invalidateLogs();
     setRefreshing(true);
     try {
       const result = await api.listContainers(sessionId);
-      if (epoch.current !== requestEpoch || session.current !== sessionId || request !== listSequence.current) return;
+      if (epoch.current !== requestEpoch || session.current !== sessionId || request !== listSequence.current) return false;
       if (result.sessionId !== sessionId || (currentSnapshot.current && result.generation <= currentSnapshot.current.generation)) throw frontendError('staleInventory');
       pendingRemovedFocus.current = document.activeElement;
       currentSnapshot.current = result;
       setSnapshot(result);
       setListError(null);
-      const criteria = searchCriteria.current;
-      const matching = result.containers.filter(container => matchesContainer(container, criteria.query, criteria.filter));
+      let criteria = searchCriteria.current;
+      const projectExists = criteria.project.kind === 'all' || result.containers.some(container => matchesContainer(container, '', 'all', criteria.project));
+      if (!projectExists) {
+        criteria = { ...criteria, project: allProjects };
+        searchCriteria.current = criteria;
+        setProject(allProjects);
+      }
+      const matching = groupContainers(result.containers.filter(container => matchesContainer(container, criteria.query, criteria.filter, criteria.project))).flatMap(group => group.containers);
       if (initialSelection.current) { initialSelection.current = false; selectContainer(matching[0]?.fullId ?? null); }
       else {
         const retained = matching.find(container => container.fullId === selectedIdRef.current);
         if (!retained) selectContainer(null);
-        else if (!result.stale && !readableStates.has(retained.state)) {
-          // The identity can remain selected after its previous logs become unreadable.
-          setLogs(null);
-          setLogsError(null);
-          setLoadingLogs(false);
-        }
+
       }
+      return !result.stale;
     } catch (error) {
-      if (epoch.current !== requestEpoch || session.current !== sessionId || request !== listSequence.current) return;
+      if (epoch.current !== requestEpoch || session.current !== sessionId || request !== listSequence.current) return false;
       const failure = coreError(error);
       setListError(failure);
       recordIssue(errorIssue('list', error, failure, connectionInvalidatingErrors.has(failure.code)));
@@ -193,10 +204,11 @@ function AppContent() {
         currentSnapshot.current = { ...currentSnapshot.current, stale: true };
         setSnapshot(currentSnapshot.current);
       }
+      return false;
     } finally {
       if (epoch.current === requestEpoch && request === listSequence.current) { refreshBusy.current = false; setRefreshing(false); }
     }
-  }, [invalidateLogs, selectContainer, recordIssue]);
+  }, [clearLogs, selectContainer, recordIssue]);
   const connect = useCallback(async () => {
     if (busy.current || refreshBusy.current) return;
     pendingBulkFocus.current = null;
@@ -204,7 +216,6 @@ function AppContent() {
     session.current = null;
     currentSnapshot.current = null;
     ++listSequence.current;
-    invalidateLogs();
     refreshBusy.current = false;
     setConnecting(true);
     setSessionIssue(previous => previous ? { ...previous, scope: 'previous' } : null);
@@ -212,9 +223,7 @@ function AppContent() {
     setEnvironmentError(null);
     setSnapshot(null);
     setListError(null);
-    setLogs(null);
-    setLogsError(null);
-    setLoadingLogs(false);
+    clearLogs();
     setRefreshing(false);
     setConfirmation(null);
     setBulkPending(null);
@@ -250,85 +259,18 @@ function AppContent() {
     } finally {
       if (epoch.current === requestEpoch) setConnecting(false);
     }
-  }, [invalidateLogs, refresh, selectContainer]);
+  }, [clearLogs, refresh, selectContainer]);
   useEffect(() => {
     // Defer one microtask so development StrictMode's discarded mount never opens a session.
     let active = true;
     void Promise.resolve().then(() => { if (active) void connect(); });
-    return () => { active = false; ++epoch.current; ++logSequence.current; queuedLogRequest.current = null; };
+    return () => { active = false; ++epoch.current; };
   }, [connect]);
-  const canReadLogs = useCallback((container: Container, list: ContainerList, requestEpoch: number) => {
-    const current = currentSnapshot.current;
-    const criteria = searchCriteria.current;
-    return !busy.current && !refreshBusy.current && epoch.current === requestEpoch
-      && session.current === list.sessionId && current?.sessionId === list.sessionId
-      && !list.stale && !current.stale && current.generation === list.generation
-      && selectedIdRef.current === container.fullId
-      && current.containers.some(item => item.fullId === container.fullId && item.handle === container.handle
-        && readableStates.has(item.state) && matchesContainer(item, criteria.query, criteria.filter));
-  }, []);
-  const drainLogRequests = useCallback(async function drain() {
-    // Response invalidation never releases the native request's execution slot.
-    if (activeLogRequest.current) return;
-    const next = queuedLogRequest.current;
-    queuedLogRequest.current = null;
-    if (!next) return;
-    const { container, list, epoch: requestEpoch, sequence: request } = next;
-    if (request !== logSequence.current || !canReadLogs(container, list, requestEpoch)) {
-      if (request === logSequence.current) setLoadingLogs(false);
-      return;
-    }
-    activeLogRequest.current = next;
-    setLogRequestPending(true);
-    try {
-      const result = await api.getRecentLogs(list.sessionId, container.handle);
-      if (request !== logSequence.current || !canReadLogs(container, list, requestEpoch)) return;
-      if (result.sessionId !== list.sessionId || result.generation !== list.generation || result.handle !== container.handle) throw frontendError('staleLogs');
-      setLogs({ ...result, fetchedAt: new Date().toISOString() });
-    } catch (error) {
-      const failure = coreError(error);
-      if (epoch.current !== requestEpoch || session.current !== list.sessionId) return;
-      const invalidatesConnection = connectionInvalidatingErrors.has(failure.code);
-      // The session can need revalidation even after this log display was invalidated.
-      if (invalidatesConnection) {
-        blocked.current = true;
-        setMutationBlocked(true);
-        setReconnectRequired(true);
-        recordIssue(errorIssue('logs', error, failure, true));
-      }
-      if (request === logSequence.current && canReadLogs(container, list, requestEpoch)) {
-        setLogsError(failure);
-        if (!invalidatesConnection) recordIssue(errorIssue('logs', error, failure, false));
-      }
-    } finally {
-      if (epoch.current === requestEpoch && request === logSequence.current) setLoadingLogs(false);
-      if (activeLogRequest.current === next) {
-        activeLogRequest.current = null;
-        setLogRequestPending(false);
-        // Selection/refresh changes replace this single pending target; clearing removes it.
-        void drain();
-      }
-    }
-  }, [canReadLogs, recordIssue]);
-  const loadLogs = useCallback((container: Container, list: ContainerList) => {
-    if (!canReadLogs(container, list, epoch.current)) return;
-    const current = queuedLogRequest.current ?? activeLogRequest.current;
-    if (current?.sequence === logSequence.current && current.epoch === epoch.current
-      && current.container.handle === container.handle && current.list.generation === list.generation) return;
-    queuedLogRequest.current = { container, list, epoch: epoch.current, sequence: ++logSequence.current };
-    setLoadingLogs(true);
-    setLogsError(null);
-    void drainLogRequests();
-  }, [canReadLogs, drainLogRequests]);
-  useEffect(() => {
-    invalidateLogs();
-    if (selected && snapshot && !refreshing && !mutating) void loadLogs(selected, snapshot);
-  }, [selected, snapshot, refreshing, mutating, invalidateLogs, loadLogs]);
   async function mutate(container: Container, action: Action, targetSession: string, generation: number) {
     const current = currentSnapshot.current;
     const currentContainer = current?.containers.find(item => item.handle === container.handle);
     const criteria = searchCriteria.current;
-    const actionAllowed = currentContainer && canApply(currentContainer, action) && matchesContainer(currentContainer, criteria.query, criteria.filter);
+    const actionAllowed = currentContainer && canApply(currentContainer, action) && matchesContainer(currentContainer, criteria.query, criteria.filter, criteria.project);
     if (busy.current || refreshBusy.current || blocked.current || selectedIdRef.current !== container.fullId || !actionAllowed || session.current !== targetSession || current?.stale || current?.generation !== generation || !current.containers.some(item => item.handle === container.handle)) return;
     busy.current = true;
     setMutating(true);
@@ -355,8 +297,14 @@ function AppContent() {
     if (issue) recordIssue(issue);
     else if (result.outcome !== 'succeeded' || result.mutationBlocked || result.reconciliation === 'failed') recordIssue(resultIssue('singleAction', blocked.current, result));
     setOperation({ ...result, frontendError: frontendFailure, fullId: container.fullId, name: container.name, action, ...target });
-    await refresh(targetSession);
-    if (epoch.current === requestEpoch) { busy.current = false; setMutating(false); }
+    const refreshed = await refresh(targetSession);
+    if (epoch.current === requestEpoch) {
+      busy.current = false; setMutating(false);
+      if (refreshed && !blocked.current && result.outcome === 'succeeded' && selectedIdRef.current === container.fullId) {
+        if (action === 'restart') setLogReplaceVersion(value => value + 1);
+        else setLogRestartVersion(value => value + 1);
+      }
+    }
   }
   function requestAction(action: Action, returnFocus?: HTMLElement) {
     if (settingsOpen || logsExpanded || busy.current || refreshBusy.current || blocked.current || !selected || selectedIdRef.current !== selected.fullId || !snapshot || snapshot.stale || !environment?.mutationAllowed || !session.current || !canApply(selected, action)) return;
@@ -366,7 +314,7 @@ function AppContent() {
   async function mutateBulk(containers: Container[], action: Action, targetSession: string, generation: number) {
     const current = currentSnapshot.current;
     const criteria = searchCriteria.current;
-    if (containers.some(container => !matchesContainer(container, criteria.query, criteria.filter))) return;
+    if (containers.some(container => !matchesContainer(container, criteria.query, criteria.filter, criteria.project))) return;
     if (busy.current || refreshBusy.current || blocked.current || !containers.length || !containers.some(container => canApply(container, action)) || session.current !== targetSession || current?.stale || current?.generation !== generation || containers.some(container => !current.containers.some(item => item.handle === container.handle))) return;
     if (action !== 'start') pendingBulkFocus.current = { epoch: epoch.current };
     busy.current = true;
@@ -377,10 +325,13 @@ function AppContent() {
     setConfirmation(null);
     const requestEpoch = epoch.current;
     const context = { action, ...connectionTarget(environment), containers };
+    const selectedAtStart = selectedIdRef.current;
+    let selectedSucceeded = false;
     try {
       const result = await api.mutateContainers(targetSession, generation, containers.map(container => container.handle), action);
       if (epoch.current !== requestEpoch) return;
       if (!isBoundBulkResult(result, targetSession, generation, containers, action)) throw frontendError('invalidBulkResponse');
+      selectedSucceeded = result.items.some(item => item.fullId === selectedAtStart && item.outcome === 'succeeded');
       blocked.current = blocked.current || result.mutationBlocked || result.items.some(item => item.result?.mutationBlocked || item.result?.reconciliation === 'failed');
       const issue = bulkResultIssue(result, blocked.current);
       if (issue) recordIssue(issue);
@@ -398,8 +349,14 @@ function AppContent() {
       if (epoch.current === requestEpoch) {
         setMutationBlocked(blocked.current);
         if (blocked.current) setReconnectRequired(true);
-        await refresh(targetSession);
-        if (epoch.current === requestEpoch) { busy.current = false; setMutating(false); setBulkPending(null); }
+        const refreshed = await refresh(targetSession);
+        if (epoch.current === requestEpoch) {
+          busy.current = false; setMutating(false); setBulkPending(null);
+          if (refreshed && !blocked.current && selectedSucceeded && selectedIdRef.current === selectedAtStart) {
+            if (action === 'restart') setLogReplaceVersion(value => value + 1);
+            else setLogRestartVersion(value => value + 1);
+          }
+        }
       }
     }
   }
@@ -413,8 +370,13 @@ function AppContent() {
     setCheckedHandles(next);
   }
   async function copy(text: string, label: CopyLabel) {
-    try { await navigator.clipboard.writeText(text); setClipboardMessage({ key: 'copied', label }); }
-    catch { setClipboardMessage({ key: 'copyFailure' }); }
+    const id = ++clipboardAttempt.current;
+    try {
+      await navigator.clipboard.writeText(text);
+      if (clipboardAttempt.current === id) setClipboardMessage({ id, key: 'copied', label });
+    } catch {
+      if (clipboardAttempt.current === id) setClipboardMessage({ id, key: 'copyFailure' });
+    }
   }
   function selectWithKeyboard(event: KeyboardEvent<HTMLButtonElement>, index: number) {
     let next = index;
@@ -443,37 +405,49 @@ function AppContent() {
   return <div className="app-shell">
     <div className="main-content" inert={!!confirmation || settingsOpen || logsExpanded}>
       <header className="app-header">
-        <div className="brand"><span className="brand-icon" aria-hidden="true"><Boxes size={22} /></span><div><h1>Docker2U</h1><p>{t('tagline')}</p></div></div>
-        <div className="header-right"><span className="platform-badge"><Monitor size={14} aria-hidden="true" />{t('platform')}</span>
-          <button className="icon-button" aria-label={t('showDiagnostics')} aria-expanded={showDiagnostics} onClick={() => setShowDiagnostics(!showDiagnostics)}><Info size={18} aria-hidden="true" /></button>
-          <button ref={settingsTrigger} className="icon-button" aria-label={t('settings')} title={t('settings')} aria-haspopup="dialog" onClick={() => { if (!confirmation && !logsExpanded) setSettingsOpen(true); }}><Settings size={18} aria-hidden="true" /></button>
+        <div className="brand"><BrandMark /><h1>Docker2U</h1></div>
+        <section className="connection-bar" aria-label={t('connection')}>
+          <div className="connection-label"><span className={`connection-dot ${connectionClass}`} aria-hidden="true" /><div className="connection-target"><strong title={environment?.endpoint ?? undefined}>{environment?.contextName ?? t('contextPending')}</strong></div><span className="connection-status" role="status">{connectionStatus}</span></div>
+          <button ref={reconnectTrigger} className="text-button" title={t('reconnectHint')} onClick={() => void connect()} disabled={connecting || refreshing || mutating}><Cable size={14} aria-hidden="true" />{t('reconnect')}</button>
+        </section>
+        <div className="header-right">
+          <button className="icon-button" title={t('showDiagnostics')} aria-label={t('showDiagnostics')} aria-expanded={showDiagnostics} onClick={() => setShowDiagnostics(!showDiagnostics)}><Info size={17} aria-hidden="true" /></button>
+          <button ref={settingsTrigger} className="icon-button" aria-label={t('settings')} title={t('settings')} aria-haspopup="dialog" onClick={() => { if (!confirmation && !logsExpanded) setSettingsOpen(true); }}><Settings size={17} aria-hidden="true" /></button>
         </div>
       </header>
-      <section className="connection-bar" aria-label={t('connection')}>
-        <div className="connection-label"><span className={`connection-dot ${connectionClass}`} /><div className="connection-target"><strong>{environment?.contextName ?? t('contextPending')}</strong><code title={environment?.endpoint ?? undefined}>{environment?.endpoint ?? t('endpointPending')}</code></div><span className="connection-status" role="status">{connectionStatus}</span></div>
-        <div className="connection-actions"><button ref={reconnectTrigger} title={t('reconnectHint')} onClick={() => void connect()} disabled={connecting || refreshing || mutating}><Cable size={14} aria-hidden="true" />{t('reconnect')}</button><button title={t('refreshHint')} className="primary-button" disabled={!ready || refreshing || mutating} onClick={() => { if (session.current && !busy.current && !refreshBusy.current) void refresh(session.current); }}><RefreshCw size={14} className={refreshing ? 'spin' : ''} aria-hidden="true" />{t(refreshing ? 'refreshing' : 'refresh')}</button></div>
-      </section>
-      <p className="connection-help">{t('connectionHelp')}</p>
-      {showDiagnostics && <Diagnostics environment={environment} frontendSession={frontendSession} close={() => setShowDiagnostics(false)} copy={copy} />}
-      <main className="workspace">
-        <aside className="inventory-panel" aria-labelledby="inventory-title">
+      {showDiagnostics && <><p className="connection-help">{t('connectionHelp')}</p><Diagnostics environment={environment} frontendSession={frontendSession} close={() => setShowDiagnostics(false)} copy={copy} /></>}
+      <main ref={pane.workspaceRef} className={`workspace${pane.dragging ? ' resizing' : ''}`} style={pane.workspaceStyle}>
+        <aside id="inventory-pane" className="inventory-panel" aria-labelledby="inventory-title">
           <div className="panel-heading"><h2 id="inventory-title">{t('containers')} <span className="count-badge">{snapshot?.containers.length ?? '—'}</span></h2><RefreshAge refreshedAt={snapshot?.refreshedAt} /></div>
-          <div className="inventory-controls"><div className="search-field"><Search size={16} aria-hidden="true" /><input ref={searchInput} aria-label={t('search')} placeholder={t('searchHint')} value={query} disabled={mutating} onChange={event => updateSearch(event.target.value, filter)} />{query && <button className="search-clear" aria-label={t('clearSearch')} title={t('clearSearch')} disabled={mutating} onClick={() => { updateSearch('', filter); searchInput.current?.focus(); }}><X size={14} aria-hidden="true" /></button>}</div><div className="filter-group" aria-label={t('filters')}>{(['all', 'running', 'stopped', 'attention'] as const).map(value => <button key={value} aria-pressed={filter === value} disabled={mutating} onClick={() => updateSearch(query, value)}>{t(value)}</button>)}</div></div>
+          <div className="inventory-controls">
+            <div className="search-field"><Search size={16} aria-hidden="true" /><input ref={searchInput} aria-label={t('search')} placeholder={t('searchHint')} value={query} disabled={mutating} onChange={event => updateSearch(event.target.value, filter)} />{query && <button className="search-clear" aria-label={t('clearSearch')} title={t('clearSearch')} disabled={mutating} onClick={() => { updateSearch('', filter); searchInput.current?.focus(); }}><X size={14} aria-hidden="true" /></button>}</div>
+            <label className="project-filter">{t('projectFilter')}<select aria-label={t('projectFilter')} value={projectFilterValue(project)} disabled={mutating} onChange={event => updateSearch(query, filter, parseProjectFilter(event.target.value))}><option value="all">{t('allProjects')}</option>{projectOptions.map(group => <option key={JSON.stringify(group.name)} value={group.name === null ? 'none' : projectFilterValue({ kind: 'project', name: group.name })}>{group.name ?? t('noProject')}</option>)}</select></label>
+            <div className="filter-group" aria-label={t('filters')}>{(['all', 'running', 'stopped', 'attention'] as const).map(value => <button key={value} aria-pressed={filter === value} disabled={mutating} onClick={() => updateSearch(query, value)}>{t(value)}</button>)}</div>
+            <button title={t('refreshHint')} className="inventory-refresh" disabled={!ready || refreshing || mutating} onClick={() => { if (session.current && !busy.current && !refreshBusy.current) void refresh(session.current).then(refreshed => { if (refreshed) setLogRestartVersion(value => value + 1); }); }}><RefreshCw size={14} className={refreshing ? 'spin' : ''} aria-hidden="true" />{t(refreshing ? 'refreshing' : 'refresh')}</button>
+          </div>
+          <div className="inventory-body">
           <BulkSelection visible={visible} checked={checked} disabled={mutating || refreshing || connecting || !snapshot || snapshot.stale} actionsDisabled={mutating || refreshing || mutationBlocked || !environment?.mutationAllowed || !snapshot || snapshot.stale} pending={bulkPending} selectAllRef={bulkSelectAll} regionRef={bulkRegion} onToggleAll={() => changeSelection(() => checked.length === visible.length ? new Set() : new Set(visible.map(container => container.handle)))} onClear={() => changeSelection(() => new Set())} onAction={requestBulkAction} />
           {snapshot?.stale && <div className="stale-notice" role="status"><AlertTriangle size={14} aria-hidden="true" /><span>{t('stale')}</span></div>}
           {listError && <div className="inline-error" role="alert"><p>{t('listFailure')}</p>{connectionInvalidatingErrors.has(listError.code) && <p>{t('validateAgain')}</p>}<ErrorDetails error={listError} /></div>}
-          <ul ref={inventory} aria-label={t('containerList')} aria-busy={refreshing || mutating} className="container-list">{visible.map((container, index) => <li key={container.fullId} className="container-list-item"><input type="checkbox" className="container-checkbox" aria-label={t('selectTarget', { name: container.name })} checked={checkedHandles.has(container.handle)} disabled={mutating || refreshing || !!snapshot?.stale} onChange={() => changeSelection(previous => { const next = new Set(previous); if (next.has(container.handle)) next.delete(container.handle); else next.add(container.handle); return next; })} /><button aria-label={t('detailsFor', { name: container.name })} aria-current={selectedId === container.fullId ? 'true' : undefined} tabIndex={selectedId === container.fullId || (!visible.some(item => item.fullId === selectedId) && index === 0) ? 0 : -1} className="container-row" onClick={() => selectContainer(container.fullId)} onKeyDown={event => selectWithKeyboard(event, index)}><span className="container-row-title"><strong>{container.name}</strong><ChevronRight size={15} aria-hidden="true" /></span><span className="container-image">{container.image}</span><span className="container-statuses"><State value={container.state} /><Health value={container.health} /></span></button></li>)}</ul>
-          {!visible.length && <div className="inventory-placeholder"><Boxes size={28} aria-hidden="true" /><p>{t(connecting || (refreshing && !snapshot) ? 'checkingContainers' : !ready ? 'connectForList' : !snapshot ? 'reloadList' : snapshot.containers.length === 0 ? 'emptyEngine' : 'noResults')}</p>{snapshot && snapshot.containers.length > 0 && <button className="text-button" disabled={mutating} onClick={() => updateSearch('', 'all')}>{t('resetFilters')}</button>}</div>}
+          {stats.error && <p className="stats-notice" role="status">{t('statsFailure')}</p>}
+          <ContainerTable groups={groups} selectedId={selectedId} checkedHandles={checkedHandles}
+            checkboxDisabled={mutating || refreshing || !!snapshot?.stale} sampleFor={stats.sampleFor}
+            inventoryRef={inventory} onSelect={container => selectContainer(container.fullId)}
+            onToggle={container => changeSelection(previous => { const next = new Set(previous); if (next.has(container.handle)) next.delete(container.handle); else next.add(container.handle); return next; })}
+            onRowKeyDown={selectWithKeyboard} busy={refreshing || mutating} />
+          {!visible.length && <div className="inventory-placeholder"><BrandMark size={48} /><p>{t(connecting || (refreshing && !snapshot) ? 'checkingContainers' : !ready ? 'connectForList' : !snapshot ? 'reloadList' : snapshot.containers.length === 0 ? 'emptyEngine' : 'noResults')}</p>{snapshot && snapshot.containers.length > 0 && <button className="text-button" disabled={mutating} onClick={() => updateSearch('', 'all', allProjects)}>{t('resetFilters')}</button>}</div>}
+          </div>
         </aside>
-        <section className="detail-panel" aria-label={t(selected ? 'detailTitle' : 'connectTitle')}>
+        <button type="button" role="separator" className="pane-resizer" aria-label={t('resizeLogs')} title={t('resizeLogsHint')} aria-orientation="horizontal" aria-controls="inventory-pane detail-pane" {...pane.separatorProps}><span aria-hidden="true" /></button>
+        <section id="detail-pane" className="detail-panel" aria-label={t(selected ? 'detailTitle' : 'connectTitle')}>
           <div className="detail-context" tabIndex={0} aria-label={t('detailContext')}>
             {(operation || bulkOperation) && <div className="latest-operation" aria-label={t('latestOperation')}>{operation ? <OperationResult operation={operation} copy={copy} /> : bulkOperation && <BulkResult operation={bulkOperation} />}</div>}
-            {selected && snapshot ? <ContainerSummary container={selected} snapshot={snapshot} copy={copy} mutating={mutating} mutationBlocked={mutationBlocked} mutationAllowed={!!environment?.mutationAllowed} /> : <div className="panel-heading"><h2>{t('connectTitle')}</h2></div>}
+            {selected && snapshot ? <ContainerSummary container={selected} snapshot={snapshot} copy={copy} mutating={mutating} mutationBlocked={mutationBlocked} mutationAllowed={!!environment?.mutationAllowed} resourceSample={stats.sampleFor(selected)} /> : <div className="panel-heading"><h2>{t('connectTitle')}</h2></div>}
           </div>
-          {connecting ? <div className="startup-panel"><div className="startup-icon"><LoaderCircle className="spin" size={30} aria-hidden="true" /></div><h3>{t('checkingLocal')}</h3><p>{t('checkingCli')}</p></div> : !ready ? <div className="startup-panel"><div className="startup-icon"><Cable size={32} aria-hidden="true" /></div><span className="eyebrow">{t('localEnvironment')}</span><h3>{t(connectionTitle)}</h3><p>{t(connectionHelp)}</p>{connectionError && <div role="alert"><ErrorDetails error={connectionError} /></div>}{!!environment?.diagnostics.length && <details className="technical-details"><summary>{t('originalDiagnostics')}</summary>{environment.diagnostics.map((message, index) => <p key={index}>{message}</p>)}</details>}<button className="primary-button" onClick={() => void connect()}><RefreshCw size={14} aria-hidden="true" />{t('reconnect')}</button></div> : selected && snapshot ? <ContainerDetail container={selected} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} mutationBlocked={mutationBlocked} mutationAllowed={!!environment?.mutationAllowed} loadLogs={() => void loadLogs(selected, snapshot)} clearLogs={clearLogs} requestAction={requestAction} copy={copy} copyFeedback={copyFeedback} logsExpanded={logsExpanded} onLogsExpandedChange={setLogsExpanded} /> : <div className="startup-panel"><div className="startup-icon"><Boxes size={32} aria-hidden="true" /></div><h3>{t(refreshing ? 'loadingContainers' : snapshot?.containers.length === 0 ? 'noContainers' : 'selectContainer')}</h3><p>{t(snapshot?.containers.length === 0 ? 'startServices' : 'selectHelp')}</p></div>}
+          {connecting ? <div className="startup-panel"><div className="startup-icon"><LoaderCircle className="spin" size={30} aria-hidden="true" /></div><h3>{t('checkingLocal')}</h3><p>{t('checkingCli')}</p></div> : !ready ? <div className="startup-panel"><div className="startup-icon"><Cable size={32} aria-hidden="true" /></div><span className="eyebrow">{t('localEnvironment')}</span><h3>{t(connectionTitle)}</h3><p>{t(connectionHelp)}</p>{connectionError && <div role="alert"><ErrorDetails error={connectionError} /></div>}{!!environment?.diagnostics.length && <details className="technical-details"><summary>{t('originalDiagnostics')}</summary>{environment.diagnostics.map((message, index) => <p key={index}>{message}</p>)}</details>}<button className="primary-button" onClick={() => void connect()}><RefreshCw size={14} aria-hidden="true" />{t('reconnect')}</button></div> : selected && snapshot ? <ContainerDetail container={selected} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} mutationBlocked={mutationBlocked} mutationAllowed={!!environment?.mutationAllowed} liveStatus={liveStatus} loadLogs={loadLogs} clearLogs={clearLogs} requestAction={requestAction} copy={copy} copyFeedback={copyFeedback} copyFeedbackTone={clipboardMessage?.key === 'copyFailure' ? 'error' : 'success'} copyFeedbackId={clipboardMessage?.id} logsExpanded={logsExpanded} onLogsExpandedChange={setLogsExpanded} /> : <div className="startup-panel"><div className="startup-icon"><BrandMark size={56} /></div><h3>{t(refreshing ? 'loadingContainers' : snapshot?.containers.length === 0 ? 'noContainers' : 'selectContainer')}</h3><p>{t(snapshot?.containers.length === 0 ? 'startServices' : 'selectHelp')}</p></div>}
         </section>
       </main>
-      <footer className="app-footer"><span><span className="footer-dot" />{t('footer')}</span><span className="clipboard-feedback" role="status" aria-live="polite">{copyFeedback}</span><span className="footer-connection" role="status">{connectionStatus}</span></footer>
+      <footer className="app-footer"><span><span className="footer-dot" />{t('footer')}</span><CopyFeedback className="clipboard-feedback" message={copyFeedback} tone={clipboardMessage?.key === 'copyFailure' ? 'error' : 'success'} notificationId={clipboardMessage?.id} /></footer>
     </div>
     {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} returnFocus={settingsTrigger.current ?? undefined} />}
     {confirmation && <ConfirmDialog confirmation={confirmation} blocked={reconnectRequired} reconnectFocus={reconnectTrigger} onCancel={() => setConfirmation(null)} onConfirm={() => { if (confirmation.containers) void mutateBulk(confirmation.containers, confirmation.action, confirmation.sessionId, confirmation.generation); else void mutate(confirmation.container, confirmation.action, confirmation.sessionId, confirmation.generation); }} />}
