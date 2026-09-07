@@ -1,10 +1,16 @@
 //! Process contract tests use only uniquely owned files and child process groups.
-use crate::process::{LOG_LIMIT, Runner, STDERR_LIMIT, STDOUT_LIMIT, plain_text};
+use crate::process::{
+    FollowProcess, FollowRead, LOG_LIMIT, Output, Runner, STDERR_LIMIT, STDOUT_LIMIT, plain_text,
+};
 use std::{
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Command,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -233,24 +239,50 @@ const RESISTS_TERM: &str = "trap '' TERM\necho $$ > \"$1/parent.pid\"\n/bin/sh -
 #[test]
 fn timeout_kills_term_resistant_child_and_descendant_group() {
     let fixture = Fixture::new(RESISTS_TERM);
+    let gate = Arc::new(AtomicBool::new(false));
+    let mut runner = Runner::default();
+    runner.timeout_gate = Some(gate.clone());
+    struct ShutdownOnDrop {
+        runner: Runner,
+        worker: Option<thread::JoinHandle<Result<Output, String>>>,
+    }
+    impl Drop for ShutdownOnDrop {
+        fn drop(&mut self) {
+            self.runner.shutdown();
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+    // Even a failed readiness assertion stops the registered group when there is
+    // no PID file yet. Fixture cleanup alone cannot identify that earlier child.
+    let owned_runner = runner.clone();
+    let executable = fixture.executable.clone();
+    let arguments = fixture.args();
+    let worker = thread::spawn(move || {
+        runner.run(&executable, &arguments, &[], Duration::from_secs(2), false)
+    });
+    let mut owned = ShutdownOnDrop {
+        runner: owned_runner,
+        worker: Some(worker),
+    };
+    // RESISTS_TERM installs each TERM handler before publishing its PID.
+    let parent = fixture.pid("parent.pid");
+    let descendant = fixture.pid("descendant.pid");
+    assert!(
+        !owned.worker.as_ref().unwrap().is_finished(),
+        "fixture ended before the timeout was armed"
+    );
     let started = Instant::now();
-    let out = Runner::default()
-        .run(
-            &fixture.executable,
-            &fixture.args(),
-            &[],
-            // Allow executable initialization under the full parallel test suite
-            // before exercising the timeout and two-second termination grace.
-            Duration::from_secs(2),
-            false,
-        )
-        .unwrap();
+    gate.store(true, Ordering::Release);
+    let out = owned.worker.take().unwrap().join().unwrap().unwrap();
     assert!(out.interrupted);
     assert_eq!(out.code, None);
     assert!(out.duration_ms >= 2_000);
+    assert!(started.elapsed() >= Duration::from_secs(2));
     assert!(started.elapsed() < Duration::from_secs(6));
-    assert_gone(fixture.pid("parent.pid"));
-    assert_gone(fixture.pid("descendant.pid"));
+    assert_gone(parent);
+    assert_gone(descendant);
 }
 
 #[test]
@@ -317,4 +349,159 @@ fn strips_terminal_controls_and_bounds_lossy_utf8_on_character_boundaries() {
     assert_eq!(plain_text("prefix가나다".as_bytes(), 7), "나다");
     assert_eq!(plain_text(&[0xff, b'x'], 3), "x");
     assert_eq!(plain_text("가".as_bytes(), 0), "");
+}
+
+fn follow_until(
+    follow: &FollowProcess,
+    done: impl Fn(&FollowRead, &str) -> bool,
+) -> (FollowRead, String) {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut text = String::new();
+    loop {
+        let output = follow.read();
+        text.push_str(&output.text);
+        if done(&output, &text) {
+            return (output, text);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "follow did not reach expected state"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn follow_delivers_both_pipes_before_exit_and_retains_terminal_metadata() {
+    let fixture = Fixture::new(
+        "printf 'first-out\\n'\nprintf 'first-err\\n' >&2\nwhile [ ! -f \"$1/continue\" ]; do /bin/sleep 0.01; done\nprintf 'second-out\\n'\nprintf 'second-err\\n' >&2\nexit 17",
+    );
+    let follow = Runner::default()
+        .start_follow(&fixture.executable, &fixture.args(), &[])
+        .unwrap();
+    let (output, first) = follow_until(&follow, |_, text| {
+        text.contains("first-out") && text.contains("first-err")
+    });
+    assert!(!output.terminal);
+    assert!(
+        follow.read().text.is_empty(),
+        "reads drain rather than repeat old text"
+    );
+    fs::write(fixture.root.join("continue"), "").unwrap();
+    let (output, second) = follow_until(&follow, |output, _| output.terminal);
+    assert!(first.contains("first-out") && first.contains("first-err"));
+    assert!(second.contains("second-out") && second.contains("second-err"));
+    assert_eq!(output.exit_code, Some(17));
+    assert!(!output.interrupted);
+    assert_eq!(output.stderr, "first-err\nsecond-err\n");
+    assert!(follow.read().text.is_empty());
+    assert!(follow.read().terminal);
+    follow.stop();
+    follow.stop();
+}
+
+#[test]
+fn follow_bounds_pending_tail_and_stderr_while_continuing_to_drain_pipes() {
+    let fixture = Fixture::new(
+        "printf 'discarded-prefix'\n(/bin/dd if=/dev/zero bs=1048576 count=3 2>/dev/null | /usr/bin/tr '\\000' x)\nprintf 'newest-stdout'\n(/bin/dd if=/dev/zero bs=262144 count=2 2>/dev/null | /usr/bin/tr '\\000' y) >&2\nprintf 'newest-stderr' >&2\necho $$ > \"$1/output-done.pid\"\nexec /bin/sleep 30",
+    );
+    let follow = Runner::default()
+        .start_follow(&fixture.executable, &fixture.args(), &[])
+        .unwrap();
+    fixture.pid("output-done.pid");
+    follow.stop();
+    let output = follow.read();
+    assert!(output.terminal && output.interrupted);
+    assert!(output.truncated);
+    assert_eq!(output.text.len(), LOG_LIMIT);
+    assert!(!output.text.contains("discarded-prefix"));
+    assert!(output.text.contains("newest-stdout"));
+    assert!(output.text.contains("newest-stderr"));
+    assert_eq!(output.stderr.len(), STDERR_LIMIT);
+    assert!(
+        !follow.read().truncated,
+        "overflow flag is since the previous drain"
+    );
+}
+
+#[test]
+fn follow_stop_waits_for_owned_group_without_interrupting_another_follow() {
+    let fixture = Fixture::new(RESISTS_TERM);
+    let other = Fixture::new("printf 'still-running'\nexec /bin/sleep 30");
+    let runner = Runner::default();
+    let follow = runner
+        .start_follow(&fixture.executable, &fixture.args(), &[])
+        .unwrap();
+    let unaffected = runner.start_follow(&other.executable, &[], &[]).unwrap();
+    let parent = fixture.pid("parent.pid");
+    let descendant = fixture.pid("descendant.pid");
+    let cloned = follow.clone();
+    let stop = thread::spawn(move || cloned.stop());
+    follow.stop();
+    stop.join().unwrap();
+    assert_gone(parent);
+    assert_gone(descendant);
+    let output = follow.read();
+    assert!(output.terminal && output.interrupted);
+    assert!(!unaffected.read().terminal);
+    unaffected.stop();
+    assert!(
+        runner
+            .run(
+                Path::new("/usr/bin/true"),
+                &[],
+                &[],
+                Duration::from_secs(1),
+                false
+            )
+            .is_ok()
+    );
+}
+
+#[test]
+fn follow_parent_exit_cleans_descendants_and_last_handle_drop_stops_running_work() {
+    let fixture = Fixture::new(
+        "echo $$ > \"$1/parent.pid\"\n/bin/sh -c 'echo $$ > \"$1/descendant.pid\"; exec /bin/sleep 30' _ \"$1\" &\nwhile [ ! -s \"$1/descendant.pid\" ]; do /bin/sleep 0.01; done\nexit 0",
+    );
+    let runner = Runner::default();
+    let follow = runner
+        .start_follow(&fixture.executable, &fixture.args(), &[])
+        .unwrap();
+    let (output, _) = follow_until(&follow, |output, _| output.terminal);
+    assert_eq!(output.exit_code, Some(0));
+    assert_gone(fixture.pid("descendant.pid"));
+    let live = Fixture::new("echo $$ > \"$1/parent.pid\"\nexec /bin/sleep 30");
+    let follow = runner
+        .start_follow(&live.executable, &live.args(), &[])
+        .unwrap();
+    let parent = live.pid("parent.pid");
+    drop(follow);
+    assert_gone(parent);
+}
+
+#[test]
+fn follow_and_one_shot_share_capacity_and_shutdown_closes_follow_work() {
+    let runner = Runner::default();
+    let fixture = Fixture::new("exec /bin/sleep 30");
+    let follows: Vec<_> = (0..8)
+        .map(|_| runner.start_follow(&fixture.executable, &[], &[]).unwrap())
+        .collect();
+    assert!(runner.start_follow(&fixture.executable, &[], &[]).is_err());
+    assert!(
+        runner
+            .run(
+                Path::new("/usr/bin/true"),
+                &[],
+                &[],
+                Duration::from_secs(1),
+                false
+            )
+            .is_err()
+    );
+    runner.shutdown();
+    for follow in follows {
+        follow.stop();
+        assert!(follow.read().terminal);
+    }
+    assert!(runner.start_follow(&fixture.executable, &[], &[]).is_err());
 }
