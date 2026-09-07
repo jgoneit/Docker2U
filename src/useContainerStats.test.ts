@@ -8,6 +8,8 @@ const container: Container = { handle: 'a', fullId: 'a'.repeat(64), shortId: 'a'
 const other = { ...container, handle: 'b', fullId: 'b'.repeat(64), name: 'worker' };
 const snapshot: ContainerList = { sessionId: 'one', generation: 1, containers: [container, other], refreshedAt: '', stale: false };
 const reply = (rows = [container], id = 'one', generation = 1): ContainerStats => ({ sessionId: id, generation, sampledAt: '2026-09-07T00:00:00Z', error: null, items: rows.map(row => ({ handle: row.handle, fullId: row.fullId, available: true, cpuPercent: 125.5, memoryUsage: '64MiB / 2GiB', memoryPercent: 3.125 })) });
+const unavailable = (rows = [container], generation = 1): ContainerStats => ({ ...reply(rows, 'one', generation), sampledAt: '2026-09-07T00:00:10Z',
+  items: rows.map(row => ({ handle: row.handle, fullId: row.fullId, available: false, cpuPercent: null, memoryUsage: null, memoryPercent: null })) });
 const flush = () => act(async () => { await Promise.resolve(); });
 function deferred<T>() { let resolve!: (result: T) => void; let reject!: (error: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 const onError = vi.fn();
@@ -31,15 +33,53 @@ it('does not overlap requests across filter changes and ignores the former respo
   expect(collect).toHaveBeenLastCalledWith('one', 1, ['b']); expect(result.current.sampleFor(container)).toBeUndefined();
   expect(result.current.sampleFor(other)?.memoryUsage).toBe('64MiB / 2GiB');
 });
-it('retains a failed sample as stale and reports the initial failure without refreshing inventory', async () => {
+it('does not invent an old sample after unavailable replies, failures, hidden collection or a refreshed inventory', async () => {
+  collect.mockResolvedValue(unavailable());
+  const { result, rerender } = renderHook(props => useContainerStats(props), { initialProps: input() }); await flush();
+  expect(result.current.sampleFor(container)).toBeUndefined();
+  expect(result.current.error).toBeNull();
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  expect(result.current.sampleFor(container)).toBeUndefined();
   collect.mockRejectedValueOnce({ code: 'TimedOut', message: 'timeout' });
-  const { result } = renderHook(() => useContainerStats(input())); await flush();
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  expect(result.current.sampleFor(container)).toBeUndefined();
+  expect(result.current.error?.code).toBe('TimedOut');
+  expect(onError).toHaveBeenCalledOnce();
+  act(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' }); document.dispatchEvent(new Event('visibilitychange')); });
+  expect(result.current.sampleFor(container)).toBeUndefined();
+  act(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' }); document.dispatchEvent(new Event('visibilitychange')); }); await flush();
+  expect(result.current.sampleFor(container)).toBeUndefined();
+  expect(result.current.error).toBeNull();
+  rerender(input([container], false));
+  expect(result.current.sampleFor(container)).toBeUndefined();
+  rerender(input([container], true, { ...snapshot, stale: true }));
+  expect(result.current.sampleFor(container)).toBeUndefined();
+  const refreshed = { ...container, handle: 'new-handle' };
+  const pending = deferred<ContainerStats>(); collect.mockReturnValueOnce(pending.promise);
+  rerender(input([refreshed], true, { ...snapshot, generation: 2, containers: [refreshed] }));
+  expect(result.current.sampleFor(refreshed)).toBeUndefined();
+  await act(async () => pending.resolve(unavailable([refreshed], 2)));
+  expect(result.current.sampleFor(refreshed)).toBeUndefined();
+});
+it('retains observed values and their timestamp through unavailable refreshes, then clears stale on recovery', async () => {
+  collect.mockRejectedValueOnce({ code: 'TimedOut', message: 'timeout' });
+  const { result, rerender } = renderHook(props => useContainerStats(props), { initialProps: input() }); await flush();
   expect(result.current.error?.code).toBe('TimedOut'); expect(result.current.sampleFor(container)).toBeUndefined();
   await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
-  expect(result.current.sampleFor(container)?.stale).toBe(false);
-  collect.mockResolvedValue({ ...reply(), items: reply().items.map(item => ({ ...item, available: false, cpuPercent: null, memoryUsage: null })) });
+  const observed = result.current.sampleFor(container)!;
+  expect(observed.stale).toBe(false);
+  collect.mockResolvedValue(unavailable());
   await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
-  expect(result.current.sampleFor(container)).toMatchObject({ cpuPercent: 125.5, stale: true });
+  expect(result.current.sampleFor(container)).toEqual({ ...observed, stale: true });
+  const refreshed = { ...container, handle: 'new-handle' };
+  collect.mockResolvedValue(unavailable([refreshed], 2));
+  rerender(input([refreshed], true, { ...snapshot, generation: 2, containers: [refreshed] })); await flush();
+  expect(result.current.sampleFor(refreshed)).toEqual({ ...observed, handle: refreshed.handle, stale: true });
+  const recovered = { ...reply([refreshed], 'one', 2), sampledAt: '2026-09-07T00:00:20Z' };
+  recovered.items[0]!.cpuPercent = 0;
+  collect.mockResolvedValue(recovered);
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  expect(result.current.sampleFor(refreshed)).toEqual({ ...recovered.items[0], sampledAt: recovered.sampledAt, stale: false });
 });
 it('pauses new requests while hidden or busy and resumes immediately with a valid list', async () => {
   const { rerender } = renderHook(props => useContainerStats(props), { initialProps: input() }); await flush();

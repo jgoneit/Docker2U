@@ -471,6 +471,72 @@ function LiveHarness() {
 }
 function renderLiveLogs() { return render(<PreferencesProvider initialPreferences={{ theme: 'dark', language: 'ko' }}><LiveHarness /></PreferencesProvider>); }
 
+describe('log source modes', () => {
+  const properties = {
+    container, snapshot, logs: null, logsError: null, loadingLogs: false, refreshing: false, mutating: false,
+    loadLogs: () => {}, clearLogs: () => {}, copy: async () => {}, expanded: false, onExpandedChange: () => {},
+  } satisfies Parameters<typeof LogPanel>[0];
+  const panel = (overrides: Partial<Parameters<typeof LogPanel>[0]>) => <PreferencesProvider initialPreferences={{ theme: 'dark', language: 'ko' }}><LogPanel {...properties} {...overrides} /></PreferencesProvider>;
+  const frame: LogSnapshot = { ...logs, source: 'live', streamId: 'mode-stream', sequence: 1, text: 'ERROR first follow', byteCount: 18, receivedBytes: 18 };
+
+  it.each(['running', 'paused', 'restarting'])('keeps %s follow controls before receipt and retains ended follow provenance', async state => {
+    const current = { ...container, state };
+    const view = render(panel({ container: current, liveStatus: 'connecting', loadingLogs: true }));
+    expect(screen.getByRole('button', { name: '일시정지' })).toBeVisible();
+    expect(screen.getByText('로그 연결 중')).toBeVisible();
+    expect(screen.getByText('최근 2 MiB')).toBeVisible();
+    expect(document.querySelector('.log-fetched-at')).toBeNull();
+    view.rerender(panel({ container: current, liveStatus: 'following', logs: { ...frame, text: '', byteCount: 0, receivedBytes: 0, sequence: -1 } }));
+    expect(document.querySelector('.log-fetched-at')).toBeNull();
+    view.rerender(panel({ container: current, liveStatus: 'following', logs: frame }));
+    expect(document.querySelector('.log-fetched-at')).toHaveTextContent('마지막 수신');
+    view.rerender(panel({ container: { ...container, state: 'exited' }, liveStatus: 'ended', logs: frame }));
+    expect(screen.getByText('수집 종료')).toBeVisible();
+    expect(screen.getByRole('button', { name: '일시정지' })).toBeVisible();
+    expect(screen.getByLabelText('최근 로그 내용')).toHaveTextContent(frame.text);
+    expect(document.querySelector('.log-fetched-at')).toHaveTextContent('마지막 수신');
+    view.rerender(panel({ container: current, liveStatus: 'error', logsError: { code: 'StartFailed', message: 'follow unavailable' } }));
+    expect(screen.getByRole('button', { name: '일시정지' })).toBeVisible();
+    expect(screen.getByText('수집 오류')).toBeVisible();
+    expect(document.querySelector('.log-fetched-at')).toBeNull();
+  });
+
+  it('retains search across a same-ID mode change without reviving the prior paused buffer', async () => {
+    const user = userEvent.setup();
+    const view = render(panel({ liveStatus: 'following', logs: frame }));
+    const content = screen.getByLabelText('최근 로그 내용');
+    await user.click(screen.getByRole('button', { name: '일시정지' }));
+    await user.click(screen.getByRole('button', { name: '로그 검색 열기' }));
+    const search = screen.getByRole('searchbox', { name: '로그 검색' });
+    await user.type(search, 'error');
+    expect(await screen.findByText('1 / 1건')).toBeVisible();
+    view.rerender(panel({ container: { ...container, state: 'exited' }, liveStatus: 'ended', logs: { ...logs, text: 'ERROR replacement snapshot\nERROR second snapshot line' } }));
+    expect(screen.queryByRole('button', { name: '재개' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '일시정지' })).not.toBeInTheDocument();
+    expect(document.querySelector('.log-stream-status')).toBeNull();
+    expect(content).toHaveTextContent('ERROR replacement snapshot');
+    expect(content).not.toHaveTextContent(frame.text);
+    expect(await screen.findByText('1 / 2건')).toBeVisible();
+    expect(screen.getByRole('searchbox', { name: '로그 검색' })).toBe(search);
+
+    view.rerender(panel({ liveStatus: 'connecting', loadingLogs: true }));
+    expect(search).toHaveValue('error');
+    expect(screen.getByRole('button', { name: '일시정지' })).toHaveAttribute('aria-pressed', 'false');
+    view.rerender(panel({ liveStatus: 'following', logs: { ...frame, streamId: 'new-mode-stream', text: '', byteCount: 0, receivedBytes: 0, sequence: -1 } }));
+    expect(content).not.toHaveTextContent('ERROR replacement snapshot');
+    const first = { ...frame, streamId: 'new-mode-stream', text: 'ERROR new follow' };
+    view.rerender(panel({ liveStatus: 'following', logs: first }));
+    expect(content.textContent).toBe(first.text);
+    expect(await screen.findByText('1 / 1건')).toBeVisible();
+    view.rerender(panel({ liveStatus: 'following', logs: { ...first, text: 'ERROR subsequent follow', sequence: 2 } }));
+    expect(content.textContent).toBe(first.text);
+    await user.click(screen.getByRole('button', { name: '로그 검색 닫기' }));
+    expect(content.textContent).toBe('ERROR subsequent follow');
+    expect(screen.getByLabelText('최근 로그 내용')).toBe(content);
+    expect(screen.getByRole('button', { name: '일시정지' })).toHaveAttribute('aria-pressed', 'false');
+  });
+});
+
 describe('live log display', () => {
   it('keeps copy and trash icon actions directly available across language changes', async () => {
     const user = userEvent.setup(); renderLiveLogs();

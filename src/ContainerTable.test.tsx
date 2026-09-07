@@ -1,15 +1,18 @@
-import { createRef } from 'react';
+import { createRef, useRef } from 'react';
 import type { KeyboardEvent } from 'react';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import type { Container } from './api';
+import { api as dockerApi } from './api';
+import type { Container, ContainerList, ContainerStats } from './api';
 import { ContainerTable } from './ContainerTable';
 import type { ContainerTableProps } from './ContainerTable';
+import { ContainerSummary } from './components';
 import { PreferencesProvider } from './preferences';
 import type { Language } from './preferences';
 import { groupContainers } from './projects';
 import type { ResourceSample } from './useContainerStats';
+import { useContainerStats } from './useContainerStats';
 
 const api: Container = { handle: 'api-handle', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'api', image: 'api:1',
   state: 'running', health: 'healthy', ports: ['0.0.0.0:8080→8080/tcp'], composeProject: 'backend', composeService: 'api', createdAt: '2026-09-07T00:00:00Z' };
@@ -116,12 +119,80 @@ describe('container table', () => {
   });
 
   it('shows unavailable values as em dashes even if a failed sample retains numbers', () => {
-    setup({ sampleFor: container => sample(container, { available: false, cpuPercent: 37, stale: true }) });
+    setup({ sampleFor: container => sample(container, { available: false, cpuPercent: 37, stale: false }) });
     expect(screen.queryByText('37.00%')).not.toBeInTheDocument();
     expect(screen.queryByText('64MiB')).not.toBeInTheDocument();
     expect(row('api').querySelector('.container-cpu-value')).toHaveTextContent('—');
     expect(row('api').querySelector('.container-memory-value')).toHaveTextContent('—');
-    expect(within(row('api')).getByText('오래된 값')).toBeVisible();
+    expect(within(row('api')).queryByText('오래된 값')).not.toBeInTheDocument();
+  });
+
+  it('distinguishes no sample, retained values and recovery in both the table and container information', async () => {
+    const snapshot: ContainerList = { sessionId: 'stats-ui', generation: 1, containers: [api], refreshedAt: '2026-09-07T00:00:00Z', stale: false };
+    const response = (available: boolean, sampledAt: string, cpuPercent = 0, memoryUsage = '64MiB / 2GiB'): ContainerStats => ({
+      sessionId: snapshot.sessionId, generation: 1, sampledAt, error: null,
+      items: [{ handle: api.handle, fullId: api.fullId, available, cpuPercent: available ? cpuPercent : null,
+        memoryUsage: available ? memoryUsage : null, memoryPercent: available ? 3.125 : null }],
+    });
+    const observedAt = '2026-09-07T00:00:05Z';
+    const recoveredAt = '2026-09-07T00:00:15Z';
+    const collect = vi.spyOn(dockerApi, 'getContainerStats')
+      .mockResolvedValueOnce(response(false, '2026-09-07T00:00:00Z'))
+      .mockResolvedValueOnce(response(true, observedAt))
+      .mockResolvedValueOnce(response(false, '2026-09-07T00:00:10Z'))
+      .mockResolvedValueOnce(response(true, recoveredAt, 125.5, '128MiB / 2GiB'));
+    const onError = vi.fn();
+    function Insights() {
+      const inventoryRef = useRef<HTMLTableSectionElement>(null);
+      const stats = useContainerStats({ snapshot, containers: snapshot.containers, enabled: true, onError });
+      return <>
+        <ContainerTable groups={groupContainers(snapshot.containers)} selectedId={api.fullId} checkedHandles={new Set()}
+          checkboxDisabled={false} sampleFor={stats.sampleFor} inventoryRef={inventoryRef}
+          onSelect={() => {}} onToggle={() => {}} onRowKeyDown={() => {}} busy={false} />
+        <ContainerSummary container={api} snapshot={snapshot} copy={async () => {}} mutating={false} mutationBlocked={false}
+          mutationAllowed resourceSample={stats.sampleFor(api)} />
+      </>;
+    }
+    vi.useFakeTimers();
+    const view = render(<PreferencesProvider initialPreferences={{ theme: 'light', language: 'ko' }}><Insights /></PreferencesProvider>);
+    try {
+      await act(async () => { await Promise.resolve(); });
+      const table = screen.getByRole('table', { name: '컨테이너 목록' });
+      expect(row('api').querySelector('.container-cpu-value')).toHaveTextContent('—');
+      expect(row('api').querySelector('.container-memory-value')).toHaveTextContent('—');
+      expect(screen.queryByText('오래된 값')).not.toBeInTheDocument();
+      expect(screen.queryByText('자원 이전 값')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByText('컨테이너 정보'));
+      const detail = screen.getByRole('region', { name: '자원 사용량' });
+      expect(within(detail).getAllByText('—')).toHaveLength(2);
+      expect(screen.getByText('수집된 값 없음')).toBeVisible();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(within(table).getByRole('cell', { name: '0.00%' })).toBeVisible();
+      expect(detail).toHaveTextContent('0.00%');
+      expect(detail).toHaveTextContent('64MiB / 2GiB');
+      expect(document.querySelector('.resource-metadata time')).toHaveAttribute('datetime', observedAt);
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(row('api').querySelector('.container-cpu-value')).toHaveTextContent('0.00%');
+      expect(row('api').querySelector('.container-memory-value')).toHaveTextContent('64MiB');
+      expect(within(table).getByText('오래된 값')).toBeVisible();
+      expect(within(detail).getByText('오래된 값')).toBeVisible();
+      expect(screen.getByText('자원 이전 값')).toBeVisible();
+      expect(detail).toHaveTextContent('64MiB / 2GiB');
+      expect(document.querySelector('.resource-metadata time')).toHaveAttribute('datetime', observedAt);
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(within(table).getByRole('cell', { name: '125.50%' })).toBeVisible();
+      expect(within(table).getByRole('cell', { name: '128MiB' })).toBeVisible();
+      expect(detail).toHaveTextContent('125.50%');
+      expect(detail).toHaveTextContent('128MiB / 2GiB');
+      expect(document.querySelector('.resource-metadata time')).toHaveAttribute('datetime', recoveredAt);
+      expect(screen.queryByText('오래된 값')).not.toBeInTheDocument();
+      expect(screen.queryByText('자원 이전 값')).not.toBeInTheDocument();
+      expect(onError).not.toHaveBeenCalled();
+      expect(collect).toHaveBeenCalledTimes(4);
+    } finally { view.unmount(); collect.mockRestore(); vi.useRealTimers(); }
   });
 
   it('distinguishes a health issue from the process state without repeating healthy and absent checks', () => {

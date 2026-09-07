@@ -3,7 +3,8 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { api } from './api';
-import type { Container, ContainerList, Environment, MutationResult, RecentLogs, LogStreamStart } from './api';
+import type { Container, ContainerList, ContainerStats, Environment, MutationResult, RecentLogs, LogStreamStart } from './api';
+import type { FrontendSession } from './frontendSession';
 
 vi.mock('./api', async importOriginal => ({ ...await importOriginal<typeof import('./api')>(), api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), startLogStream: vi.fn(), readLogStream: vi.fn(), stopLogStream: vi.fn(), getContainerStats: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() } }));
 const mock = vi.mocked(api);
@@ -48,6 +49,12 @@ function controlledLogs() {
 const fetchLogs = () => screen.getByRole('button', { name: '로그 조회' });
 const clearLogs = () => screen.getByRole('button', { name: '로그 화면 비우기' });
 const output = () => screen.getByLabelText('최근 로그 내용');
+async function diagnostic(user: ReturnType<typeof userEvent.setup>): Promise<FrontendSession> {
+  const trigger = screen.getByRole('button', { name: '환경 진단 보기' });
+  if (trigger.getAttribute('aria-expanded') !== 'true') await user.click(trigger);
+  await user.click(screen.getByRole('button', { name: '진단 정보 복사' }));
+  return JSON.parse(vi.mocked(navigator.clipboard.writeText).mock.lastCall![0]).frontendSession;
+}
 function expectConnection(warning: boolean) {
   const label = warning ? '연결 재확인 필요' : '로컬 · 연결됨';
   expect(within(screen.getByRole('region', { name: '연결 환경' })).getByRole('status')).toHaveTextContent(label);
@@ -73,6 +80,44 @@ beforeEach(() => {
 });
 
 describe('native log request lifetime', () => {
+  it.each(['CommandFailed', 'StaleHandle'].flatMap(code => ['select', 'clear'].map(action => ({ code, action }))))('keeps the latest diagnostic after $action invalidates a pending request that later rejects with $code', async ({ code, action }) => {
+    const user = userEvent.setup();
+    vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
+    const logs = controlledLogs();
+    const stats = deferred<ContainerStats>();
+    mock.getContainerStats.mockReturnValueOnce(stats.promise);
+    render(<App />);
+    await waitFor(() => expect(logs.requests).toHaveLength(1));
+    await waitFor(() => expect(mock.getContainerStats).toHaveBeenCalledTimes(1));
+    if (action === 'select') await select(user, 'beta');
+    else await user.click(clearLogs());
+
+    // This is a newer, accepted failure from the current view. The obsolete log
+    // failure must not replace its code, stage, or occurrence time in diagnostics.
+    await act(async () => stats.reject({ code: 'TimedOut', message: 'latest resource sample failed' }));
+    const before = await diagnostic(user);
+    expect(before).toMatchObject({ currentStatus: 'connected', effectiveMutationBlocked: false, reconnectRequired: false,
+      issue: { stage: 'stats', origin: 'nativeError', code: 'TimedOut', requiresReconnect: false, scope: 'current' },
+    });
+    await logs.fail(0, code);
+
+    expect(await diagnostic(user)).toEqual(before);
+    expectConnection(false);
+    expect(screen.queryByText('최근 로그를 읽지 못했습니다.')).not.toBeInTheDocument();
+    expect(within(screen.getByRole('region', { name: '서비스 복구' })).getByRole('button', { name: '중지' })).toBeEnabled();
+    if (action === 'select') {
+      expect(logs.requests.map(request => request.handle)).toEqual(['alpha-1', 'beta-1']);
+      await logs.succeed(1, 'current beta logs');
+      expect(output()).toHaveTextContent('current beta logs');
+      expect(await diagnostic(user)).toEqual(before);
+    } else {
+      expect(logs.requests).toHaveLength(1);
+      expect(output()).toHaveTextContent('로그 조회를 눌러 로그를 확인하세요.');
+      expect(fetchLogs()).toBeEnabled();
+    }
+    expect(logs.maximumActive()).toBe(1);
+  });
+
   it.each(['EnvironmentChanged', 'Disconnected', 'SocketMissing', 'PermissionDenied', 'Configuration', 'EndpointMismatch', 'RemoteEndpoint'])('latches current-session %s after Clear without restoring the log view or reloading', async code => {
     const user = userEvent.setup();
     const logs = controlledLogs();

@@ -9,7 +9,7 @@ const words = {
     openSearch: '로그 검색 열기', closeSearch: '로그 검색 닫기',
     containerSearch: '컨테이너 검색', clearContainerSearch: '컨테이너 검색 지우기', runningFilter: '실행 중',
     showDiagnostics: '환경 진단 보기', closeDiagnostics: '환경 진단 닫기', executionDetails: '실행 상세',
-    bottom: '최신 로그로', expand: '로그 확대 보기', closeLogs: '로그 확대 보기 닫기',
+    bottom: '최신 로그로', snapshotBottom: '맨 아래로', expand: '로그 확대 보기', closeLogs: '로그 확대 보기 닫기',
     showResult: '결과 펼치기', hideResult: '결과 접기', result: '최근 작업 결과',
     unknown: '결과 불명', details: '상세',
     start: '시작', stop: '중지', confirmStop: '중지 확인', cancel: '취소', selectVisible: '보이는 컨테이너 전체 선택',
@@ -20,7 +20,7 @@ const words = {
     openSearch: 'Open log search', closeSearch: 'Close log search',
     containerSearch: 'Search containers', clearContainerSearch: 'Clear container search', runningFilter: 'Running',
     showDiagnostics: 'Show environment diagnostics', closeDiagnostics: 'Close diagnostics', executionDetails: 'Execution details',
-    bottom: 'Latest logs', expand: 'Expand logs', closeLogs: 'Close expanded logs',
+    bottom: 'Latest logs', snapshotBottom: 'Scroll to bottom', expand: 'Expand logs', closeLogs: 'Close expanded logs',
     showResult: 'Show result details', hideResult: 'Hide result details', result: 'Latest operation result',
     unknown: 'Result unknown', details: 'details',
     start: 'Start', stop: 'Stop', confirmStop: 'Confirm Stop', cancel: 'Cancel', selectVisible: 'Select all visible containers',
@@ -348,7 +348,7 @@ test('keeps completed result controls reachable and the result after another sel
   await expect(show).toBeInViewport();
   await expectLogFits(page);
   await expectNoHorizontalOverflow(page);
-  await scrollToLatest(page.locator('.log-content'), page.getByRole('button', { name: t.bottom, exact: true }));
+  await scrollToLatest(page.locator('.log-content'), page.getByRole('button', { name: t.snapshotBottom, exact: true }));
   await visibleTextRange(page.locator('.log-content'), 'LAST_LINE_300');
 });
 

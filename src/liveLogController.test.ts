@@ -17,8 +17,9 @@ function setup() {
     stopLogStream: vi.fn(async () => {}),
     getRecentLogs: vi.fn(async (sessionId, handle) => ({ sessionId, generation: 1, handle, text: 'snapshot', truncated: false, byteCount: 8, command: '', stderr: '' })),
   };
-  const controller = new LiveLogController(transport, value => { state = value; }, report);
-  return { controller, transport, report, state: () => state };
+  const publish = vi.fn((value: LiveLogState) => { state = value; });
+  const controller = new LiveLogController(transport, publish, report);
+  return { controller, transport, report, publish, state: () => state };
 }
 
 describe('live log lifecycle', () => {
@@ -47,6 +48,81 @@ describe('live log lifecycle', () => {
     frame.resolve({ sessionId: 'session', streamId: 'stream-a1', sequence: 1, text: 'one', terminal: false, truncated: false, error: null }); await flush();
     await vi.advanceTimersByTimeAsync(249); expect(transport.readLogStream).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1); expect(transport.readLogStream).toHaveBeenCalledTimes(2);
+    controller.destroy();
+  });
+  it('acknowledges empty and duplicate frames without publishing or changing the receipt time', async () => {
+    const { controller, transport, publish, state } = setup();
+    let sequence = 0;
+    vi.mocked(transport.readLogStream).mockImplementation(async (_session, streamId) => ({
+      sessionId: 'session', streamId, sequence: ++sequence, text: sequence === 1 ? 'first\n' : '',
+      terminal: false, truncated: false, error: null,
+    }));
+    controller.update({ container: a, snapshot: list, enabled: true }); await flush();
+    const received = state();
+    publish.mockClear();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(transport.readLogStream).toHaveBeenCalledTimes(5);
+    expect(publish).not.toHaveBeenCalled();
+    expect(state()).toBe(received);
+    vi.mocked(transport.readLogStream).mockResolvedValue({ sessionId: 'session', streamId: 'stream-a1', sequence: 6,
+      text: 'next\n', terminal: false, truncated: false, error: null });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(state().logs?.text).toBe('first\nnext\n');
+    expect(state().logs?.fetchedAt).not.toBe(received.logs?.fetchedAt);
+    const next = state();
+    publish.mockClear();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(publish).not.toHaveBeenCalled();
+    expect(state()).toBe(next);
+    controller.destroy();
+  });
+  it('rejects sequence regression after acknowledging unpublished empty frames', async () => {
+    const { controller, transport, state, report } = setup();
+    controller.update({ container: a, snapshot: list, enabled: true }); await flush();
+    vi.mocked(transport.readLogStream).mockResolvedValueOnce({ sessionId: 'session', streamId: 'stream-a1', sequence: 3,
+      text: '', terminal: false, truncated: false, error: null });
+    await vi.advanceTimersByTimeAsync(250);
+    vi.mocked(transport.readLogStream).mockResolvedValueOnce({ sessionId: 'session', streamId: 'stream-a1', sequence: 2,
+      text: 'out of order', terminal: false, truncated: false, error: null });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(state().logs?.text).toBe('first\n');
+    expect(state().liveStatus).toBe('error');
+    expect(report).toHaveBeenCalledTimes(1);
+    controller.destroy();
+  });
+  it.each(['terminal', 'error'] as const)('processes empty truncation and %s frames without inventing a receipt', async outcome => {
+    const { controller, transport, state, publish } = setup();
+    controller.update({ container: a, snapshot: list, enabled: true }); await flush();
+    const received = state().logs!;
+    vi.mocked(transport.readLogStream).mockResolvedValueOnce({ sessionId: 'session', streamId: 'stream-a1', sequence: 2,
+      text: '', terminal: false, truncated: true, error: null });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(state().logs).toMatchObject({ text: received.text, fetchedAt: received.fetchedAt, truncated: true, droppedBatches: 1, receivedBytes: received.receivedBytes });
+    const truncated = state().logs;
+    publish.mockClear();
+    vi.mocked(transport.readLogStream).mockResolvedValueOnce({ sessionId: 'session', streamId: 'stream-a1', sequence: 2,
+      text: '', terminal: outcome === 'terminal', truncated: true, error: outcome === 'error' ? { code: 'CommandFailed', message: 'follow ended' } : null });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(state().logs).toBe(truncated);
+    expect(state().liveStatus).toBe(outcome === 'terminal' ? 'ended' : 'error');
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(transport.stopLogStream).toHaveBeenCalledExactlyOnceWith('session', 'stream-a1');
+    controller.destroy();
+  });
+  it.each(['clear', 'select'].flatMap(action => ['reject', 'frame'].map(result => ({ action, result }))))('discards an obsolete ordinary $result failure after $action', async ({ action, result }) => {
+    const { controller, transport, state, report } = setup();
+    const read = deferred<Awaited<ReturnType<LogTransport['readLogStream']>>>();
+    vi.mocked(transport.readLogStream).mockReturnValueOnce(read.promise);
+    controller.update({ container: a, snapshot: list, enabled: true }); await flush();
+    if (action === 'clear') controller.clear();
+    else controller.update({ container: b, snapshot: list, enabled: true });
+    const failure = { code: 'StaleHandle', message: 'old subscription stopped' };
+    if (result === 'reject') read.reject(failure);
+    else read.resolve({ sessionId: 'session', streamId: 'stream-a1', sequence: 1, text: '', terminal: true, truncated: false, error: failure });
+    await flush();
+    expect(report).not.toHaveBeenCalled();
+    expect(state().logsError).toBeNull();
+    expect(state().logs?.text ?? null).toBe(action === 'clear' ? null : 'first\n');
     controller.destroy();
   });
   it('keeps one read IPC across target replacement even after the old stream is stopped', async () => {
