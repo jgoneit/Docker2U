@@ -49,9 +49,10 @@ export function useContainerStats({ snapshot, containers, enabled, onError }: In
             const samples = previous.sessionId === list.sessionId ? new Map(previous.samples) : new Map<string, ResourceSample>();
             for (const item of result.items) {
               const prior = samples.get(item.fullId);
-              samples.set(item.fullId, !item.available && prior?.available
-                ? { ...prior, handle: item.handle, stale: true }
-                : { ...item, sampledAt: result.sampledAt, stale: !item.available });
+              // Only observed values enter the cache. An unavailable first reply
+              // must not become an old sample when collection pauses or fails.
+              if (item.available) samples.set(item.fullId, { ...item, sampledAt: result.sampledAt, stale: false });
+              else if (prior?.available) samples.set(item.fullId, { ...prior, handle: item.handle, stale: true });
             }
             const validIds = new Set(list.containers.map(item => item.fullId));
             for (const id of samples.keys()) if (!validIds.has(id)) samples.delete(id);
