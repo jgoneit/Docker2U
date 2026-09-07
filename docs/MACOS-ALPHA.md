@@ -30,12 +30,14 @@ CLI의 새 선택을 반영하며, 실패하면 이전 세션과 handle을 사�
 fallback하지 않는다. 앱은 Container·Volume을 이동하거나 Runtime을 설치·시작하지 않는다.
 
 전체 초기화, Delete/Prune, 대상 확인 없는 전체 중지, Terminal/Exec, Compose 실행, 호스트 Port
-Inspector, 자동 갱신, 실시간 로그, 환경 변수 표시와 Local-only 해제 설정은
+Inspector, 목록 자동 갱신, 환경 변수 표시와 Local-only 해제 설정은
 제외한다. Windows·Intel Mac, 외부 서명·notarization, DMG·공개 GitHub Release는
 후속 검증이다. macOS 14+ 호환성 허용은 모든 OS·CLI·provider 조합의 인증을 뜻하지 않는다.
 
 현재 보이는 목록을 명시적으로 전체 선택한 뒤 확인창을 거치는 Stop은 허용한다.
 검색·필터로 숨겨진 Container나 다른 context를 일괄 작업에 포함하지 않는다.
+
+2026-09-07 확장: [실시간 로그·Compose 프로젝트 표시·현재 자원 사용량](MACOS-LIVE-INSIGHTS.md)을 포함한다. 이 기능의 이번 검증 기록은 과거 네이티브 검증과 구분한다.
 
 ## 준비와 작업 경계
 

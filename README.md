@@ -62,8 +62,8 @@ Computer Use 권한 허용 후 Finder에서 재빌드한 앱을 실행해 실제
 - Docker2U는 Docker Desktop 대체품이나 Runtime 설치 도구가 아니다.
 - 조직이 제공한 Docker CLI와 로컬 Docker/Moby Runtime을 그대로 사용하는
   BYOR(Bring Your Own Runtime) 제품이다.
-- v0.1은 Container 조회, 최근 로그, Start, Stop, Restart에 집중한다.
-- 원격 endpoint, 범용 shell, Terminal/Exec, Delete/Prune, Compose는 제외한다.
+- macOS 알파는 Container·Compose 프로젝트 조회, 실시간 로그, 현재 CPU·메모리, Start·Stop·Restart를 제공한다. [범위와 검증 경계](docs/MACOS-LIVE-INSIGHTS.md)를 참고한다.
+- 원격 endpoint, 범용 shell, Terminal/Exec, Delete/Prune, Compose 실행·편집은 제외한다.
 - 기술 스택은 Rust + Tauri 2 + React + TypeScript strict로 정의한다.
 - 사용자가 제공한 React 패널의 어두운 테마, 검색·필터, 목록·상세 분할을 유지한다.
 - 로컬 알파는 시작·Reconnect에서 인자 없는 `docker context inspect`로 선택을
