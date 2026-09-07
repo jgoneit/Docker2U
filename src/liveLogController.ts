@@ -1,5 +1,6 @@
 import { coreError, type Container, type ContainerList, type CoreError, type RecentLogs } from './api';
 import { frontendError } from './frontendErrors';
+import { connectionInvalidatingErrors } from './frontendSession';
 import { appendLogText, type LogSnapshot } from './logSnapshot';
 
 export type LiveLogStatus = 'idle' | 'connecting' | 'following' | 'ended' | 'error';
@@ -121,6 +122,7 @@ export class LiveLogController {
     const failure = coreError(error);
     // An old selection may still reveal an invalid connection, but an old session cannot.
     const current = this.valid(revision, identity);
+    if (!current && !connectionInvalidatingErrors.has(failure.code)) return;
     if (!this.destroyed && this.input.snapshot?.sessionId === sessionId && this.reportError(error, failure, sessionId) === true) {
       this.blockedSession = sessionId; this.wanted = false; this.cancel();
     }
