@@ -45,6 +45,7 @@ export class LiveLogController {
   private queuedRead: { stream: Stream; revision: number; identity: string } | null = null;
   private destroyed = false;
   private stream: Stream | null = null;
+  private acknowledgedSequence = -1;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private stopping = new Set<string>();
   private state = emptyLogState();
@@ -106,6 +107,7 @@ export class LiveLogController {
   private valid(revision: number, identity: string) { return !this.destroyed && revision === this.revision && identity === this.identity; }
   private cancel() {
     ++this.revision; this.restartAfterRead = false; this.queuedRead = null;
+    this.acknowledgedSequence = -1;
     clearTimeout(this.timer); this.timer = undefined;
     const stream = this.stream; this.stream = null;
     if (stream) this.stop(stream);
@@ -143,6 +145,7 @@ export class LiveLogController {
             this.stop(stream); throw frontendError('staleLogs');
           }
           this.stream = stream;
+          this.acknowledgedSequence = -1;
           this.emit({ logs: { sessionId: snapshot.sessionId, generation: snapshot.generation, handle: container.handle, text: '', byteCount: 0,
             truncated: false, command: '', stderr: '', fetchedAt: new Date().toISOString(), source: 'live', streamId: stream.streamId,
             sequence: -1, droppedBytes: 0, droppedBatches: 0, receivedBytes: 0 }, loadingLogs: false, liveStatus: 'following' });
@@ -170,15 +173,20 @@ export class LiveLogController {
         return;
       }
       if (frame.sessionId !== stream.sessionId || frame.streamId !== stream.streamId
-        || !Number.isSafeInteger(frame.sequence) || frame.sequence < (this.state.logs?.sequence ?? -1)) throw frontendError('staleLogs');
+        || !Number.isSafeInteger(frame.sequence) || frame.sequence < this.acknowledgedSequence) throw frontendError('staleLogs');
       const previous = this.state.logs!;
-      // A repeated sequence is a no-op frame, never a second copy of the same bytes.
-      const fresh = frame.sequence > (previous.sequence ?? -1);
-      const bounded = appendLogText(previous.text, fresh ? frame.text : '');
-      const received = new TextEncoder().encode(fresh ? frame.text : '').byteLength;
-      this.emit({ logs: { ...previous, ...bounded, truncated: previous.truncated || (fresh && frame.truncated) || bounded.droppedBytes > 0,
-        droppedBytes: (previous.droppedBytes ?? 0) + bounded.droppedBytes, droppedBatches: (previous.droppedBatches ?? 0) + Number(fresh && frame.truncated), receivedBytes: (previous.receivedBytes ?? 0) + received,
-        sequence: frame.sequence, fetchedAt: fresh ? new Date().toISOString() : previous.fetchedAt } });
+      // Native reads acknowledge every poll, including empty ones. Keep transport
+      // ordering separate from the last visible change and actual receipt time.
+      const fresh = frame.sequence > this.acknowledgedSequence;
+      this.acknowledgedSequence = frame.sequence;
+      if (fresh && (frame.text.length > 0 || frame.truncated)) {
+        const bounded = frame.text ? appendLogText(previous.text, frame.text)
+          : { text: previous.text, byteCount: previous.byteCount, droppedBytes: 0 };
+        const received = new TextEncoder().encode(frame.text).byteLength;
+        this.emit({ logs: { ...previous, ...bounded, truncated: previous.truncated || frame.truncated || bounded.droppedBytes > 0,
+          droppedBytes: (previous.droppedBytes ?? 0) + bounded.droppedBytes, droppedBatches: (previous.droppedBatches ?? 0) + Number(frame.truncated), receivedBytes: (previous.receivedBytes ?? 0) + received,
+          sequence: frame.sequence, fetchedAt: received > 0 ? new Date().toISOString() : previous.fetchedAt } });
+      }
       if (frame.terminal || frame.error) {
         this.stream = null; this.stop(stream);
         if (frame.error) this.fail(frame.error, stream.sessionId, revision, identity);
