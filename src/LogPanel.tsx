@@ -12,6 +12,8 @@ import { usePreferences } from './preferences';
 import type { LiveLogStatus } from './liveLogController';
 import './liveLogs.css';
 
+const followStates = new Set(['running', 'paused', 'restarting']);
+
 export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, logRequestPending = false, liveStatus, refreshing, mutating, loadLogs, clearLogs, copy, copyFeedback, copyFeedbackTone, copyFeedbackId, expanded, onExpandedChange }: {
   container: Container; snapshot: ContainerList; logs: LogSnapshot | null; logsError: CoreError | null;
   loadingLogs: boolean; logRequestPending?: boolean; liveStatus?: LiveLogStatus; refreshing: boolean; mutating: boolean; loadLogs: () => void; clearLogs: () => void; copy: CopyText; copyFeedback?: string; copyFeedbackTone?: CopyFeedbackTone; copyFeedbackId?: number;
@@ -44,17 +46,20 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, lo
   const [frozenLogs, setFrozenLogs] = useState<LogSnapshot | null>(null);
   const frozenTarget = useRef('');
   const awaitingReadableSnapshot = useRef(false);
+  const awaitingLiveSnapshot = useRef(false);
   const followingBottom = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
   const [resumeDropped, setResumeDropped] = useState(false);
   const [navigationVersion, setNavigationVersion] = useState(0);
   // Inventory generations rotate handles; a reload of the same container keeps the search.
   const target = `${snapshot.sessionId}/${container.fullId}`;
-  const hasLiveControls = liveStatus !== undefined || logs?.source === 'live';
+  const hasLiveControls = logs?.source === 'live' || (liveStatus !== undefined && followStates.has(container.state));
+  const previousLiveMode = useRef(hasLiveControls);
   const frozen = hasLiveControls && (manuallyPaused || searchOpen) && frozenTarget.current === target;
   const displayedLogs = !snapshot.stale && !readableStates.has(container.state) ? null : frozen ? frozenLogs : logs;
   const text = hasLiveControls ? displayedLogs?.text ?? '' : !loadingLogs && !logsError ? logs?.text ?? '' : '';
   const displayDropped = !!displayedLogs?.truncated;
+  const hasReceipt = displayedLogs && (displayedLogs.source !== 'live' || (displayedLogs.receivedBytes ?? displayedLogs.byteCount) > 0);
   const droppedWhileFrozen = frozen && !!logs && (!!frozenLogs && logs.streamId !== frozenLogs.streamId || (logs.droppedBatches ?? 0) > (frozenLogs?.droppedBatches ?? 0) || (logs.droppedBytes ?? 0) > (frozenLogs?.droppedBytes ?? 0) || (!frozenLogs?.truncated && logs.truncated));
   const canCopy = text.length > 0;
   const { status: searchStatus, total, activeIndex, activeStart, activeLength, move } = useLogSearch({ target, text, query });
@@ -66,9 +71,28 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, lo
   }, [expanded, logs, logsError, loadingLogs]);
   useLayoutEffect(() => {
     setSearchOpen(false); setQuery(''); setManuallyPaused(false); setFrozenLogs(null); setResumeDropped(false);
+    awaitingLiveSnapshot.current = false;
     followingBottom.current = true; setAtBottom(true); frozenTarget.current = target; scrollPosition.current = 0;
     if (inlineContent.current) inlineContent.current.scrollTop = 0;
   }, [target]);
+  useLayoutEffect(() => {
+    if (previousLiveMode.current === hasLiveControls) return;
+    previousLiveMode.current = hasLiveControls;
+    // Pause belongs to a follow display. A replacement one-shot snapshot must
+    // update an open search instead of retaining the previous stream's text.
+    setManuallyPaused(false); setFrozenLogs(null); setResumeDropped(false);
+    awaitingLiveSnapshot.current = hasLiveControls && searchOpen;
+  }, [hasLiveControls, searchOpen]);
+  useLayoutEffect(() => {
+    if (!awaitingLiveSnapshot.current) return;
+    if (!hasLiveControls || !searchOpen) { awaitingLiveSnapshot.current = false; return; }
+    // A retained snapshot/search may precede the new follow's first frame.
+    // Capture that frame once instead of freezing an empty connecting buffer.
+    if (logs?.source === 'live' && (logs.sequence ?? -1) >= 0) {
+      awaitingLiveSnapshot.current = false;
+      frozenTarget.current = target; setFrozenLogs(logs);
+    }
+  }, [hasLiveControls, searchOpen, logs, target]);
   useLayoutEffect(() => {
     if (!snapshot.stale && !readableStates.has(container.state)) {
       awaitingReadableSnapshot.current = true; setFrozenLogs(null); setResumeDropped(false);
@@ -244,7 +268,7 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, lo
           }} aria-label={t('clear')} title={t('clear')}><Trash2 size={13} aria-hidden="true" /></button>
         </div>
       </div></div>
-      <div className="log-meta">{logRequestPending && !loadingLogs && <span id={`${id}-pending`} role="status">{t('requestPending')}</span>}{liveStatus && <span className={`log-stream-status log-stream-${liveStatus}`}>{t(liveStatus === 'following' && frozen ? searchOpen ? 'searchPaused' : 'displayPaused' : liveStatus === 'following' ? 'following' : liveStatus === 'connecting' ? 'connecting' : liveStatus === 'ended' ? 'ended' : liveStatus === 'error' ? 'streamError' : 'idle')}</span>}<span title={t(hasLiveControls ? 'liveLimitDetails' : 'limitDetails')}>{t(hasLiveControls ? 'liveLimits' : 'limits')}</span><span className="log-sensitive" role="img" aria-label={t('sensitive')} title={t('sensitive')}><Info size={13} aria-hidden="true" /></span>{displayedLogs && <span className="log-fetched-at">{t(hasLiveControls ? 'lastReceived' : 'fetchedAt')} <time dateTime={displayedLogs.fetchedAt}>{formatTime(displayedLogs.fetchedAt, language)}</time></span>}</div>
+      <div className="log-meta">{logRequestPending && !loadingLogs && <span id={`${id}-pending`} role="status">{t('requestPending')}</span>}{hasLiveControls && liveStatus && <span className={`log-stream-status log-stream-${liveStatus}`}>{t(liveStatus === 'following' && frozen ? searchOpen ? 'searchPaused' : 'displayPaused' : liveStatus === 'following' ? 'following' : liveStatus === 'connecting' ? 'connecting' : liveStatus === 'ended' ? 'ended' : liveStatus === 'error' ? 'streamError' : 'idle')}</span>}<span title={t(hasLiveControls ? 'liveLimitDetails' : 'limitDetails')}>{t(hasLiveControls ? 'liveLimits' : 'limits')}</span><span className="log-sensitive" role="img" aria-label={t('sensitive')} title={t('sensitive')}><Info size={13} aria-hidden="true" /></span>{hasReceipt && <span className="log-fetched-at">{t(hasLiveControls ? 'lastReceived' : 'fetchedAt')} <time dateTime={displayedLogs.fetchedAt}>{formatTime(displayedLogs.fetchedAt, language)}</time></span>}</div>
       <div id={inModal ? 'expanded-log-search-row' : 'log-search-row'} className="log-search" role="search" aria-label={t('searchArea')} hidden={!searchOpen}>
         <label htmlFor={searchId}>{t('search')}</label>
         <div className="log-search-field"><input ref={inModal ? modalSearch : inlineSearch} id={searchId} className="log-search-input" type="search" value={query} autoComplete="off" spellCheck={false} onChange={event => { setQuery(event.target.value); }} onKeyDown={event => {
