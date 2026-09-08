@@ -1,7 +1,7 @@
 import { connectionInvalidatingErrors } from './frontendSession';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { AlertTriangle, Cable, Info, LoaderCircle, RefreshCw, Search, Settings, X } from 'lucide-react';
+import { AlertTriangle, Cable, ChevronsUpDown, FolderClosed, Info, LoaderCircle, RefreshCw, Search, Settings, X } from 'lucide-react';
 import { api, coreError } from './api';
 import { frontendError, frontendErrorDescriptor, type FrontendErrorDescriptor } from './frontendErrors';
 import type { Action, ConnectionTarget, Container, ContainerList, CoreError, Environment, MutationResult } from './api';
@@ -438,7 +438,16 @@ function AppContent() {
           <div className="panel-heading"><h2 id="inventory-title">{t('containers')} <span className="count-badge">{snapshot?.containers.length ?? '—'}</span></h2><RefreshAge refreshedAt={snapshot?.refreshedAt} /></div>
           <div className="inventory-controls">
             <div className="search-field"><Search size={16} aria-hidden="true" /><input ref={searchInput} aria-label={t('search')} placeholder={t('searchHint')} value={query} disabled={mutating} onChange={event => updateSearch(event.target.value, filter)} />{query && <button className="search-clear" aria-label={t('clearSearch')} title={t('clearSearch')} disabled={mutating} onClick={() => { updateSearch('', filter); searchInput.current?.focus(); }}><X size={14} aria-hidden="true" /></button>}</div>
-            <label className="project-filter">{t('projectFilter')}<select aria-label={t('projectFilter')} value={projectFilterValue(project)} disabled={mutating} onChange={event => updateSearch(query, filter, parseProjectFilter(event.target.value))}><option value="all">{t('allProjects')}</option>{projectOptions.map(group => <option key={JSON.stringify(group.name)} value={group.name === null ? 'none' : projectFilterValue({ kind: 'project', name: group.name })}>{group.name ?? t('noProject')}</option>)}</select></label>
+            <label className="project-filter">
+              <span className="project-select-control" data-active={project.kind !== 'all'}>
+                <FolderClosed className="project-select-icon" size={14} aria-hidden="true" />
+                <select aria-label={t('projectFilter')} title={project.kind === 'all' ? t('allProjects') : project.kind === 'none' ? t('noProject') : project.name} value={projectFilterValue(project)} disabled={mutating} onChange={event => updateSearch(query, filter, parseProjectFilter(event.target.value))}>
+                  <option value="all">{t('allProjects')}</option>
+                  {projectOptions.map(group => <option key={JSON.stringify(group.name)} value={group.name === null ? 'none' : projectFilterValue({ kind: 'project', name: group.name })}>{group.name ?? t('noProject')}</option>)}
+                </select>
+                <ChevronsUpDown className="project-select-chevron" size={13} aria-hidden="true" />
+              </span>
+            </label>
             <div className="filter-group" aria-label={t('filters')}>{(['all', 'running', 'stopped', 'attention'] as const).map(value => <button key={value} aria-pressed={filter === value} disabled={mutating} onClick={() => updateSearch(query, value)}>{t(value)}</button>)}</div>
             <button title={t('refreshHint')} className="inventory-refresh" disabled={!ready || refreshing || mutating} onClick={() => { if (session.current && !busy.current && !refreshBusy.current) void refresh(session.current).then(refreshed => { if (refreshed) setLogRestartVersion(value => value + 1); }); }}><RefreshCw size={14} className={refreshing ? 'spin' : ''} aria-hidden="true" />{t(refreshing ? 'refreshing' : 'refresh')}</button>
           </div>

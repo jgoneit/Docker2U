@@ -144,8 +144,14 @@ button.text-button { background: transparent; border-color: transparent; color: 
 .count-badge { border: 1px solid var(--border-subtle); border-radius: 6px; padding: 2px 6px; font-size: 12px; font-weight: 600; color: var(--link); background: var(--selected); }
 .muted { color: var(--text-muted); }.small { font-size: 12px; }
 .inventory-controls { flex-shrink: 0; display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--border-subtle); }
-.project-filter { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--text-muted); font-size: 12px; }
-.project-filter select { flex: 1; min-width: 0; width: 145px; max-width: 180px; padding: 7px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--input); }
+.project-filter { display: flex; flex: 0 0 190px; min-width: 0; margin: 0; font-size: 12px; }
+.project-select-control { position: relative; display: flex; width: 100%; height: 34px; border-radius: 10px; background: var(--raised); color: var(--text-muted); }
+.project-filter select { -webkit-appearance: none; appearance: none; min-width: 0; width: 100%; height: 100%; padding: 0 32px; border: 0; border-radius: inherit; color: var(--text); background: transparent; outline: none; font: inherit; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-select-icon, .project-select-chevron { position: absolute; top: 50%; transform: translateY(-50%); pointer-events: none; }
+.project-select-icon { left: 11px; }
+.project-select-chevron { right: 10px; }
+.project-select-control[data-active="true"] { color: var(--link); background: var(--selected); }
+.project-select-control[data-active="true"] select { color: var(--link); }
 .container-project-header { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 11px 17px; background: var(--raised); border-bottom: 1px solid var(--border-subtle); }
 .container-project-header h3 { min-width: 0; margin: 0; font-size: 12px; overflow-wrap: anywhere; }
 .container-project-header > span { flex-shrink: 0; color: var(--text-muted); font-weight: 400; }
@@ -155,9 +161,9 @@ button.text-button { background: transparent; border-color: transparent; color: 
 .resource-values { display: flex; flex-wrap: wrap; gap: 10px 28px; font-size: 13px; font-variant-numeric: tabular-nums; }
 .resource-values > div { display: flex; gap: 8px; align-items: baseline; }
 .resource-summary p { margin: 7px 0 0; }
-.search-field { flex: 1 1 230px; min-width: 130px; max-width: 480px; display: flex; align-items: center; gap: 8px; background: var(--input); border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; color: var(--text-muted); }
-.search-field input { min-width: 0; width: 100%; border: 0; background: transparent; color: var(--text); outline: none; font-size: 12px; }
-.search-field:focus-within { border-color: var(--focus); }
+.search-field { flex: 1 1 230px; min-width: 130px; max-width: 480px; height: 34px; display: flex; align-items: center; gap: 8px; background: var(--raised); border: 0; border-radius: 10px; padding: 0 10px; color: var(--text-muted); }
+.search-field > svg { flex: none; pointer-events: none; }
+.search-field input { -webkit-appearance: none; appearance: none; min-width: 0; width: 100%; height: 100%; padding: 0; border: 0; background: transparent; color: var(--text); outline: none; font-size: 12px; }
 .filter-group { display: flex; flex-shrink: 0; gap: 2px; padding: 2px; margin-top: 0; border-radius: 9px; background: var(--raised); }
 .filter-group button { flex: 1; font-size: 12px; padding: 5px 9px; color: var(--text-muted); background: transparent; border-color: transparent; }
 .filter-group button[aria-pressed="true"]:not(:disabled) { background: var(--primary); color: var(--on-action); font-weight: 600; }
@@ -264,7 +270,9 @@ input[type="checkbox"]:disabled { cursor: not-allowed; accent-color: var(--disab
 /* Appearance tokens are shared by controls, logs, status, and dialogs. */
 input::placeholder { color: var(--text-muted); opacity: 1; }
 button:disabled, button.primary-button:disabled, button.danger-button:disabled, .filter-group button:disabled, .compact-actions button:disabled, button.text-button:disabled { color: var(--disabled-text); background: var(--disabled-bg); border-color: transparent; }
-.search-field:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
+.search-field:focus-within, .project-select-control:focus-within, .log-search-field:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
+.search-field:has(input:disabled), .project-select-control:has(select:disabled) { color: var(--disabled-text); background: var(--disabled-bg); }
+.search-field input:disabled, .project-filter select:disabled { color: var(--disabled-text); -webkit-text-fill-color: var(--disabled-text); opacity: 1; cursor: not-allowed; }
 .container-title-text { min-width: 0; }
 .detail-title > div:last-child { min-width: 0; }
 .detail-panel { display: flex; flex-direction: column; overflow: hidden; }
@@ -315,9 +323,9 @@ button:disabled, button.primary-button:disabled, button.danger-button:disabled, 
 .operation-summary { flex-wrap: wrap; }
 .operation-summary svg { flex: none; }
 .result-toggle { margin: 4px 0; }
-.log-search { flex: none; display: flex; align-items: center; gap: 6px; min-height: 40px; padding: 5px 12px; background: var(--raised); border-bottom: 1px solid var(--border-subtle); font-size: 12px; }
+.log-search { flex: none; display: flex; align-items: center; gap: 6px; min-height: 40px; padding: 5px 12px; background: var(--inset); border-bottom: 1px solid var(--border-subtle); font-size: 12px; }
 .log-search label { flex: none; }
-.log-search-input { flex: 1 1 120px; min-width: 0; width: 120px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 5px; color: var(--text); background: var(--input); font-size: 12px; }
+.log-search-input { -webkit-appearance: none; appearance: none; min-width: 0; height: 100%; padding: 0 10px; border: 0; border-radius: inherit; color: var(--text); background: transparent; outline: none; font-size: 12px; }
 .log-search button { padding: 6px 8px; font-size: 12px; }
 .log-search-count { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .log-search-match { background: var(--log-match-bg); color: var(--log-match-text); }
@@ -352,7 +360,7 @@ button.action-restart:not(:disabled) { background: var(--restart-action); }
 button.action-restart:hover:not(:disabled) { background: var(--restart-action-hover); }
 
 .log-search-input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
-.log-search-field { flex: 1 1 120px; min-width: 0; position: relative; }
+.log-search-field { flex: 1 1 120px; min-width: 0; height: 34px; position: relative; border-radius: 10px; background: var(--raised); }
 .log-search-field .log-search-input { width: 100%; padding-right: 30px; }
 .log-search-clear { position: absolute; right: 3px; top: 50%; transform: translateY(-50%); }
 .log-search .log-search-clear { padding: 2px; border-color: transparent; background: transparent; }
@@ -375,7 +383,7 @@ button.action-restart:hover:not(:disabled) { background: var(--restart-action-ho
 .resizing { user-select: none; cursor: row-resize; }
 @media (max-width: 1100px) {
   .inventory-controls { gap: 8px; }
-  .project-filter select { width: 125px; }
+  .project-filter { flex-basis: 160px; }
   .filter-group button { padding-inline: 6px; }
   .app-header { gap: 14px; }
 }
