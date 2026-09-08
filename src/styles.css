@@ -43,10 +43,8 @@
   --brand-shadow: #0054ff22;
   --feedback-bg: #0054ff;
   --feedback-text: #ffffff;
-  --feedback-border: #0046c7;
   --feedback-error-bg: #b3273c;
   --feedback-error-text: #ffffff;
-  --feedback-error-border: #9f2036;
   --success-glow: #11633f18;
   --log-match-bg: #f5ce57;
   --log-match-text: #1d2537;
@@ -96,10 +94,8 @@
   --brand-shadow: #0054ff33;
   --feedback-bg: #0054ff;
   --feedback-text: #ffffff;
-  --feedback-border: #acc7ff;
   --feedback-error-bg: #9e1d30;
   --feedback-error-text: #ffffff;
-  --feedback-error-border: #ffacb8;
   --success-glow: #8be7bd18;
   --log-match-bg: #ffe0a6;
   --log-match-text: #1d2537;
@@ -108,12 +104,12 @@
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 760px; }
 button, input { font: inherit; }
-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; cursor: pointer; border: 1px solid var(--border); background: var(--raised); color: var(--text); border-radius: 8px; padding: 8px 11px; font-size: 12px; white-space: nowrap; }
-button:hover:not(:disabled) { background: var(--hover); border-color: var(--border); }
-button:disabled { cursor: not-allowed; color: var(--disabled-text); background: var(--disabled-bg); border-color: var(--border); }
+button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; cursor: pointer; border: 1px solid transparent; background: var(--raised); color: var(--text); border-radius: 8px; padding: 8px 11px; font-size: 12px; white-space: nowrap; }
+button:hover:not(:disabled) { background: var(--selected); }
+button:disabled { cursor: not-allowed; color: var(--disabled-text); background: var(--disabled-bg); }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 h1, h2, h3, p { margin: 0; }
-button.primary-button { background: var(--primary); color: var(--on-action); border-color: var(--primary); }
+button.primary-button { background: var(--primary); color: var(--on-action); }
 button.primary-button:hover:not(:disabled) { background: var(--primary-hover); }
 button.icon-button { padding: 5px; background: transparent; border-color: transparent; }
 button.text-button { background: transparent; border-color: transparent; color: var(--link); }
@@ -168,7 +164,7 @@ button.text-button { background: transparent; border-color: transparent; color: 
 .search-field:focus-within { border-color: var(--focus); }
 .filter-group { display: flex; flex-shrink: 0; gap: 2px; padding: 2px; margin-top: 0; border-radius: 9px; background: var(--raised); }
 .filter-group button { flex: 1; font-size: 12px; padding: 5px 9px; color: var(--text-muted); background: transparent; border-color: transparent; }
-.filter-group button[aria-pressed="true"]:not(:disabled) { background: var(--primary); color: var(--on-action); border-color: var(--focus); font-weight: 600; }
+.filter-group button[aria-pressed="true"]:not(:disabled) { background: var(--primary); color: var(--on-action); font-weight: 600; }
 .filter-group button[aria-pressed="true"]:hover:not(:disabled) { background: var(--primary-hover); }
 .container-list { padding: 6px 0; margin: 0; list-style: none; }
 .container-list-item { position: relative; padding-left: 35px; }
@@ -186,7 +182,7 @@ button.text-button { background: transparent; border-color: transparent; color: 
 .state-paused, .state-restarting { color: var(--warning); background: var(--warning-bg); }.state-paused .state-dot, .state-restarting .state-dot { background: var(--warning); }
 .health { padding: 1px 5px; border-radius: 4px; font-size: 12px; line-height: 16px; color: var(--text-muted); background: var(--raised); }.health-healthy { color: var(--success); background: var(--success-bg); }.health-unhealthy { color: var(--danger); background: var(--danger-bg); }.health-starting { color: var(--warning); background: var(--warning-bg); }
 .inventory-refresh { margin-left: auto; }
-.inventory-refresh:not(:disabled) { color: var(--on-action); background: var(--primary); border-color: var(--focus); font-weight: 600; }
+.inventory-refresh:not(:disabled) { color: var(--on-action); background: var(--primary); font-weight: 600; }
 .inventory-refresh:hover:not(:disabled) { background: var(--primary-hover); }
 .inventory-placeholder { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 16px 24px; color: var(--text-muted); font-size: 12px; line-height: 1.7; text-align: center; }.inventory-placeholder svg { color: var(--text-muted); }
 .detail-panel { min-width: 0; background: var(--surface); }
@@ -237,7 +233,7 @@ button.text-button { background: transparent; border-color: transparent; color: 
 .connection-facts { display: grid; grid-template-columns: 75px minmax(0, 1fr); gap: 8px 11px; margin: 10px 0; }
 .connection-facts dt { color: var(--text-muted); }.connection-facts dd { margin: 0; overflow-wrap: anywhere; }
 .confirm-target .connection-facts:first-child { margin-top: 0; }.confirm-target .connection-facts:last-child { margin-bottom: 0; }
-.dialog-actions { display: flex; justify-content: flex-end; gap: 9px; }.danger-button { background: var(--danger-action); border-color: var(--danger-action); color: var(--on-action); }.danger-button:hover:not(:disabled) { background: var(--danger-action-hover); }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 9px; }.danger-button { background: var(--danger-action); color: var(--on-action); }.danger-button:hover:not(:disabled) { background: var(--danger-action-hover); }
 .spin { animation: spin 1s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 1100px) { .container-detail { padding: 12px 18px; }.recovery-panel p { display: none; }.log-meta { font-size: 12px; }.connection-label > .muted { display: none; } }
 @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
@@ -271,9 +267,7 @@ input[type="checkbox"]:disabled { cursor: not-allowed; accent-color: var(--disab
 
 /* Appearance tokens are shared by controls, logs, status, and dialogs. */
 input::placeholder { color: var(--text-muted); opacity: 1; }
-button:disabled, button.primary-button:disabled, button.danger-button:disabled, .filter-group button:disabled, .compact-actions button:disabled, button.text-button:disabled { color: var(--disabled-text); background: var(--disabled-bg); border-color: var(--border); }
-button.primary-button:not(:disabled) { border-color: var(--focus); }
-button.danger-button:not(:disabled) { border-color: var(--danger); }
+button:disabled, button.primary-button:disabled, button.danger-button:disabled, .filter-group button:disabled, .compact-actions button:disabled, button.text-button:disabled { color: var(--disabled-text); background: var(--disabled-bg); border-color: transparent; }
 .search-field:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
 .container-title-text { min-width: 0; }
 .detail-title > div:last-child { min-width: 0; }
@@ -351,14 +345,14 @@ button.danger-button:not(:disabled) { border-color: var(--danger); }
 .search-clear { flex: none; padding: 1px; border-color: transparent; background: transparent; }
 .log-search[hidden] { display: none; }
 .log-sensitive { display: inline-flex; flex: none; }
-.log-search-toggle[aria-expanded="true"] { background: var(--selected); border-color: var(--focus); }
-.compact-actions button:hover:not(:disabled), .log-search button:hover:not(:disabled), .search-clear:hover:not(:disabled) { background: var(--selected-hover); border-color: var(--focus); }
+.log-search-toggle[aria-expanded="true"] { background: var(--selected); }
+.compact-actions button:hover:not(:disabled), .log-search button:hover:not(:disabled), .search-clear:hover:not(:disabled) { background: var(--selected-hover); }
 button.action-button:not(:disabled) { color: var(--on-action); font-weight: 600; }
-button.action-start:not(:disabled) { background: var(--start-action); border-color: var(--success); }
+button.action-start:not(:disabled) { background: var(--start-action); }
 button.action-start:hover:not(:disabled) { background: var(--start-action-hover); }
-button.action-stop:not(:disabled) { background: var(--stop-action); border-color: var(--danger); }
+button.action-stop:not(:disabled) { background: var(--stop-action); }
 button.action-stop:hover:not(:disabled) { background: var(--stop-action-hover); }
-button.action-restart:not(:disabled) { background: var(--restart-action); border-color: var(--warning); }
+button.action-restart:not(:disabled) { background: var(--restart-action); }
 button.action-restart:hover:not(:disabled) { background: var(--restart-action-hover); }
 
 .log-search-input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }

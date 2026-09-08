@@ -17,8 +17,9 @@
 .logs-panel .log-toolbar .log-tool-quiet { color: var(--text-muted); background: transparent; border-color: transparent; }
 .logs-panel .log-toolbar .log-tool-quiet:hover:not(:disabled) { color: var(--text); background: var(--hover); }
 .logs-panel .log-toolbar .log-tool-quiet:disabled { color: var(--disabled-text); }
-.logs-panel .log-toolbar .log-pause-toggle { padding: 5px 9px; font-weight: 600; background: var(--surface); }
-.logs-panel .log-toolbar .log-pause-toggle:hover { background: var(--hover); }
-.logs-panel .log-toolbar .log-pause-toggle[aria-pressed="true"],
+.logs-panel .log-toolbar .log-pause-toggle { padding: 5px 9px; font-weight: 600; color: var(--link); background: var(--selected); }
+.logs-panel .log-toolbar .log-pause-toggle:hover { background: var(--selected-hover); }
+.logs-panel .log-toolbar .log-pause-toggle[aria-pressed="true"] { color: var(--on-action); background: var(--primary); }
+.logs-panel .log-toolbar .log-pause-toggle[aria-pressed="true"]:hover { background: var(--primary-hover); }
 .logs-panel .log-toolbar .log-search-toggle[aria-expanded="true"],
-.logs-panel .log-toolbar .log-latest-button { color: var(--link); background: var(--selected); border-color: var(--focus); }
+.logs-panel .log-toolbar .log-latest-button { color: var(--link); background: var(--selected); }
