@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import App from './App';
+import { CopyFeedback } from './CopyFeedback';
 import { api, type Container } from './api';
 
 vi.mock('./api', async original => ({ ...await original<typeof import('./api')>(), api: {
@@ -42,7 +43,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 
-it.each([{ outcome: 'success', duration: 3_000 }, { outcome: 'error', duration: 5_000 }])('expires $outcome in both feedback slots without changing the paused search view', async ({ outcome, duration }) => {
+it.each(['success', 'error'])('removes the %s highlight after two seconds while retaining both status texts and the paused search view', async outcome => {
   await mount();
   const write = vi.spyOn(navigator.clipboard, 'writeText');
   if (outcome === 'success') write.mockResolvedValue();
@@ -61,15 +62,26 @@ it.each([{ outcome: 'success', duration: 3_000 }, { outcome: 'error', duration: 
   const message = outcome === 'success' ? '표시된 로그 복사됨' : '클립보드에 복사하지 못했습니다.';
   expect(footer).toHaveTextContent(message);
   expect(modal).toHaveTextContent(message);
+  expect(footer).toHaveClass(`copy-feedback-${outcome}`, 'copy-feedback-highlighted');
+  expect(modal).toHaveClass(`copy-feedback-${outcome}`, 'copy-feedback-highlighted');
+  expect(footer.querySelector('svg')).toBeNull();
+  expect(modal.querySelector('svg')).toBeNull();
+  const footerText = footer.querySelector('.copy-feedback-text'), modalText = modal.querySelector('.copy-feedback-text');
   const before = lifecycleCalls(), reads = mock.readLogStream.mock.calls.length;
-  await advance(duration - 1);
-  expect(footer).toHaveTextContent(message);
-  expect(modal).toHaveTextContent(message);
+  await advance(1_999);
+  expect(footer).toHaveClass('copy-feedback-highlighted');
+  expect(modal).toHaveClass('copy-feedback-highlighted');
   await advance(1);
   expect(footerFeedback()).toBe(footer);
   expect(screen.getByRole('dialog').querySelector('.log-copy-feedback')).toBe(modal);
-  expect(footer).toBeEmptyDOMElement();
-  expect(modal).toBeEmptyDOMElement();
+  expect(footer).not.toHaveClass('copy-feedback-highlighted');
+  expect(modal).not.toHaveClass('copy-feedback-highlighted');
+  expect(footer.querySelector('.copy-feedback-glow')).toBeNull();
+  expect(modal.querySelector('.copy-feedback-glow')).toBeNull();
+  expect(footer).toHaveTextContent(message);
+  expect(modal).toHaveTextContent(message);
+  expect(footer.querySelector('.copy-feedback-text')).toBe(footerText);
+  expect(modal.querySelector('.copy-feedback-text')).toBe(modalText);
   expect(dialog.getByLabelText('최근 로그 내용')).toBe(content);
   expect(content.textContent).toBe(raw);
   expect(content.scrollTop).toBe(145);
@@ -81,51 +93,59 @@ it.each([{ outcome: 'success', duration: 3_000 }, { outcome: 'error', duration: 
   expect(mock.readLogStream.mock.calls.length).toBeGreaterThan(reads);
 });
 
-it.each([{ outcome: 'success', duration: 3_000 }, { outcome: 'error', duration: 5_000 }])('keeps the original $outcome deadline across language and theme changes', async ({ outcome, duration }) => {
+it.each(['success', 'error'])('keeps the original %s highlight deadline across language and theme changes', async outcome => {
   await mount();
   const write = vi.spyOn(navigator.clipboard, 'writeText');
   if (outcome === 'success') write.mockResolvedValue();
   else write.mockRejectedValue(new Error('Clipboard denied'));
   await click(screen.getByRole('button', { name: '표시된 로그 복사' }));
-  const feedback = footerFeedback(), notification = feedback.firstElementChild;
-  await advance(duration - 1_000);
+  const feedback = footerFeedback(), notification = feedback.querySelector('.copy-feedback-text');
+  const glow = feedback.querySelector<HTMLElement>('.copy-feedback-glow')!, delay = glow.style.animationDelay;
+  await advance(1_000);
   await click(screen.getByRole('button', { name: '설정' }));
   await change(screen.getByRole('combobox', { name: '테마' }), 'light');
   await change(screen.getByRole('combobox', { name: '언어' }), 'en');
   fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
-  expect(feedback.firstElementChild).toBe(notification);
+  expect(feedback.querySelector('.copy-feedback-text')).toBe(notification);
+  expect(feedback.querySelector('.copy-feedback-glow')).toBe(glow);
+  expect(glow.style.animationDelay).toBe(delay);
   expect(feedback).toHaveTextContent(outcome === 'success' ? 'Displayed logs copied' : 'Could not copy to the clipboard.');
   await advance(999);
-  expect(feedback.firstElementChild).toBe(notification);
+  expect(feedback).toHaveClass('copy-feedback-highlighted');
   await advance(1);
-  expect(feedback).toBeEmptyDOMElement();
+  expect(feedback).not.toHaveClass('copy-feedback-highlighted');
+  expect(feedback.querySelector('.copy-feedback-glow')).toBeNull();
+  expect(feedback.querySelector('.copy-feedback-text')).toBe(notification);
   await click(screen.getByRole('button', { name: 'Settings' }));
   await change(screen.getByRole('combobox', { name: 'Theme' }), 'dark');
   await change(screen.getByRole('combobox', { name: 'Language' }), 'ko');
   fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
-  expect(feedback).toBeEmptyDOMElement();
+  expect(feedback).toHaveTextContent(outcome === 'success' ? '표시된 로그 복사됨' : '클립보드에 복사하지 못했습니다.');
+  expect(feedback.querySelector('.copy-feedback-text')).toBe(notification);
+  expect(feedback).not.toHaveClass('copy-feedback-highlighted');
 });
 
-it('starts a new three-second deadline for a repeated copy without letting the earlier timer hide it', async () => {
+it('starts a new two-second highlight for a repeated copy without letting the earlier timer end it', async () => {
   await mount();
   vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
   const copy = screen.getByRole('button', { name: '표시된 로그 복사' });
   await click(copy);
-  const feedback = footerFeedback(), first = feedback.firstElementChild;
-  await advance(2_500);
+  const feedback = footerFeedback(), first = feedback.querySelector('.copy-feedback-glow');
+  await advance(1_500);
   await click(copy);
-  const repeated = feedback.firstElementChild;
+  const repeated = feedback.querySelector('.copy-feedback-glow');
   expect(repeated).not.toBe(first);
   await advance(500);
-  expect(feedback.firstElementChild).toBe(repeated);
-  await advance(2_499);
-  expect(feedback.firstElementChild).toBe(repeated);
+  expect(feedback.querySelector('.copy-feedback-glow')).toBe(repeated);
+  await advance(1_499);
+  expect(feedback.querySelector('.copy-feedback-glow')).toBe(repeated);
   await advance(1);
-  expect(feedback).toBeEmptyDOMElement();
+  expect(feedback.querySelector('.copy-feedback-glow')).toBeNull();
+  expect(feedback).toHaveTextContent('표시된 로그 복사됨');
   expect(copy).toHaveFocus();
 });
 
-it.each(['success', 'error'])('manual Clear supersedes a pending copy %s and its previous notification deadline', async outcome => {
+it.each(['success', 'error'])('manual Clear supersedes a pending copy %s and its previous highlight deadline', async outcome => {
   await mount();
   const pending = deferred<void>();
   const write = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValueOnce().mockReturnValueOnce(pending.promise);
@@ -134,26 +154,31 @@ it.each(['success', 'error'])('manual Clear supersedes a pending copy %s and its
   const content = dialog.getByLabelText('최근 로그 내용');
   const copy = dialog.getByRole('button', { name: '표시된 로그 복사' });
   await click(copy);
-  await advance(2_000);
+  await advance(1_000);
   await click(copy);
   await advance(500);
   await click(dialog.getByRole('button', { name: '로그 화면 비우기' }));
   const footer = footerFeedback(), modal = screen.getByRole('dialog').querySelector<HTMLElement>('.log-copy-feedback')!;
   expect(footer).toHaveTextContent('로그 화면을 비웠습니다.');
   expect(modal).toHaveTextContent('로그 화면을 비웠습니다.');
-  expect(modal.firstElementChild).toHaveClass('copy-feedback-success');
+  expect(modal).toHaveClass('copy-feedback-cleared', 'copy-feedback-highlighted');
+  expect(footer).toHaveClass('copy-feedback-cleared', 'copy-feedback-highlighted');
   expect(content).not.toHaveTextContent(raw);
   expect(copy).toBeDisabled();
-  const notification = modal.firstElementChild, before = lifecycleCalls();
+  const notification = modal.querySelector('.copy-feedback-text'), glow = modal.querySelector('.copy-feedback-glow'), before = lifecycleCalls();
   await advance(500);
   await act(async () => { if (outcome === 'success') pending.resolve(); else pending.reject(new Error('Late clipboard denied')); });
-  expect(modal.firstElementChild).toBe(notification);
+  expect(modal.querySelector('.copy-feedback-text')).toBe(notification);
+  expect(modal.querySelector('.copy-feedback-glow')).toBe(glow);
   expect(footer).toHaveTextContent('로그 화면을 비웠습니다.');
-  await advance(2_499);
-  expect(modal.firstElementChild).toBe(notification);
+  await advance(1_499);
+  expect(modal.querySelector('.copy-feedback-glow')).toBe(glow);
   await advance(1);
-  expect(footer).toBeEmptyDOMElement();
-  expect(modal).toBeEmptyDOMElement();
+  expect(footer).not.toHaveClass('copy-feedback-highlighted');
+  expect(modal).not.toHaveClass('copy-feedback-highlighted');
+  expect(footer).toHaveTextContent('로그 화면을 비웠습니다.');
+  expect(modal).toHaveTextContent('로그 화면을 비웠습니다.');
+  expect(modal.querySelector('.copy-feedback-text')).toBe(notification);
   expect(dialog.getByLabelText('최근 로그 내용')).toBe(content);
   expect(dialog.getByRole('button', { name: '로그 확대 보기 닫기' })).toHaveFocus();
   expect(lifecycleCalls()).toEqual(before);
@@ -173,4 +198,71 @@ it('does not announce internal clears on selection or Reconnect', async () => {
   expect(mock.getEnvironment).toHaveBeenCalledTimes(2);
   expect(mock.mutateContainer).not.toHaveBeenCalled();
   expect(mock.mutateContainers).not.toHaveBeenCalled();
+});
+
+it.each(['success', 'error'])('retains last-action history across selection and Reconnect while ignoring a late copy %s', async outcome => {
+  await mount();
+  const pending = deferred<void>();
+  vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValueOnce().mockReturnValueOnce(pending.promise);
+  const feedback = footerFeedback();
+  await click(screen.getByRole('button', { name: '표시된 로그 복사' }));
+  const text = feedback.querySelector('.copy-feedback-text');
+  await advance(2_000);
+  await click(screen.getByRole('button', { name: '표시된 로그 복사' }));
+  expect(feedback.querySelector('.copy-feedback-text')).toBe(text);
+  await click(screen.getByRole('button', { name: 'beta 상세' }));
+  await advance(0);
+  expect(feedback.querySelector('.copy-feedback-text')).toBe(text);
+  await click(screen.getByRole('button', { name: '다시 연결' }));
+  await advance(0);
+  expect(feedback.querySelector('.copy-feedback-text')).toBe(text);
+  await act(async () => { if (outcome === 'success') pending.resolve(); else pending.reject(new Error('Previous connection copy denied')); });
+  expect(feedback.querySelector('.copy-feedback-text')).toBe(text);
+  expect(feedback).toHaveTextContent('표시된 로그 복사됨');
+  expect(feedback).not.toHaveClass('copy-feedback-highlighted');
+  expect(mock.getEnvironment).toHaveBeenCalledTimes(2);
+  expect(mock.mutateContainer).not.toHaveBeenCalled();
+  expect(mock.mutateContainers).not.toHaveBeenCalled();
+});
+
+it('keeps the previous modal text during another pending copy and after its glow ends', async () => {
+  await mount();
+  const pending = deferred<void>();
+  vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValueOnce().mockReturnValueOnce(pending.promise);
+  await click(screen.getByRole('button', { name: '로그 확대 보기' }));
+  const dialog = within(screen.getByRole('dialog'));
+  await click(dialog.getByRole('button', { name: '표시된 로그 복사' }));
+  const feedback = screen.getByRole('dialog').querySelector<HTMLElement>('.log-copy-feedback')!;
+  const text = feedback.querySelector('.copy-feedback-text');
+  await advance(1_000);
+  await click(dialog.getByRole('button', { name: '표시된 로그 복사' }));
+  expect(feedback.querySelector('.copy-feedback-text')).toBe(text);
+  await advance(1_000);
+  expect(feedback.querySelector('.copy-feedback-text')).toBe(text);
+  expect(feedback).not.toHaveClass('copy-feedback-highlighted');
+  await act(async () => pending.resolve());
+  expect(feedback).toHaveTextContent('표시된 로그 복사됨');
+  expect(feedback.querySelector('.copy-feedback-text')).not.toBe(text);
+  expect(feedback).toHaveClass('copy-feedback-highlighted');
+});
+
+it('joins only the remaining glow on a new surface and never restarts it after the deadline', async () => {
+  const highlightUntil = Date.now() + 2_000;
+  const props = { message: 'Copied', notificationId: 1, highlighted: true, highlightUntil };
+  const view = render(<CopyFeedback {...props} />);
+  const original = screen.getByRole('status').querySelector<HTMLElement>('.copy-feedback-glow')!;
+  expect(original.style.animationDelay).toBe('0ms');
+  await advance(1_000);
+  view.rerender(<CopyFeedback {...props} message="복사됨" />);
+  expect(screen.getByRole('status').querySelector('.copy-feedback-glow')).toBe(original);
+  expect(original.style.animationDelay).toBe('0ms');
+  view.unmount();
+  const joined = render(<CopyFeedback {...props} />);
+  expect(screen.getByRole('status').querySelector<HTMLElement>('.copy-feedback-glow')!.style.animationDelay).toBe('-1000ms');
+  joined.unmount();
+  await advance(1_000);
+  render(<CopyFeedback {...props} />);
+  expect(screen.getByRole('status')).toHaveTextContent('Copied');
+  expect(screen.getByRole('status')).not.toHaveClass('copy-feedback-highlighted');
+  expect(screen.getByRole('status').querySelector('.copy-feedback-glow')).toBeNull();
 });

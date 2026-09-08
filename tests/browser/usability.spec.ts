@@ -273,7 +273,7 @@ test('fits the complete log viewport before interaction and while toggling searc
   await expectLogFits(page);
 });
 
-test('expires copy and manual clear feedback without shifting the expanded log viewport or focus', async ({ page }, testInfo) => {
+test('keeps status text after copy and clear glows fade without shifting logs, focus or reads', async ({ page }, testInfo) => {
   const lang = language(testInfo);
   const t = words[lang];
   await page.clock.install({ time: new Date('2026-09-06T00:14:34Z') });
@@ -281,12 +281,26 @@ test('expires copy and manual clear feedback without shifting the expanded log v
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => {} } });
   });
   await openFixture(page, 'live');
+  // Load naturally, then freeze before actions: assertion runtime must not
+  // consume the two-second deadline. Only explicit clock advances follow.
+  await page.clock.pauseAt(new Date('2026-09-06T00:15:34Z'));
   await page.getByRole('button', { name: t.expand, exact: true }).click();
   const modal = page.getByRole('dialog');
   const content = modal.locator('.log-content');
   const originalNode = await content.elementHandle();
   const feedback = modal.locator('.log-copy-feedback');
   const footerFeedback = page.locator('.app-footer .clipboard-feedback');
+  const copied = lang === 'ko' ? '표시된 로그 복사됨' : 'Displayed logs copied';
+  const clearedMessage = lang === 'ko' ? '로그 화면을 비웠습니다.' : 'Displayed logs cleared.';
+  async function expectFeedback(message: string, tone: 'success' | 'cleared', highlighted: boolean) {
+    for (const surface of [feedback, footerFeedback]) {
+      await expect(surface).toHaveText(message);
+      await expect(surface).toHaveClass(new RegExp(`copy-feedback-${tone}`));
+      await expect(surface.locator('.copy-feedback-glow')).toHaveCount(highlighted ? 1 : 0);
+      if (highlighted) await expect(surface).toHaveClass(/copy-feedback-highlighted/);
+      else await expect(surface).not.toHaveClass(/copy-feedback-highlighted/);
+    }
+  }
   const copy = modal.getByRole('button', { name: lang === 'ko' ? '표시된 로그 복사' : 'Copy displayed logs', exact: true });
   const close = modal.getByRole('button', { name: t.closeLogs, exact: true });
   const calls = () => page.evaluate(() => structuredClone((window as unknown as { __docker2uFixtureCalls: Record<string, number> }).__docker2uFixtureCalls));
@@ -300,12 +314,23 @@ test('expires copy and manual clear feedback without shifting the expanded log v
   const beforeCalls = await calls();
 
   await copy.click();
-  await expect(feedback).toHaveText(lang === 'ko' ? '표시된 로그 복사됨' : 'Displayed logs copied');
+  await expectFeedback(copied, 'success', true);
+  const firstGlow = await feedback.locator('.copy-feedback-glow').elementHandle();
+  const blueGlow = await feedback.locator('.copy-feedback-glow').evaluate(element => getComputedStyle(element).backgroundImage);
+  expect(blueGlow).toContain('linear-gradient');
+  await expect(feedback.locator('.copy-feedback-glow')).toHaveCSS('animation-duration', '2s');
   expect(await metrics()).toEqual(before);
   await expect(copy).toBeFocused();
-  await page.clock.fastForward(3_500);
-  await expect(feedback).toBeEmpty();
-  await expect(footerFeedback).toBeEmpty();
+  // A repeated action restarts the glow; its predecessor's deadline must not
+  // remove the new emphasis. The last status message remains after either one.
+  await page.clock.fastForward(1_000);
+  await copy.click();
+  await expectFeedback(copied, 'success', true);
+  expect(await feedback.locator('.copy-feedback-glow').evaluate((element, original) => element === original, firstGlow)).toBe(false);
+  await page.clock.fastForward(1_500);
+  await expectFeedback(copied, 'success', true);
+  await page.clock.fastForward(1_000);
+  await expectFeedback(copied, 'success', false);
   expect(await metrics()).toEqual(before);
   await expect(copy).toBeFocused();
   await expect(modal.locator('.log-fetched-at time')).toHaveAttribute('datetime', receivedAt!);
@@ -315,16 +340,18 @@ test('expires copy and manual clear feedback without shifting the expanded log v
   expect(afterCopyCalls.readLogStream).toBeGreaterThan(beforeCalls.readLogStream!);
 
   await modal.getByRole('button', { name: lang === 'ko' ? '로그 화면 비우기' : 'Clear displayed logs', exact: true }).click();
-  await expect(feedback).toHaveText(lang === 'ko' ? '로그 화면을 비웠습니다.' : 'Displayed logs cleared.');
+  await expectFeedback(clearedMessage, 'cleared', true);
+  const redGlow = await feedback.locator('.copy-feedback-glow').evaluate(element => getComputedStyle(element).backgroundImage);
+  expect(redGlow).toContain('linear-gradient');
+  expect(redGlow).not.toBe(blueGlow);
   await expect(content).not.toContainText('LAST_LINE_300');
   await expect(copy).toBeDisabled();
   await expect(close).toBeFocused();
   const cleared = await metrics();
   const clearedCalls = await calls();
   expect(clearedCalls.stopLogStream).toBe(beforeCalls.stopLogStream! + 1);
-  await page.clock.fastForward(3_500);
-  await expect(feedback).toBeEmpty();
-  await expect(footerFeedback).toBeEmpty();
+  await page.clock.fastForward(2_500);
+  await expectFeedback(clearedMessage, 'cleared', false);
   expect(await metrics()).toEqual(cleared);
   await expect(close).toBeFocused();
   expect(nonSamplingCalls(await calls())).toEqual(nonSamplingCalls(clearedCalls));

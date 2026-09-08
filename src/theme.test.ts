@@ -15,6 +15,10 @@ function contrast(a: string, b: string) {
   const values = [luminance(a), luminance(b)].sort((left, right) => left - right);
   return (values[1]! + 0.05) / (values[0]! + 0.05);
 }
+function blend(foreground: string, background: string, alpha: number) {
+  return `#${[1, 3, 5].map(index => Math.round(parseInt(foreground.slice(index, index + 2), 16) * alpha
+    + parseInt(background.slice(index, index + 2), 16) * (1 - alpha)).toString(16).padStart(2, '0')).join('')}`;
+}
 
 describe.each(['light', 'dark'])('%s semantic palette', theme => {
   const palette = palettes[theme === 'light' ? 0 : 1]!;
@@ -41,14 +45,23 @@ describe.each(['light', 'dark'])('%s semantic palette', theme => {
       for (const background of normalSurfaces) expect(contrast(palette[foreground]!, palette[background]!), `${foreground} on ${background}`).toBeGreaterThanOrEqual(3);
     }
   });
-  it('keeps blue selections, status badges and copy feedback readable in their actual surfaces', () => {
+  it('keeps blue selections and status badges readable in their actual surfaces', () => {
     const pairs = [
       ['link', 'selected'], ['link', 'selected-hover'], ['on-action', 'primary'], ['on-action', 'primary-hover'],
       ['text-muted', 'raised'], ['success', 'success-bg'], ['danger', 'danger-bg'], ['warning', 'warning-bg'],
-      ['feedback-text', 'feedback-bg'], ['feedback-error-text', 'feedback-error-bg'],
     ];
     for (const [foreground, background] of pairs) {
       expect(contrast(palette[foreground!]!, palette[background!]!), `${theme}: ${foreground} on ${background}`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+  it('keeps neutral statusbar text readable through blue and red glow fading on both surfaces', () => {
+    for (const glow of ['feedback-glow', 'feedback-danger-glow']) {
+      for (const surface of ['inset', 'surface']) {
+        for (const alpha of [0, 0.25, 0.5, 0.75, 1]) {
+          expect(contrast(palette['text-muted']!, blend(palette[glow]!, palette[surface]!, alpha)),
+            `${theme}: status text on ${glow} over ${surface} at ${alpha}`).toBeGreaterThanOrEqual(4.5);
+        }
+      }
     }
   });
 });

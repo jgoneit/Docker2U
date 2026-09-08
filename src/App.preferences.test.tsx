@@ -214,12 +214,12 @@ describe('appearance and language preserve the active Docker session', () => {
     expect(feedback).toBeEmptyDOMElement();
     await user.click(screen.getByRole('button', { name: '표시된 로그 복사' }));
     await within(feedback).findByText('표시된 로그 복사됨');
-    const notification = feedback.firstElementChild;
-    expect(notification).toHaveClass('copy-feedback-success');
+    const notification = feedback.querySelector('.copy-feedback-text');
+    expect(feedback).toHaveClass('copy-feedback-success');
     await toEnglishAndLight(user);
     expect(screen.getByText('Displayed logs copied')).toBeVisible();
     expect(within(screen.getByRole('contentinfo')).getByRole('status')).toBe(feedback);
-    expect(feedback.firstElementChild).toBe(notification);
+    expect(feedback.querySelector('.copy-feedback-text')).toBe(notification);
     mounted.unmount();
     render(<App />);
     await screen.findByRole('button', { name: 'backend details' });
@@ -243,11 +243,11 @@ describe('clipboard feedback follows the latest copy attempt', () => {
 
     await user.click(copyButton);
     await within(feedback).findByText('표시된 로그 복사됨');
-    const firstSuccess = feedback.firstElementChild;
-    expect(firstSuccess).toHaveClass('copy-feedback-success');
+    const firstSuccess = feedback.querySelector('.copy-feedback-text');
+    expect(feedback).toHaveClass('copy-feedback-success');
     await user.click(copyButton);
-    const repeatedSuccess = feedback.firstElementChild;
-    expect(repeatedSuccess).toHaveClass('copy-feedback-success');
+    const repeatedSuccess = feedback.querySelector('.copy-feedback-text');
+    expect(feedback).toHaveClass('copy-feedback-success');
     expect(repeatedSuccess).not.toBe(firstSuccess);
     expect(firstSuccess).not.toBeInTheDocument();
     expect(within(screen.getByRole('contentinfo')).getByRole('status')).toBe(feedback);
@@ -255,12 +255,12 @@ describe('clipboard feedback follows the latest copy attempt', () => {
     writeText.mockRejectedValueOnce(new Error('Clipboard denied'));
     await user.click(copyButton);
     await within(feedback).findByText('클립보드에 복사하지 못했습니다.');
-    expect(feedback.firstElementChild).toHaveClass('copy-feedback-error');
-    expect(feedback.querySelector('.copy-feedback-success')).toBeNull();
+    expect(feedback).toHaveClass('copy-feedback-error');
+    expect(feedback).not.toHaveClass('copy-feedback-success');
     await user.click(copyButton);
     await within(feedback).findByText('표시된 로그 복사됨');
-    expect(feedback.firstElementChild).toHaveClass('copy-feedback-success');
-    expect(feedback.querySelector('.copy-feedback-error')).toBeNull();
+    expect(feedback).toHaveClass('copy-feedback-success');
+    expect(feedback).not.toHaveClass('copy-feedback-error');
     expect(writeText.mock.calls).toEqual(Array.from({ length: 4 }, () => [logs.text]));
     expect(copyButton).toHaveFocus();
     expect(output.textContent).toBe(logs.text);
@@ -288,14 +288,14 @@ describe('clipboard feedback follows the latest copy attempt', () => {
     await user.click(screen.getByRole('button', { name: '전체 ID 복사' }));
     const latestMessage = newer === 'success' ? '전체 ID 복사됨' : '클립보드에 복사하지 못했습니다.';
     await within(feedback).findByText(latestMessage);
-    const latestNotification = feedback.firstElementChild;
-    expect(latestNotification).toHaveClass(newer === 'success' ? 'copy-feedback-success' : 'copy-feedback-error');
+    const latestNotification = feedback.querySelector('.copy-feedback-text');
+    expect(feedback).toHaveClass(newer === 'success' ? 'copy-feedback-success' : 'copy-feedback-error');
     await act(async () => {
       if (older === 'success') pending.resolve();
       else pending.reject(new Error('Older clipboard denied'));
     });
     expect(feedback).toHaveTextContent(latestMessage);
-    expect(feedback.firstElementChild).toBe(latestNotification);
+    expect(feedback.querySelector('.copy-feedback-text')).toBe(latestNotification);
     expect(writeText.mock.calls).toEqual([[logs.text], [container.fullId]]);
     expect(screen.getByLabelText('최근 로그 내용').textContent).toBe(logs.text);
     expect(callCounts()).toEqual(before);
@@ -322,13 +322,13 @@ describe('clipboard feedback follows the latest copy attempt', () => {
 
     await user.click(copyButton);
     await within(feedback).findByText('클립보드에 복사하지 못했습니다.');
-    expect(feedback.firstElementChild).toHaveClass('copy-feedback-error');
-    expect(feedback.querySelector('.copy-feedback-success')).toBeNull();
-    expect(within(screen.getByRole('contentinfo')).getByRole('status').firstElementChild).toHaveClass('copy-feedback-error');
+    expect(feedback).toHaveClass('copy-feedback-error');
+    expect(feedback).not.toHaveClass('copy-feedback-success');
+    expect(within(screen.getByRole('contentinfo')).getByRole('status')).toHaveClass('copy-feedback-error');
     await user.click(copyButton);
     await within(feedback).findByText('표시된 로그 복사됨');
-    expect(feedback.firstElementChild).toHaveClass('copy-feedback-success');
-    expect(feedback.querySelector('.copy-feedback-error')).toBeNull();
+    expect(feedback).toHaveClass('copy-feedback-success');
+    expect(feedback).not.toHaveClass('copy-feedback-error');
     expect(writeText.mock.calls).toEqual([[logs.text], [logs.text]]);
     expect(dialog.getByRole('searchbox', { name: '로그 검색' })).toBe(search);
     expect(search).toHaveValue('raw');
@@ -366,7 +366,7 @@ describe('clipboard feedback follows the latest copy attempt', () => {
     expect(feedback).toBeEmptyDOMElement();
     await user.click(within(reopenedDialog).getByRole('button', { name: '표시된 로그 복사' }));
     await within(feedback).findByText('표시된 로그 복사됨');
-    expect(feedback.firstElementChild).toHaveClass('copy-feedback-success');
+    expect(feedback).toHaveClass('copy-feedback-success');
     expect(writeText.mock.calls).toEqual([[logs.text], [logs.text]]);
     expect(within(reopenedDialog).getByLabelText('최근 로그 내용').textContent).toBe(logs.text);
     expect(callCounts()).toEqual(before);
