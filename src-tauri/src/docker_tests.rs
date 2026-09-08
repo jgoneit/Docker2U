@@ -11,6 +11,8 @@ use std::{
 
 #[path = "docker_bulk_tests.rs"]
 mod bulk;
+#[path = "docker_insights_tests.rs"]
+mod insights;
 
 struct Fixture {
     dir: PathBuf,
@@ -163,6 +165,12 @@ endpoint=a[1]
 assert endpoint in ['unix://'+str(p/'engine-A.sock'),'unix://'+str(p/'engine-B.sock')], repr(a)
 a=a[2:]
 if a[0]=='info':
+    if mode=='held_info':
+        (p/'verifying').write_text('1')
+        deadline=time.monotonic()+10
+        while not (p/'release-info').exists():
+            if time.monotonic()>deadline: sys.exit(1)
+            time.sleep(.005)
     if mode=='connection_fail': print('connection reset by peer',file=sys.stderr);sys.exit(1)
     if mode=='permission_denied': print('permission denied while connecting to Docker socket',file=sys.stderr);sys.exit(1)
     print(json.dumps({'ID':'' if mode=='empty_engine_id' else ('changed' if mode=='engine_changed' else ('engine-B' if endpoint.endswith('engine-B.sock') else 'engine-A')),'OSType':'windows' if mode=='windows_engine' else 'linux','Architecture':'amd64','Name':'arbitrary-compatible-engine'}));sys.exit()
@@ -186,11 +194,31 @@ if a[1]=='inspect':
     state=(p/'state').read_text() if (p/'state').exists() else 'exited'
     states=json.loads((p/'states').read_text()) if (p/'states').exists() else {}
     for ident in a[4:]:
-        print(json.dumps({'Id':'f'*64 if mode=='wrong_id' else ident,'Name':"/test;$(touch forbidden)",'Image':'busybox:test','Created':'2026-09-05T08:00:00Z','State':states.get(ident,state),'Health':None,'Ports':None}))
+        print(json.dumps({'Id':'f'*64 if mode=='wrong_id' else ident,'Name':"/test;$(touch forbidden)",'Image':'busybox:test','Created':'2026-09-05T08:00:00Z','State':states.get(ident,state),'Health':None,'Ports':None,'ComposeProject':'team-dev' if mode=='compose' else None,'ComposeService':'api' if mode=='compose' else None}))
     sys.exit()
 if a[1]=='logs':
     sys.stdout.write('hello\x1b[31m red\x1b[0m\n');sys.stdout.flush()
-    sys.stderr.write('stderr log\n');sys.exit()
+    sys.stderr.write('stderr log\n');sys.stderr.flush()
+    if '--follow' in a:
+        (p/'following').write_text(str(os.getpid()))
+        while True: time.sleep(.05)
+    sys.exit()
+if a[1]=='stats':
+    assert a[2:6]==['--no-stream','--no-trunc','--format','{{json .}}'], repr(a)
+    assert len(a)>6
+    if mode=='held_stats':
+        (p/'sampling').write_text('1')
+        deadline=time.monotonic()+10
+        while not (p/'release-stats').exists():
+            if time.monotonic()>deadline: sys.exit(1)
+            time.sleep(.005)
+    if mode=='stats_fail': print('container disappeared',file=sys.stderr);sys.exit(1)
+    if mode=='stats_missing': sys.exit()
+    for ident in a[6:]:
+        row=json.dumps({'ID':'f'*64 if mode=='wrong_stats_id' else ident,'CPUPerc':'250.25%','MemUsage':'12.5MiB / 2GiB','MemPerc':'0.61%'})
+        print(row)
+        if mode=='duplicate_stats_id': print(row)
+    sys.exit()
 if a[1] in ['start','stop','restart']:
     assert len(a)==3, repr(a)
     if (p/'behaviors').exists(): mode=json.loads((p/'behaviors').read_text()).get(a[2],mode)

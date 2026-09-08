@@ -4,6 +4,7 @@ import type { Action, BulkMutationResult, Container, ContainerList, CoreError, E
 // Do not mount App until every API method has been replaced with an in-memory fake.
 if (import.meta.env.DEV) {
   const scenarios = {
+    live: 'Live — continuous bilingual output',
     normal: 'Normal — 300 bilingual log lines',
     'dense-logs': 'Dense 2 MiB logs — exact search stress case',
     'long-metadata': 'Long container name, image and 24 published ports',
@@ -65,25 +66,28 @@ if (import.meta.env.DEV) {
       image: 'fixture.invalid/team/long-service-image-name:development-build-2026-09-06',
       state: 'running', health: 'healthy',
       ports: ['127.0.0.1:18080->8080/tcp', '[::1]:18443->8443/tcp', '127.0.0.1:19090->9090/tcp'],
-      createdAt: '2026-09-06T00:00:00Z',
+      composeProject: null, composeService: null, createdAt: '2026-09-06T00:00:00Z',
     },
     {
       handle: 'visual-redis', fullId: 'b'.repeat(64), shortId: 'b'.repeat(12),
       name: 'redis-캐시-stopped', image: 'fixture.invalid/redis:7', state: 'exited', health: 'none',
-      ports: [], createdAt: '2026-09-06T00:00:00Z',
+      ports: [], composeProject: null, composeService: null, createdAt: '2026-09-06T00:00:00Z',
     },
     {
       handle: 'visual-worker', fullId: 'c'.repeat(64), shortId: 'c'.repeat(12),
       name: 'worker-상태확인-required', image: 'fixture.invalid/worker:development',
       state: 'running', health: 'unhealthy', ports: ['127.0.0.1:19091->9091/tcp'],
-      createdAt: '2026-09-06T00:00:00Z',
+      composeProject: null, composeService: null, createdAt: '2026-09-06T00:00:00Z',
     },
     {
       handle: 'visual-paused', fullId: 'd'.repeat(64), shortId: 'd'.repeat(12),
       name: 'scheduler-일시정지-paused', image: 'fixture.invalid/scheduler:development',
-      state: 'paused', health: null, ports: [], createdAt: '2026-09-06T00:00:00Z',
+      state: 'paused', health: null, ports: [], composeProject: null, composeService: null, createdAt: '2026-09-06T00:00:00Z',
     },
   ];
+  baseContainers[0]!.composeProject = 'orders'; baseContainers[0]!.composeService = 'api';
+  baseContainers[1]!.composeProject = 'orders'; baseContainers[1]!.composeService = 'redis';
+  baseContainers[2]!.composeProject = 'workers'; baseContainers[2]!.composeService = 'worker';
   if (scenario === 'long-metadata' && baseContainers[0]) {
     baseContainers[0].name = `backend-${'주문처리-service-'.repeat(12)}development`;
     baseContainers[0].image = `fixture.invalid/${'very-long-service-segment/'.repeat(14)}image:development`;
@@ -140,6 +144,8 @@ if (import.meta.env.DEV) {
       durationMs: 0, observedState: containers.find(container => container.fullId === target.fullId)?.state ?? target.state,
     };
   }
+  let streamNumber = 0;
+  const streams = new Map<string, { sessionId: string; sequence: number; initial: RecentLogs | null }>();
   const fixtureApi: typeof api = {
     getEnvironment: async (): Promise<Environment> => {
       sessionId = `visual-session-${++connection}`;
@@ -184,6 +190,32 @@ if (import.meta.env.DEV) {
       const text = scenario === 'empty-logs' ? '' : scenario === 'dense-logs' ? 'a'.repeat(2 * 1024 * 1024) : logText;
       return { sessionId: id, generation, handle, text, truncated: scenario === 'truncated', byteCount: new TextEncoder().encode(text).length, command: '[SIMULATED ONLY] recent logs', stderr: '' };
     },
+    startLogStream: async (id, requestedGeneration, handle) => {
+      requireSession(id);
+      if (requestedGeneration !== generation) return reject('StaleHandle', 'Synthetic list generation changed.');
+      const target = targetFor(handle);
+      const initial = await fixtureApi.getRecentLogs(id, handle);
+      const streamId = `visual-stream-${++streamNumber}`;
+      streams.clear(); streams.set(streamId, { sessionId: id, sequence: 0, initial });
+      return { sessionId: id, streamId, fullId: target.fullId };
+    },
+    readLogStream: async (id, streamId) => {
+      requireSession(id);
+      const stream = streams.get(streamId);
+      if (!stream || stream.sessionId !== id) return reject('StaleStream', 'Synthetic stream was replaced.');
+      const initial = stream.initial; stream.initial = null;
+      return { sessionId: id, streamId, sequence: ++stream.sequence,
+        text: initial?.text ?? (scenario === 'live' ? `\nLIVE ${stream.sequence} · 실시간 stdout/stderr 합성 출력` : ''),
+        truncated: initial?.truncated ?? false, terminal: scenario !== 'live', error: null };
+    },
+    stopLogStream: async (_id, streamId) => { streams.delete(streamId); },
+    getContainerStats: async (id, requestedGeneration, handles) => {
+      requireSession(id);
+      if (requestedGeneration !== generation) return reject('StaleHandle', 'Synthetic list generation changed.');
+      return { sessionId: id, generation: requestedGeneration, sampledAt: new Date().toISOString(), error: null,
+        items: handles.map(handle => ({ handle, fullId: targetFor(handle).fullId, cpuPercent: 125.5,
+          memoryUsage: '64MiB / 2GiB', memoryPercent: 3.125, available: true })) };
+    },
     mutateContainer: async (id, handle, action): Promise<MutationResult> => {
       requireSession(id);
       return resultFor(targetFor(handle), action);
@@ -208,7 +240,7 @@ if (import.meta.env.DEV) {
   if (Object.keys(api).some(key => !Object.hasOwn(fixtureApi, key))) {
     throw new Error('Visual fixture refused to mount: an API method has no fake.');
   }
-  const calls: Record<keyof typeof api, number> = { getEnvironment: 0, listContainers: 0, getRecentLogs: 0, mutateContainer: 0, mutateContainers: 0 };
+  const calls: Record<keyof typeof api, number> = { getEnvironment: 0, listContainers: 0, getRecentLogs: 0, mutateContainer: 0, mutateContainers: 0, startLogStream: 0, readLogStream: 0, stopLogStream: 0, getContainerStats: 0 };
   Object.assign(window, { __docker2uFixtureCalls: calls });
   for (const name of Object.keys(fixtureApi) as (keyof typeof api)[]) {
     const original = fixtureApi[name] as (...args: unknown[]) => unknown;

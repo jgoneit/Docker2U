@@ -1,7 +1,7 @@
 import type { BulkMutationResult, CoreError, MutationResult } from './api';
 import { frontendErrorDescriptor } from './frontendErrors';
 
-export type IssueStage = 'connect' | 'list' | 'logs' | 'singleAction' | 'bulkAction';
+export type IssueStage = 'connect' | 'list' | 'logs' | 'stats' | 'singleAction' | 'bulkAction';
 export interface SessionIssue {
   stage: IssueStage;
   origin: 'frontendError' | 'nativeError' | 'exception' | 'nativeResult';
@@ -68,3 +68,5 @@ export function sessionDiagnostics(value: FrontendSession): FrontendSession {
     } : null,
   };
 }
+
+export const connectionInvalidatingErrors = new Set(['EnvironmentChanged', 'Disconnected', 'SocketMissing', 'PermissionDenied', 'Configuration', 'EndpointMismatch', 'RemoteEndpoint']);

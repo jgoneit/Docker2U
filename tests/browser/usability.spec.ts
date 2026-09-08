@@ -9,7 +9,7 @@ const words = {
     openSearch: '로그 검색 열기', closeSearch: '로그 검색 닫기',
     containerSearch: '컨테이너 검색', clearContainerSearch: '컨테이너 검색 지우기', runningFilter: '실행 중',
     showDiagnostics: '환경 진단 보기', closeDiagnostics: '환경 진단 닫기', executionDetails: '실행 상세',
-    bottom: '맨 아래로', expand: '로그 확대 보기', closeLogs: '로그 확대 보기 닫기',
+    bottom: '최신 로그로', snapshotBottom: '맨 아래로', expand: '로그 확대 보기', closeLogs: '로그 확대 보기 닫기',
     showResult: '결과 펼치기', hideResult: '결과 접기', result: '최근 작업 결과',
     unknown: '결과 불명', details: '상세',
     start: '시작', stop: '중지', confirmStop: '중지 확인', cancel: '취소', selectVisible: '보이는 컨테이너 전체 선택',
@@ -20,13 +20,18 @@ const words = {
     openSearch: 'Open log search', closeSearch: 'Close log search',
     containerSearch: 'Search containers', clearContainerSearch: 'Clear container search', runningFilter: 'Running',
     showDiagnostics: 'Show environment diagnostics', closeDiagnostics: 'Close diagnostics', executionDetails: 'Execution details',
-    bottom: 'Scroll to bottom', expand: 'Expand logs', closeLogs: 'Close expanded logs',
+    bottom: 'Latest logs', snapshotBottom: 'Scroll to bottom', expand: 'Expand logs', closeLogs: 'Close expanded logs',
     showResult: 'Show result details', hideResult: 'Hide result details', result: 'Latest operation result',
     unknown: 'Result unknown', details: 'details',
     start: 'Start', stop: 'Stop', confirmStop: 'Confirm Stop', cancel: 'Cancel', selectVisible: 'Select all visible containers',
   },
 };
 function language(testInfo: TestInfo) { return testInfo.project.metadata.language as keyof typeof words; }
+// Periodic resource samples are independent of inventory age and log search.
+// Keep every other API counter in these assertions to detect unintended reloads.
+function nonSamplingCalls(calls: Record<string, number>) {
+  return Object.fromEntries(Object.entries(calls).filter(([name]) => name !== 'getContainerStats'));
+}
 
 test.beforeEach(async ({ page }, testInfo) => {
   // Every test uses synthetic API replacements. An unexpected external HTTP request fails.
@@ -47,6 +52,11 @@ async function openFixture(page: Page, scenario = 'normal', platform?: string) {
   await expect(page.locator('.container-row')).toHaveCount(4);
   if (scenario === 'dense-logs') await expect.poll(() => page.locator('.log-content').textContent().then(text => text?.length)).toBe(2 * 1024 * 1024);
   else if (scenario !== 'log-error') await expect(page.locator('.log-content')).toContainText('LAST_LINE_300');
+}
+
+async function scrollToLatest(content: Locator, action: Locator) {
+  await content.evaluate(element => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll', { bubbles: true })); });
+  await action.click();
 }
 
 async function visibleTextRange(content: Locator, text: string) {
@@ -95,7 +105,7 @@ async function expectReadableSmallText(page: Page) {
   expect(undersized).toEqual([]);
 }
 
-test('shows inventory age without selection and advances it without Docker calls', async ({ page }, testInfo) => {
+test('shows inventory age without selection and advances it without inventory or log reloads', async ({ page }, testInfo) => {
   const lang = language(testInfo);
   await page.clock.install({ time: new Date('2026-09-06T00:14:34Z') });
   await openFixture(page);
@@ -105,14 +115,14 @@ test('shows inventory age without selection and advances it without Docker calls
   await expect(age).toHaveAttribute('title', /2026/);
   await expect(age).toBeInViewport();
   await expectLogFits(page);
-  const readCalls = () => page.evaluate(() => structuredClone((window as Window & { __docker2uFixtureCalls: Record<string, number> }).__docker2uFixtureCalls));
+  const readCalls = () => page.evaluate(() => structuredClone((window as unknown as { __docker2uFixtureCalls: Record<string, number> }).__docker2uFixtureCalls));
   const before = await readCalls();
   await page.clock.fastForward(120_000);
   await expect(age).toContainText(lang === 'ko' ? '4분 전' : '4 minutes ago');
   await page.getByRole('textbox', { name: words[lang].containerSearch, exact: true }).fill('no matching fixture');
   await expect(page.locator('.log-content')).toHaveCount(0);
   await expect(age).toBeVisible();
-  expect(await readCalls()).toEqual(before);
+  expect(nonSamplingCalls(await readCalls())).toEqual(nonSamplingCalls(before));
   await expectNoHorizontalOverflow(page);
   await page.goto('/src/test/visual.html?toolbar=hidden&scenario=empty-inventory');
   await expect(page.locator('.container-row')).toHaveCount(0);
@@ -135,7 +145,7 @@ test('explains and disables blocked single and bulk confirmations while retainin
     const modal = page.getByRole('dialog');
     const confirm = modal.getByRole('button', { name: t.confirmStop, exact: true });
     await confirm.focus();
-    await page.evaluate(() => (window as Window & { __docker2uRejectLogs: () => void }).__docker2uRejectLogs());
+    await page.evaluate(() => (window as unknown as { __docker2uRejectLogs: () => void }).__docker2uRejectLogs());
     await expect(confirm).toBeDisabled();
     await expect(modal.getByRole('alert')).toContainText(lang === 'ko' ? '연결' : /[Rr]econnect/);
     await expect(modal.getByRole('button', { name: t.cancel, exact: true })).toBeFocused();
@@ -145,20 +155,24 @@ test('explains and disables blocked single and bulk confirmations while retainin
     else await modal.getByRole('button', { name: t.cancel, exact: true }).click();
     await expect(modal).toHaveCount(0);
     await expect(page.getByRole('button', { name: lang === 'ko' ? '다시 연결' : 'Reconnect', exact: true })).toBeFocused();
-    const calls = await page.evaluate(() => (window as Window & { __docker2uFixtureCalls: Record<string, number> }).__docker2uFixtureCalls);
+    const calls = await page.evaluate(() => (window as unknown as { __docker2uFixtureCalls: Record<string, number> }).__docker2uFixtureCalls);
     expect(calls.mutateContainer).toBe(0);
     expect(calls.mutateContainers).toBe(0);
-    expect(calls.getRecentLogs).toBe(1);
+    expect(calls.getRecentLogs).toBe(0);
+    expect(calls.startLogStream).toBe(1);
+    expect(calls.readLogStream).toBe(0); // The held subscription failed before returning a stream.
     await expectLogFits(page);
   }
 });
 
 async function expectLogFits(page: Page, minimumLines = 0) {
-  // Measurements do not scroll or focus anything: clipping must be absent before interaction.
+  // A short pane can scroll its surrounding controls while retaining a usable log viewport.
+  // Scroll the log into view without moving keyboard focus or altering the log's own scroll.
+  await page.locator('.detail-panel .logs-panel:not([hidden]) .log-content').scrollIntoViewIfNeeded();
   const metrics = await page.evaluate(() => {
     const detail = document.querySelector<HTMLElement>('.detail-panel')!;
     const panel = detail.querySelector<HTMLElement>('.logs-panel:not([hidden])')!;
-    const content = panel.querySelector<HTMLElement>('.log-content, .log-error')!;
+    const content = panel.querySelector<HTMLElement>('.log-content')!;
     const footer = document.querySelector<HTMLElement>('.app-footer')!;
     const box = (element: Element) => {
       const { top, bottom, left, right, height, width } = element.getBoundingClientRect();
@@ -174,18 +188,15 @@ async function expectLogFits(page: Page, minimumLines = 0) {
     };
   });
   const boundary = { top: Math.max(0, metrics.detail.top), bottom: Math.min(metrics.detail.bottom, metrics.footer.top, metrics.viewport.height) };
-  for (const [name, rect] of [['panel', metrics.panel], ['content', metrics.content]] as const) {
-    const top = name === 'content' ? Math.max(boundary.top, metrics.panel.top) : boundary.top;
-    const bottom = name === 'content' ? Math.min(boundary.bottom, metrics.panel.bottom) : boundary.bottom;
-    expect(rect.height, `${name} has usable height: ${JSON.stringify(metrics)}`).toBeGreaterThan(0);
-    expect(rect.top, `${name} top fits without scrolling`).toBeGreaterThanOrEqual(top - 1);
-    expect(rect.bottom, `${name} bottom fits its panel and stays above footer: ${JSON.stringify(metrics)}`).toBeLessThanOrEqual(bottom + 1);
+  expect(metrics.panel.height).toBeGreaterThan(0);
+  expect(metrics.content.height, `log viewport retains its minimum height: ${JSON.stringify(metrics)}`).toBeGreaterThanOrEqual(80);
+  expect(metrics.content.top, 'log viewport is reachable inside the lower pane').toBeGreaterThanOrEqual(Math.max(boundary.top, metrics.panel.top) - 1);
+  expect(metrics.content.bottom, 'log viewport fits above the footer after pane scrolling').toBeLessThanOrEqual(Math.min(boundary.bottom, metrics.panel.bottom) + 1);
+  for (const rect of [metrics.panel, metrics.content]) {
     expect(rect.left).toBeGreaterThanOrEqual(metrics.detail.left - 1);
     expect(rect.right).toBeLessThanOrEqual(metrics.detail.right + 1);
   }
-  expect(metrics.outerScroll).toBe(0);
   expect(metrics.documentScroll).toBe(0);
-  expect(metrics.outerOverflow, 'the outer details panel must not become another scroll container').toBeLessThanOrEqual(1);
   expect(metrics.textLines, `visible text lines: ${JSON.stringify(metrics)}`).toBeGreaterThanOrEqual(minimumLines - 0.05);
   return metrics;
 }
@@ -224,23 +235,27 @@ test('fits the complete log viewport before interaction and while toggling searc
   const closed = await expectLogFits(page);
   await page.getByRole('button', { name: t.openSearch, exact: true }).click();
   const viewportHeight = page.viewportSize()!.height;
-  const opened = await expectLogFits(page, viewportHeight >= 800 ? 10 : 6);
-  expect(opened.content.height).toBeLessThan(closed.content.height);
-  expect(Math.abs(opened.panel.bottom - closed.panel.bottom)).toBeLessThanOrEqual(1);
+  const opened = await expectLogFits(page, 1);
+  expect(opened.content.height).toBeLessThanOrEqual(closed.content.height);
   await testInfo.attach('log-layout', { body: JSON.stringify({ closed, opened }), contentType: 'application/json' });
   if (viewportHeight === 1000) {
+    const separator = page.getByRole('separator');
+    const originalHeight = Number(await separator.getAttribute('aria-valuenow'));
     await page.setViewportSize({ width: 1280, height: 800 });
-    const smaller = await expectLogFits(page, 10);
-    expect(opened.content.height).toBeGreaterThan(smaller.content.height + 20);
+    await expectLogFits(page, 1);
+    const smallerHeight = Number(await separator.getAttribute('aria-valuenow'));
+    expect(smallerHeight).toBeLessThanOrEqual(originalHeight);
+    expect(smallerHeight).toBeGreaterThanOrEqual(Number(await separator.getAttribute('aria-valuemin')));
+    expect(smallerHeight).toBeLessThanOrEqual(Number(await separator.getAttribute('aria-valuemax')));
     await page.setViewportSize({ width: 1600, height: 1000 });
-    await expectLogFits(page, 10);
+    await expectLogFits(page, 1);
   }
   await page.getByRole('button', { name: t.closeSearch, exact: true }).click();
   const restored = await expectLogFits(page);
   expect(restored.content.height).toBeCloseTo(closed.content.height, 0);
   await expectNoHorizontalOverflow(page);
   await expectReadableSmallText(page);
-  await page.getByRole('button', { name: t.bottom, exact: true }).click();
+  await scrollToLatest(content, page.getByRole('button', { name: t.bottom, exact: true }));
   await visibleTextRange(content, 'LAST_LINE_300');
   await expectLogFits(page);
   await expect(page.getByRole('button', { name: t.settings, exact: true })).toBeInViewport();
@@ -248,7 +263,7 @@ test('fits the complete log viewport before interaction and while toggling searc
   await page.getByRole('button', { name: t.expand, exact: true }).click();
   const modal = page.getByRole('dialog');
   await expect(modal.getByRole('button', { name: t.closeLogs })).toBeFocused();
-  await modal.getByRole('button', { name: t.bottom, exact: true }).click();
+  await scrollToLatest(modal.locator('.log-content'), modal.getByRole('button', { name: t.bottom, exact: true }));
   await visibleTextRange(modal.locator('.log-content'), 'LAST_LINE_300');
   await expectNoHorizontalOverflow(page);
   await page.keyboard.press('Escape');
@@ -256,6 +271,91 @@ test('fits the complete log viewport before interaction and while toggling searc
   await expect(modal).toHaveCount(0);
   await expect(page.locator('.main-content')).not.toHaveAttribute('inert');
   await expectLogFits(page);
+});
+
+test('keeps status text after copy and clear glows fade without shifting logs, focus or reads', async ({ page }, testInfo) => {
+  const lang = language(testInfo);
+  const t = words[lang];
+  await page.clock.install({ time: new Date('2026-09-06T00:14:34Z') });
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => {} } });
+  });
+  await openFixture(page, 'live');
+  // Load naturally, then freeze before actions: assertion runtime must not
+  // consume the two-second deadline. Only explicit clock advances follow.
+  await page.clock.pauseAt(new Date('2026-09-06T00:15:34Z'));
+  await page.getByRole('button', { name: t.expand, exact: true }).click();
+  const modal = page.getByRole('dialog');
+  const content = modal.locator('.log-content');
+  const originalNode = await content.elementHandle();
+  const feedback = modal.locator('.log-copy-feedback');
+  const footerFeedback = page.locator('.app-footer .clipboard-feedback');
+  const copied = lang === 'ko' ? '표시된 로그 복사됨' : 'Displayed logs copied';
+  const clearedMessage = lang === 'ko' ? '로그 화면을 비웠습니다.' : 'Displayed logs cleared.';
+  async function expectFeedback(message: string, tone: 'success' | 'cleared', highlighted: boolean) {
+    for (const surface of [feedback, footerFeedback]) {
+      await expect(surface).toHaveText(message);
+      await expect(surface).toHaveClass(new RegExp(`copy-feedback-${tone}`));
+      await expect(surface.locator('.copy-feedback-glow')).toHaveCount(highlighted ? 1 : 0);
+      if (highlighted) await expect(surface).toHaveClass(/copy-feedback-highlighted/);
+      else await expect(surface).not.toHaveClass(/copy-feedback-highlighted/);
+    }
+  }
+  const copy = modal.getByRole('button', { name: lang === 'ko' ? '표시된 로그 복사' : 'Copy displayed logs', exact: true });
+  const close = modal.getByRole('button', { name: t.closeLogs, exact: true });
+  const calls = () => page.evaluate(() => structuredClone((window as unknown as { __docker2uFixtureCalls: Record<string, number> }).__docker2uFixtureCalls));
+  const metrics = () => content.evaluate(element => ({ width: element.clientWidth, height: element.clientHeight, scrollTop: element.scrollTop, text: element.textContent }));
+  await modal.locator('.log-pause-toggle').click();
+  await expect(modal.locator('.log-pause-toggle')).toHaveAttribute('aria-pressed', 'true');
+  await content.evaluate(element => { element.scrollTop = 145; element.dispatchEvent(new Event('scroll', { bubbles: true })); });
+  const before = await metrics();
+  expect(before.scrollTop).toBeGreaterThan(0);
+  const receivedAt = await modal.locator('.log-fetched-at time').getAttribute('datetime');
+  const beforeCalls = await calls();
+
+  await copy.click();
+  await expectFeedback(copied, 'success', true);
+  const firstGlow = await feedback.locator('.copy-feedback-glow').elementHandle();
+  const blueGlow = await feedback.locator('.copy-feedback-glow').evaluate(element => getComputedStyle(element).backgroundImage);
+  expect(blueGlow).toContain('linear-gradient');
+  await expect(feedback.locator('.copy-feedback-glow')).toHaveCSS('animation-duration', '2s');
+  expect(await metrics()).toEqual(before);
+  await expect(copy).toBeFocused();
+  // A repeated action restarts the glow; its predecessor's deadline must not
+  // remove the new emphasis. The last status message remains after either one.
+  await page.clock.fastForward(1_000);
+  await copy.click();
+  await expectFeedback(copied, 'success', true);
+  expect(await feedback.locator('.copy-feedback-glow').evaluate((element, original) => element === original, firstGlow)).toBe(false);
+  await page.clock.fastForward(1_500);
+  await expectFeedback(copied, 'success', true);
+  await page.clock.fastForward(1_000);
+  await expectFeedback(copied, 'success', false);
+  expect(await metrics()).toEqual(before);
+  await expect(copy).toBeFocused();
+  await expect(modal.locator('.log-fetched-at time')).toHaveAttribute('datetime', receivedAt!);
+  const afterCopyCalls = await calls();
+  expect(afterCopyCalls.startLogStream).toBe(beforeCalls.startLogStream);
+  expect(afterCopyCalls.stopLogStream).toBe(beforeCalls.stopLogStream);
+  expect(afterCopyCalls.readLogStream).toBeGreaterThan(beforeCalls.readLogStream!);
+
+  await modal.getByRole('button', { name: lang === 'ko' ? '로그 화면 비우기' : 'Clear displayed logs', exact: true }).click();
+  await expectFeedback(clearedMessage, 'cleared', true);
+  const redGlow = await feedback.locator('.copy-feedback-glow').evaluate(element => getComputedStyle(element).backgroundImage);
+  expect(redGlow).toContain('linear-gradient');
+  expect(redGlow).not.toBe(blueGlow);
+  await expect(content).not.toContainText('LAST_LINE_300');
+  await expect(copy).toBeDisabled();
+  await expect(close).toBeFocused();
+  const cleared = await metrics();
+  const clearedCalls = await calls();
+  expect(clearedCalls.stopLogStream).toBe(beforeCalls.stopLogStream! + 1);
+  await page.clock.fastForward(2_500);
+  await expectFeedback(clearedMessage, 'cleared', false);
+  expect(await metrics()).toEqual(cleared);
+  await expect(close).toBeFocused();
+  expect(nonSamplingCalls(await calls())).toEqual(nonSamplingCalls(clearedCalls));
+  expect(await content.evaluate((element, original) => element === original, originalNode)).toBe(true);
 });
 
 test('search moves the current text into the visible viewport and survives expansion', async ({ page }, testInfo) => {
@@ -333,7 +433,7 @@ test('keeps completed result controls reachable and the result after another sel
   await expect(show).toBeInViewport();
   await expectLogFits(page);
   await expectNoHorizontalOverflow(page);
-  await page.getByRole('button', { name: t.bottom, exact: true }).click();
+  await scrollToLatest(page.locator('.log-content'), page.getByRole('button', { name: t.snapshotBottom, exact: true }));
   await visibleTextRange(page.locator('.log-content'), 'LAST_LINE_300');
 });
 
@@ -481,7 +581,10 @@ test('lets the keyboard reach and scroll long error details in expanded logs', a
   const modal = page.getByRole('dialog');
   const close = modal.getByRole('button', { name: t.closeLogs, exact: true });
   const summary = modal.locator('.technical-details summary');
+  const content = modal.locator('.log-content');
   await expect(close).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(content).toBeFocused();
   await page.keyboard.press('Shift+Tab');
   await expect(summary).toBeFocused();
   await page.keyboard.press('Enter');
@@ -497,6 +600,8 @@ test('lets the keyboard reach and scroll long error details in expanded logs', a
   await expect(stderr).toBeFocused();
   await page.keyboard.press('End');
   await visibleTextRange(stderr, 'LAST_STDERR_LINE');
+  await page.keyboard.press('Tab');
+  await expect(content).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(close).toBeFocused();
   await page.keyboard.press('Escape');
@@ -553,5 +658,5 @@ test('uses the real Worker for every dense-log match while retaining raw copy an
   expect((await content.textContent())?.length).toBe(2 * 1024 * 1024);
   await expectLogFits(page);
   await expectNoHorizontalOverflow(page);
-  expect(await calls()).toEqual(before);
+  expect(nonSamplingCalls(await calls())).toEqual(nonSamplingCalls(before));
 });

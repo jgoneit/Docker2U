@@ -5,9 +5,9 @@
 | 항목 | 내용 |
 | --- | --- |
 | 문서 상태 | macOS 로컬 알파 구현 기준, 외부 v0.1 출시 기준 병기 |
-| 문서 버전 | 1.3 |
+| 문서 버전 | 1.4 |
 | 작성일 | 2026-09-01 |
-| 개정일 | 2026-09-06 |
+| 개정일 | 2026-09-07 |
 | 제품 목표 버전 | Docker2U v0.1 |
 | 대상 플랫폼 | 현재 macOS 14+ Apple Silicon 로컬 알파, Windows 후속 |
 | 기술 방향 | Rust + Tauri 2 + React + TypeScript strict |
@@ -23,7 +23,7 @@
 Docker2U v0.1의 개발과 리뷰는 이 문서를 기준으로 수행한다. 문서에 없는
 기능은 기본적으로 v0.1 범위가 아니다.
 
-이 문서는 애플리케이션 구현을 포함하지 않는다.
+현재 macOS 관찰 기능의 상세 계약은 [로그·프로젝트·자원 관찰](MACOS-LIVE-INSIGHTS.md)을 따른다.
 
 ### 1.1 현재 구현 단계: macOS 로컬 알파
 
@@ -38,7 +38,8 @@ Docker2U v0.1의 개발과 리뷰는 이 문서를 기준으로 수행한다. �
   아래 두 OS 지원 matrix와 signed release gate는 외부 v0.1 출시 요건으로 유지한다.
   macOS 14+는 호환성 허용 범위이며 모든 버전·provider 조합의 검증 완료를 뜻하지 않는다.
 - UI는 제공된 React 패널을 기반으로 한다. 기본 창은 1280×800, 최소는
-  1024×680이며 왼쪽 목록·오른쪽 상세 구조와 시스템·라이트·다크 테마를 사용한다.
+  1024×680이며 위쪽 프로젝트별 표와 높이를 조절하는 아래쪽 상세·로그를 사용한다.
+  시스템·라이트·다크 테마와 한국어·영어를 제공한다.
 - 개별 상세 선택과 별도로 여러 Container를 체크하여 Start·Stop·Restart할 수 있다.
   전체 선택은 현재 검색·필터 결과로 보이는 목록에만 적용한다.
 - Rust Core는 시작·Reconnect에서 인자 없는 `docker context inspect`를 실행하여
@@ -715,32 +716,36 @@ Start, Stop, Restart 직전 다음 항목을 다시 확인한다.
 이 기능은 선택한 개별 Container에 같은 작업을 적용한다. Compose 프로젝트의
 의존성 순서, health 대기, 전체 작업의 원자적 성공이나 원상 복구는 보장하지 않는다.
 
-### 8.9 최근 로그
+### 8.9 실시간 로그와 최근 로그
 
-v0.1은 실시간 Follow가 아니라 최근 로그 snapshot만 제공한다. Docker CLI에는 최대
-300줄을 요청하되, 표시와 Copy 대상은 byte 상한 적용 후 남은 마지막 2 MiB다.
+macOS 알파는 실행 중·일시정지·재시작 중인 Container를 선택하면 최근 300줄과
+이후 출력을 하나의 Follow 호출로 받는다. 중지된 Container에는 기존 최근 로그
+snapshot을 사용한다. 최신 본문과 일시정지한 표시 내용은 각각 최대 2 MiB다.
 
 ```text
 docker --host <pinned-local-endpoint>
        container logs
+       --follow
        --tail 300
        --timestamps
        <full-id>
 ```
 
-로그 규칙:
+위 명령의 `--follow`는 실시간 대상에만 사용한다. 로그 규칙:
 
 - stdout과 stderr를 동시에 소비한다.
-- UI 표시 buffer는 최대 2 MiB로 제한한다.
+- 네이티브 대기 buffer, 최신 UI 본문, 일시정지한 표시 내용은 각각 최대 2 MiB다.
 - 한도를 넘으면 앞부분을 버리고 truncation 상태를 표시한다.
-- exit code가 0이면 stdout과 stderr를 모두 Container 로그 콘텐츠로 취급한다.
-- exit code가 0이 아닐 때 stderr를 Docker CLI 진단으로 분류한다.
+- Follow는 stdout과 stderr를 모두 로그로 수신하고, stderr 출력 자체를 오류로 판단하지 않는다.
+- 종료 오류 뒤에도 이미 받은 본문은 유지하며 오류 상태를 별도로 표시한다.
 - 잘못된 UTF-8 byte는 replacement character로 대체한다.
 - ANSI escape와 위험한 control character를 제거하고 plain text node로만 렌더링한다.
 - 로그 표시에는 HTML 실행 경로를 사용하지 않는다.
 - 로그를 디스크에 자동 저장하지 않는다.
-- Clear는 UI buffer만 지우며 Container 로그를 삭제하지 않는다.
-- Copy는 화면에 남은 마지막 2 MiB만 복사하며 truncation 안내를 함께 유지한다.
+- 화면 일시정지와 검색 중에도 수신은 계속하며 표시 내용만 고정한다.
+- Clear는 buffer를 비우고 수신을 종료한다. 다시 조회하거나 대상을 바꾸기 전까지
+  빈 상태를 유지하며 Engine에 저장된 Container 로그는 삭제하지 않는다.
+- Copy는 현재 화면에 표시한 최대 2 MiB만 복사하며 truncation 안내를 함께 유지한다.
 - logging driver가 로그 읽기를 지원하지 않는 경우 정상적인 비지원 상태로 표시한다.
 - Container 로그에는 민감정보가 포함될 수 있음을 사용자에게 알린다.
 
@@ -825,29 +830,33 @@ Docker 버전별 stderr 문자열에 강하게 의존하는 세밀한 오류 분
 ### 9.1 Main Window
 
 macOS 알파는 React 패널의 검색·필터를 유지하고 시스템·라이트·다크 테마와 한국어·영어를 제공한다.
-기본 창 1280×800, 최소 1024×680에서 왼쪽 Container 목록과 오른쪽 상세·로그를
-배치한다. 아래는 정보 구성 참고이며 하단 상세 배치를 강제하지 않는다.
+기본 창 1280×800, 최소 1024×680에서 프로젝트별 Container 표를 위쪽에,
+선택한 Container의 상세·로그를 아래쪽에 배치한다. 표의 열은 이름·상태·CPU·메모리·포트다.
+이미지·전체 ID·프로젝트/서비스·메모리 한도·관측 시각은 상세의 정보 펼치기에 둔다.
+헬스 이상, 오래된 정보, 조작 차단 사유는 기본 화면에서도 확인할 수 있다.
+
+목록과 상세 사이 구분선을 드래그하거나 ↑↓ 키로 아래 영역 높이를 조절한다.
+Home/End는 현재 창에서 허용되는 최소/최대 높이, 두 번 클릭은 기본 높이(300px)로
+복원한다. 높이는 현재 앱 세션에서 유지하며, 테마·언어 변경이나 높이 조절로
+로그 수신·검색·일시정지·선택을 초기화하지 않는다. 작은 별도 창과 최상위 고정은 후속이다.
 
 ```text
-┌───────────────────────────────────────────────────────────────────┐
-│ Docker2U                 Colima/Moby ● Connected                  │
-│ Context: colima          Local Unix Socket        [Diagnostics]  │
-├───────────────────────────────────────────────────────────────────┤
-│ Containers                                   Updated 14:03 [Refresh]│
-│                                                                   │
-│ [ ] Select visible     Selected: 0                               │
-│     NAME       STATE       HEALTH      IMAGE          PORTS       │
-│ [ ] backend    Running     Healthy     company-api    8080:8080   │
-│ [ ] redis      Running     —           redis:7        6379:6379   │
-│ [ ] oracle     Stopped     —           oracle:19c     —           │
-│                                                                   │
-├───────────────────────────────────────────────────────────────────┤
-│ Selected: backend                                                 │
-│ Image: company-api                                                │
-│ ID: a1b2c3d4e5f6                            [Copy full ID]        │
-│                                                                   │
-│ [Start] [Stop] [Restart] [Recent Logs]                            │
-└───────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ Docker2U        Context ● 연결됨  [다시 연결]  [진단] [설정]       │
+├──────────────────────────────────────────────────────────────────┤
+│ 컨테이너 · 개수                                      최근 갱신   │
+│ [검색] [프로젝트] [전체 · 실행 중 · 중지 · 확인 필요] [새로고침]   │
+│ [ ] 보이는 컨테이너 전체 선택                                    │
+│     이름             상태          CPU        메모리       포트  │
+│ 프로젝트 이름 · 개수                                             │
+│ [ ] backend          실행 중      0.20%       128MiB         8080 │
+│ [ ] redis            중지            —            —            — │
+├────────────────────────── 높이 조절 ──────────────────────────────┤
+│ backend · 실행 중                            [컨테이너 정보 펼침]│
+│ [시작] [중지] [재시작]                                            │
+│ 최근 로그          [일시정지] [조회] [검색] [확대] [복사] [비우기]│
+│ 실시간 출력 …                                                    │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ### 9.2 UI 원칙
@@ -903,6 +912,8 @@ macOS 알파는 React 패널의 검색·필터를 유지하고 시스템·라이
   컨테이너 변경·선택 해제·로그 비우기는 검색 상태와 열림 상태를 초기화한다. 복사는 원문 전체다.
 - 로그 응답을 수락한 프런트엔드 시각을 목록 갱신 시각과 구분한다. IPC 타입은 유지한다.
 - 조작·상태·안내·기술 상세 글자는 최소 12px다. 검색 강조색도 대비 검사에 포함한다.
+- 로그 도구막대의 복사·휴지통 아이콘으로 표시된 로그 복사와 화면 비우기를 직접
+  실행한다. 각 아이콘은 번역된 접근성 이름과 설명을 제공한다.
 - 확대 보기는 앱 내부 대화상자다. 조회·복사·비우기, Escape 닫기, 포커스와
   스크롤 복원을 지원하며 확대 자체는 추가 Docker 조회를 일으키지 않는다.
 - 설정은 테마 `system | light | dark`, 언어 `ko | en`만 저장한다. 기본값은 OS 테마와
@@ -1256,7 +1267,7 @@ generation, full ID에 귀속된다.
 
 One-shot command와 지속 스트림을 같은 abstraction으로 처리하지 않는다.
 
-v0.1:
+macOS 알파:
 
 ```text
 OneShotCommand
@@ -1266,9 +1277,10 @@ OneShotCommand
 - stop
 - restart
 - recent logs
+- current container stats
 ```
 
-향후:
+지속 스트림:
 
 ```text
 StreamingSession
@@ -1285,6 +1297,8 @@ StreamingSession
 | context / Engine 진단 | 10초 | stdout 8 MiB, stderr 256 KiB |
 | 목록 / inspect | 15초 | stdout 8 MiB, stderr 256 KiB |
 | 최근 로그 | 15초 | stdout·stderr 합계 2 MiB |
+| 실시간 Follow | 명시적 종료·세션 무효화까지, Engine 확인 완료 후 5초 간격 | 대기 buffer 2 MiB |
+| 현재 자원 사용량 | 최대 100개씩 명령당 10초, Engine 검증 이후 전체 15초 | stdout 8 MiB, stderr 256 KiB |
 | Start / Stop / Restart | 30초 | stdout 8 MiB, stderr 256 KiB |
 
 stdout과 stderr는 시작 즉시 별도 비동기 task로 drain한다. 구조화 출력과 일반
@@ -1860,19 +1874,21 @@ Container 복구
 
 ## 21. v0.1에서 제외할 기능
 
+선택 대상의 실시간 로그, Compose 프로젝트 구분, 현재 CPU·메모리 표시는 macOS 알파에 포함한다. Windows 구현과 검증으로 확대 해석하지 않는다.
+
 ### 명시적 제외
 
 - Container Terminal / Exec
-- Follow Logs
-- Auto Refresh
-- Docker Compose
+- 소형 모니터 창 및 최상위 고정
+- 목록 Auto Refresh
+- Docker Compose 실행·편집 (표준 project/service 라벨 표시는 포함)
 - Container Create / Run Wizard
 - Container Delete
 - Image Pull / Build / Delete
 - Volume 관리
 - Network 관리
 - Registry 관리
-- CPU / Memory / Network monitoring
+- 자원 통계 이력·알림·프로젝트 합산 및 Network monitoring (현재 CPU·메모리 표시는 포함)
 - File Explorer
 - Docker Runtime 설치·실행·업데이트
 - Docker Desktop 관리
@@ -1915,13 +1931,12 @@ Acceptance Criteria를 별도로 정의할 수 있음
 
 P1 후보:
 
-- Bounded Follow Logs
 - 로그 행 필터 (원문 내 문자열 탐색은 현재 알파에 포함)
 - 마지막 선택 Container 기억
 
 P2 후보:
 
-- Auto Refresh
+- 목록 Auto Refresh
 - 외부 Terminal 연동
 - Windows ARM64
 - Intel macOS

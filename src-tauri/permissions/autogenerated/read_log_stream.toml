@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-read-log-stream"
+description = "Enables the read_log_stream command without any pre-configured scope."
+commands.allow = ["read_log_stream"]
+
+[[permission]]
+identifier = "deny-read-log-stream"
+description = "Denies the read_log_stream command without any pre-configured scope."
+commands.deny = ["read_log_stream"]

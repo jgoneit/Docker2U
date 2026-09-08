@@ -1,10 +1,15 @@
+import { ResourceMetadata, ResourceUsage } from './ResourceUsage';
+import './summaryLayout.css';
+import type { ResourceSample } from './useContainerStats';
+import type { LiveLogStatus } from './useLiveLogs';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent, MouseEvent, RefObject } from 'react';
-import { AlertTriangle, Boxes, CheckCircle2, Copy, LoaderCircle, Play, RefreshCw, Square, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Copy, LoaderCircle, Play, RefreshCw, Square, X } from 'lucide-react';
 import type { Action, ConnectionTarget, Container, ContainerList, CoreError, Environment, MutationResult } from './api';
 import { diagnosticsText } from './api';
 import { displayErrorMessage, type FrontendErrorDescriptor } from './frontendErrors';
 import { LogPanel } from './LogPanel';
+import type { CopyFeedbackTone } from './CopyFeedback';
 import type { LogSnapshot } from './logSnapshot';
 import type { FrontendSession, SessionIssue } from './frontendSession';
 import { translate, useI18n } from './i18n';
@@ -107,7 +112,7 @@ export function ConfirmDialog({ confirmation, blocked = false, reconnectFocus, o
 function DiagnosticIssue({ issue }: { issue: SessionIssue }) {
   const t = useI18n(componentMessages);
   const { language } = usePreferences();
-  const stageKeys = { connect: 'stageConnect', list: 'stageList', logs: 'stageLogs', singleAction: 'stageSingleAction', bulkAction: 'stageBulkAction' } as const;
+  const stageKeys = { connect: 'stageConnect', list: 'stageList', logs: 'stageLogs', stats: 'stageStats', singleAction: 'stageSingleAction', bulkAction: 'stageBulkAction' } as const;
   const originKeys = { frontendError: 'originFrontendError', nativeError: 'originNativeError', exception: 'originException', nativeResult: 'originNativeResult' } as const;
   return <div className="diagnostic-issue">
     <h3>{t(issue.requiresReconnect ? 'reconnectCause' : 'latestIssue')}</h3>
@@ -142,25 +147,36 @@ export function Diagnostics({ environment, frontendSession, close, copy }: { env
     {(environment || frontendSession) && <><button onClick={() => void copy(diagnosticsText(environment, frontendSession), 'diagnostics')}><Copy size={14} aria-hidden="true" />{t('diagnosticsCopy')}</button><p className="muted small">{t('copyAllowlist')}</p></>}
   </section>;
 }
-export function ContainerSummary({ container, snapshot, copy, mutating, mutationBlocked, mutationAllowed }: {
-  container: Container; snapshot: ContainerList; copy: CopyText; mutating: boolean; mutationBlocked: boolean; mutationAllowed: boolean;
+export function ContainerSummary({ container, snapshot, copy, mutating, mutationBlocked, mutationAllowed, resourceSample }: {
+  container: Container; snapshot: ContainerList; copy: CopyText; mutating: boolean; mutationBlocked: boolean; mutationAllowed: boolean; resourceSample?: ResourceSample;
 }) {
   const t = useI18n(componentMessages);
   const { language } = usePreferences();
   return <div className="container-summary">
-    <div className="detail-title"><div className="container-icon"><Boxes size={25} aria-hidden="true" /></div><div><span className="eyebrow">{t('container')}</span><h3>{container.name}</h3><p>{container.image}</p></div></div>
-    <div className="status-grid"><div><span className="field-label">{t('state')}</span><State value={container.state} /></div><div><span className="field-label">{t('health')}</span><Health value={container.health} /></div><div><span className="field-label">{t('updated')}</span><span className="updated-time">{formatTime(snapshot.refreshedAt, language)}{snapshot.stale && <span className="stale-tag">{t('stale')}</span>}</span></div></div>
-    <dl className="container-facts"><div><dt>{t('containerId')}</dt><dd><code title={container.fullId}>{container.shortId}</code><button className="icon-button" aria-label={t('copyFullId')} onClick={() => void copy(container.fullId, 'fullId')}><Copy size={13} aria-hidden="true" /></button></dd></div><div><dt>{t('ports')}</dt><dd>{container.ports.length ? container.ports.join(' · ') : t('noPorts')}</dd></div></dl>
+    <div className="summary-overview"><div className="summary-identity"><h3 title={container.name}>{container.name}</h3><div className="summary-status"><State value={container.state} />{container.health && container.health !== 'none' && <span role="group" aria-label={t('health')} title={t('health')}><Health value={container.health} /></span>}{snapshot.stale && <span className="stale-tag">{t('stale')}</span>}{resourceSample?.stale && <span className="resource-stale" role="status">{t('resourceStale')}</span>}</div></div></div>
+    <details className="summary-information"><summary>{t('containerInfo')}</summary>
+      <ResourceUsage sample={resourceSample} />
+      <dl className="summary-facts">
+        <div><dt>{t('image')}</dt><dd>{container.image}</dd></div>
+        <div><dt>{t('containerId')}</dt><dd><code>{container.fullId}</code><button className="icon-button" aria-label={t('copyFullId')} onClick={() => void copy(container.fullId, 'fullId')}><Copy size={13} aria-hidden="true" /></button></dd></div>
+        <div><dt>{t('ports')}</dt><dd>{container.ports.length ? container.ports.join(' · ') : t('noPorts')}</dd></div>
+        <div><dt>{t('project')}</dt><dd>{container.composeProject || t('noProject')}</dd></div>
+        <div><dt>{t('service')}</dt><dd>{container.composeService || '—'}</dd></div>
+        {(!container.health || container.health === 'none') && <div><dt>{t('health')}</dt><dd><Health value={container.health} /></dd></div>}
+        <div><dt>{t('updated')}</dt><dd><time dateTime={snapshot.refreshedAt}>{formatTime(snapshot.refreshedAt, language)}</time></dd></div>
+      </dl>
+      <ResourceMetadata sample={resourceSample} />
+    </details>
     {mutating && <p className="operation-notice" role="status"><LoaderCircle size={16} className="spin" aria-hidden="true" />{t('operating')}</p>}
     {mutationBlocked && mutationAllowed && <div className="operation-warning" role="alert">{t('blocked')}</div>}
     {snapshot.stale && <p className="operation-warning">{t('staleActions')}</p>}
   </div>;
 }
-export function ContainerDetail({ container, snapshot, logs, logsError, loadingLogs, logRequestPending = false, refreshing, mutating, mutationBlocked, mutationAllowed, loadLogs, clearLogs, requestAction, copy, copyFeedback, logsExpanded, onLogsExpandedChange }: {
+export function ContainerDetail({ container, snapshot, logs, logsError, loadingLogs, logRequestPending = false, refreshing, mutating, mutationBlocked, mutationAllowed, loadLogs, clearLogs, requestAction, copy, copyFeedback, copyFeedbackTone, copyFeedbackId, copyFeedbackHighlighted, copyFeedbackHighlightUntil, logsExpanded, onLogsExpandedChange, liveStatus }: {
   container: Container; snapshot: ContainerList; logs: LogSnapshot | null; logsError: CoreError | null;
   loadingLogs: boolean; logRequestPending?: boolean; refreshing: boolean; mutating: boolean; mutationBlocked: boolean; mutationAllowed: boolean;
   loadLogs: () => void; clearLogs: () => void; requestAction: (action: Action, returnFocus?: HTMLElement) => void; copy: CopyText;
-  copyFeedback?: string; logsExpanded?: boolean; onLogsExpandedChange?: (expanded: boolean) => void;
+  liveStatus?: LiveLogStatus; copyFeedback?: string; copyFeedbackTone?: CopyFeedbackTone; copyFeedbackId?: number; copyFeedbackHighlighted?: boolean; copyFeedbackHighlightUntil?: number; logsExpanded?: boolean; onLogsExpandedChange?: (expanded: boolean) => void;
 }) {
   const t = useI18n(componentMessages);
   const [localExpanded, setLocalExpanded] = useState(false);
@@ -173,8 +189,8 @@ export function ContainerDetail({ container, snapshot, logs, logsError, loadingL
     requestAction(action, event.currentTarget);
   }
   return <div className="container-detail">
-    <section className="recovery-panel" aria-labelledby="recovery-title"><div><h3 id="recovery-title">{t('recovery')}</h3><p>{t('recoveryHint')}</p></div><div className="recovery-actions"><button className="action-button action-start" disabled={actionsDisabled || !['created', 'exited'].includes(container.state)} onClick={() => requestAction('start')}><Play size={14} aria-hidden="true" />{t('start')}</button><button className="action-button action-stop" disabled={actionsDisabled || container.state !== 'running'} onClick={event => requestConfirmation(event, 'stop')}><Square size={13} aria-hidden="true" />{t('stop')}</button><button className="action-button action-restart" disabled={actionsDisabled || container.state !== 'running'} onClick={event => requestConfirmation(event, 'restart')}><RefreshCw size={14} aria-hidden="true" />{t('restart')}</button></div></section>
-    <LogPanel container={container} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} loadLogs={loadLogs} clearLogs={clearLogs} copy={copy} copyFeedback={copyFeedback} expanded={expanded} onExpandedChange={setExpanded} />
+    <section className="recovery-panel" aria-labelledby="recovery-title"><h3 id="recovery-title">{t('recovery')}</h3><div className="recovery-actions"><button className="action-button action-start" disabled={actionsDisabled || !['created', 'exited'].includes(container.state)} onClick={() => requestAction('start')}><Play size={14} aria-hidden="true" />{t('start')}</button><button className="action-button action-stop" disabled={actionsDisabled || container.state !== 'running'} onClick={event => requestConfirmation(event, 'stop')}><Square size={13} aria-hidden="true" />{t('stop')}</button><button className="action-button action-restart" disabled={actionsDisabled || container.state !== 'running'} onClick={event => requestConfirmation(event, 'restart')}><RefreshCw size={14} aria-hidden="true" />{t('restart')}</button></div></section>
+    <LogPanel liveStatus={liveStatus} container={container} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} loadLogs={loadLogs} clearLogs={clearLogs} copy={copy} copyFeedback={copyFeedback} copyFeedbackTone={copyFeedbackTone} copyFeedbackId={copyFeedbackId} copyFeedbackHighlighted={copyFeedbackHighlighted} copyFeedbackHighlightUntil={copyFeedbackHighlightUntil} expanded={expanded} onExpandedChange={setExpanded} />
   </div>;
 }
 

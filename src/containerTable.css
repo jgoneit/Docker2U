@@ -1,0 +1,37 @@
+.container-table-scroll { flex: 1 1 0; min-height: 0; min-width: 0; overflow: auto; }
+.container-table { width: 100%; min-width: 650px; table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: 13px; line-height: 1.35; }
+.container-table-check-column { width: 40px; }
+.container-table-name-column { width: 32%; }
+.container-table-state-column { width: 20%; }
+.container-table-cpu-column { width: 10%; }
+.container-table-memory-column { width: 16%; }
+.container-table thead th { position: sticky; top: 0; z-index: 1; padding: 7px 10px; border-bottom: 1px solid var(--border-subtle); background: var(--inset); color: var(--text-muted); font-size: 12px; font-weight: 500; text-align: left; }
+.container-table td { height: 40px; padding: 4px 10px; vertical-align: middle; }
+.container-table .container-list-item { position: static; padding: 0; }
+.container-table .container-list-item:hover { background: var(--hover); }
+.container-table .container-list-item[data-selected="true"] { background: var(--selected); }
+.container-table .container-list-item[data-selected="true"]:hover { background: var(--selected-hover); }
+.container-table .container-list-item[data-selected="true"] > td:first-child { box-shadow: inset 3px 0 0 var(--focus); }
+.container-table .container-table-check { padding-left: 15px; padding-right: 0; }
+.container-table .container-checkbox { position: static; display: block; margin: 0; }
+.container-table .container-row { display: block; width: 100%; min-width: 0; min-height: 26px; margin: 0; padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 0; border-radius: 0; background: transparent; font: inherit; text-align: left; }
+.container-table .container-row[aria-current="true"], .container-table .container-row:hover:not(:disabled), .container-table .container-row[aria-current="true"]:hover { background: transparent; }
+.container-table .container-row[aria-current="true"] { color: var(--link); font-weight: 600; }
+.container-table .container-row:focus-visible { outline-offset: 2px; }
+.container-table .container-table-state .state { padding: 1px 6px; line-height: 14px; white-space: nowrap; }
+.container-table-health { display: block; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.container-table-health .health { padding: 0 4px; font-size: inherit; line-height: 14px; }
+.container-table .container-table-number { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.container-table .container-memory-value, .container-table-ports > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.container-table-ports { color: var(--text-muted); font-size: 12px; }
+.container-table .resource-stale { display: block; color: var(--warning); font-size: 12px; line-height: 1.25; }
+.container-table .container-project-header { display: table-row; padding: 0; background: transparent; border: 0; }
+.container-table .container-project-header td { height: 28px; padding: 6px 15px 3px; }
+.container-table .container-project-header td > div { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.container-table .container-project-header h3 { min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 12px; font-weight: 600; }
+.container-table .container-project-count { flex-shrink: 0; min-width: 22px; padding: 0 5px; border: 1px solid var(--border-subtle); border-radius: 5px; color: var(--text-muted); background: var(--raised); font-size: 12px; line-height: 16px; text-align: center; font-variant-numeric: tabular-nums; }
+@media (pointer: coarse) {
+  .container-table td { height: 44px; }
+  .container-table .container-row { min-height: 36px; }
+  .container-table .container-checkbox { width: 20px; height: 20px; }
+}

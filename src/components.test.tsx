@@ -7,16 +7,77 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Container, ContainerList } from './api';
 import { ConfirmDialog, ContainerDetail, ContainerSummary, OperationResult } from './components';
 import type { Confirmation } from './components';
+import type { ResourceSample } from './useContainerStats';
 
 function render(ui: ReactNode) { return renderUI(<PreferencesProvider initialPreferences={{ theme: 'dark', language: 'ko' }}>{ui}</PreferencesProvider>); }
 
 const container: Container = {
   handle: 'handle-1', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'backend',
-  image: 'company-api:1', state: 'running', health: 'healthy', ports: [], createdAt: '2026-09-05T03:00:00Z',
+  image: 'company-api:1', state: 'running', health: 'healthy', ports: [], composeProject: null, composeService: null, createdAt: '2026-09-05T03:00:00Z',
 };
 const snapshot: ContainerList = {
   sessionId: 'session-1', generation: 1, containers: [container], refreshedAt: '2026-09-05T04:20:00Z', stale: false,
 };
+const resourceSample: ResourceSample = { handle: container.handle, fullId: container.fullId, available: true,
+  cpuPercent: 125.5, memoryUsage: '64MiB / 2GiB', memoryPercent: 3.125, sampledAt: '2026-09-05T04:20:05Z', stale: false };
+
+describe('compact container summary', () => {
+  it.each(['ko', 'en'] as const)('keeps status visible and resource values inside one information disclosure in %s', async language => {
+    const user = userEvent.setup();
+    const copy = vi.fn(async () => {});
+    renderUI(<PreferencesProvider initialPreferences={{ theme: 'light', language }}><ContainerSummary container={{ ...container, composeProject: 'orders', composeService: 'api' }} snapshot={snapshot}
+      copy={copy} mutating={false} mutationBlocked={false} mutationAllowed resourceSample={resourceSample} /></PreferencesProvider>);
+    expect(screen.getByRole('heading', { name: 'backend' })).toBeVisible();
+    expect(screen.getByText(language === 'ko' ? '실행 중' : 'Running')).toBeVisible();
+    expect(screen.getByText(language === 'ko' ? '정상' : 'Healthy')).toBeVisible();
+    expect(screen.getByText('125.50%')).not.toBeVisible();
+    expect(screen.getByText('64MiB / 2GiB')).not.toBeVisible();
+    const disclosure = document.querySelector('.container-summary details')!;
+    expect(document.querySelectorAll('.container-summary details')).toHaveLength(1);
+    expect(disclosure).not.toHaveAttribute('open');
+    for (const text of [container.image, container.fullId, 'orders', 'api']) expect(screen.getByText(text)).not.toBeVisible();
+    expect(screen.getByText(/Docker Engine/)).not.toBeVisible();
+    expect(screen.getByText(language === 'ko' ? '목록 갱신 시각' : 'List refreshed at')).not.toBeVisible();
+    expect(screen.getByText(language === 'ko' ? /관측 시각/ : /Observed at/)).not.toBeVisible();
+    await user.click(screen.getByText(language === 'ko' ? '컨테이너 정보' : 'Container information'));
+    expect(disclosure).toHaveAttribute('open');
+    expect(screen.getByText('125.50%')).toBeVisible();
+    expect(screen.getByText('64MiB / 2GiB')).toBeVisible();
+    for (const text of [container.image, container.fullId, 'orders', 'api']) expect(screen.getByText(text)).toBeVisible();
+    expect(screen.getByText(/Docker Engine/)).toBeVisible();
+    await user.click(screen.getByRole('button', { name: language === 'ko' ? '전체 ID 복사' : 'Copy full ID' }));
+    expect(copy).toHaveBeenCalledExactlyOnceWith(container.fullId, 'fullId');
+  });
+  it('keeps stale resources, unhealthy status and blocked-operation warnings outside closed metadata', () => {
+    render(<ContainerSummary container={{ ...container, health: 'unhealthy' }} snapshot={{ ...snapshot, stale: true }}
+      copy={async () => {}} mutating mutationBlocked mutationAllowed resourceSample={{ ...resourceSample, stale: true }} />);
+    const disclosure = document.querySelector('.container-summary details')!;
+    expect(disclosure).not.toHaveAttribute('open');
+    for (const text of ['비정상', '이전 정보', '자원 이전 값', '작업 실행 및 상태 재조회 중입니다.', '추가 복구 작업이 차단되었습니다. 재연결로 환경을 다시 검증하세요.', '최신 상태를 확인할 수 없어 복구 작업을 잠시 사용할 수 없습니다. 새로고침을 실행하세요.']) {
+      const warning = screen.getByText(text); expect(warning).toBeVisible(); expect(disclosure).not.toContainElement(warning);
+    }
+  });
+  it('puts absent healthcheck information in metadata without hiding real state', () => {
+    render(<ContainerSummary container={{ ...container, health: null }} snapshot={snapshot} copy={async () => {}} mutating={false} mutationBlocked={false} mutationAllowed />);
+    expect(screen.getByText('실행 중')).toBeVisible();
+    expect(screen.getByText('상태 검사 없음')).not.toBeVisible();
+    expect(screen.getByText('수집된 값 없음')).not.toBeVisible();
+  });
+  it('keeps metadata open across refreshed handles and updated resource samples', async () => {
+    const user = userEvent.setup();
+    function SummaryHarness() {
+      const [generation, setGeneration] = useState(1);
+      return <><button onClick={() => setGeneration(2)}>Refresh sample</button><ContainerSummary container={{ ...container, handle: `handle-${generation}` }} snapshot={{ ...snapshot, generation }}
+        copy={async () => {}} mutating={false} mutationBlocked={false} mutationAllowed resourceSample={{ ...resourceSample, cpuPercent: generation === 1 ? 125.5 : 0 }} /></>;
+    }
+    render(<SummaryHarness />);
+    await user.click(screen.getByText('컨테이너 정보'));
+    await user.click(screen.getByRole('button', { name: 'Refresh sample' }));
+    expect(document.querySelector('.summary-information')).toHaveAttribute('open');
+    expect(screen.getByText(container.fullId)).toBeVisible();
+    expect(screen.getByText('0.00%')).toBeVisible();
+  });
+});
 
 function ConfirmationHarness({ simulateInertFocusLoss = false, closeOnConfirm = false }: { simulateInertFocusLoss?: boolean; closeOnConfirm?: boolean }) {
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);

@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
@@ -100,13 +101,80 @@ class FixtureIsolationTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(expected, result.stdout)
 
+    def test_compose_metadata_matches_current_native_inspect_contract(self):
+        source = (REPO / "src-tauri/src/docker.rs").read_text()
+        current_format = source.split('const INSPECT_FORMAT: &str = r#"', 1)[1].split('"#;', 1)[0]
+        self.assertEqual(docker.INSPECT_FORMAT, current_format)
+        result = self.cli(self.host + ["container", "inspect", "--format", current_format, *docker.IDS])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual([row["ComposeProject"] for row in rows], ["native-smoke-project", "native-smoke-project", None])
+        self.assertEqual([row["ComposeService"] for row in rows], ["api", "redis", None])
+
+    def test_stats_samples_only_explicit_full_ids_in_one_batch(self):
+        targets = [docker.IDS[1], docker.IDS[0]]
+        result = self.cli(self.host + ["container", "stats", "--no-stream", "--no-trunc", "--format", "{{json .}}", *targets])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual([row["ID"] for row in rows], targets)
+        self.assertEqual(rows[1]["CPUPerc"], "125.50%")
+        self.assertEqual(rows[1]["MemUsage"], "64MiB / 2GiB")
+        self.assertEqual(rows[1]["MemPerc"], "3.125%")
+        event = next(row for row in fixture.read_trace(self.root) if row["phase"] == "stats-payload")
+        self.assertEqual(event["fullIds"], targets)
+        self.assertEqual(event["count"], 2)
+
+    def test_follow_remains_open_and_only_emits_ticks_when_owned_gate_is_enabled(self):
+        arguments = self.host + ["container", "logs", "--follow", "--tail", "300", "--timestamps", docker.IDS[0]]
+        stdout_path, stderr_path = self.root / "follow.stdout", self.root / "follow.stderr"
+        with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
+            process = subprocess.Popen([sys.executable, str(self.root / "docker"), *arguments], env=self.environment, stdout=stdout, stderr=stderr, start_new_session=True)
+            try:
+                def wait_for(check):
+                    deadline = time.monotonic() + 5
+                    while not check():
+                        self.assertIsNone(process.poll(), "follow exited before cancellation")
+                        self.assertLess(time.monotonic(), deadline, "follow fixture did not produce expected evidence")
+                        time.sleep(0.02)
+
+                wait_for(lambda: any(row["phase"] == "follow-ready" for row in fixture.read_trace(self.root)))
+                self.assertEqual(stdout_path.read_bytes(), docker.dense_logs(identity()))
+                self.assertFalse(any(row["phase"] == "follow-output" for row in fixture.read_trace(self.root)))
+                gate = self.root / "follow-live"
+                gate.write_text("enabled")
+                wait_for(lambda: any(row["phase"] == "follow-output" and row["sequence"] >= 2 for row in fixture.read_trace(self.root)))
+                gate.unlink()
+                time.sleep(0.1)
+                before = len([row for row in fixture.read_trace(self.root) if row["phase"] == "follow-output"])
+                time.sleep(0.35)
+                self.assertEqual(len([row for row in fixture.read_trace(self.root) if row["phase"] == "follow-output"]), before)
+                self.assertIsNone(process.poll())
+                process.terminate()
+                self.assertEqual(process.wait(timeout=3), 0)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=3)
+        self.assertIn(b"NATIVE_SMOKE_LIVE_STDOUT 2", stdout_path.read_bytes())
+        self.assertIn(b"NATIVE_SMOKE_LIVE_STDERR 2", stderr_path.read_bytes())
+        self.assertIn("한글".encode(), stderr_path.read_bytes())
+        events = fixture.read_trace(self.root)
+        self.assertEqual(events[-2]["phase"], "follow-stopped")
+        self.assertEqual(events[-1]["phase"], "end")
+        self.assertEqual(events[-1]["exitCode"], 0)
+
     def test_mutations_foreign_hosts_and_unknown_containers_are_rejected(self):
         cases = [self.host + ["container", action, format(1, "064x")] for action in ["start", "stop", "restart", "rm"]]
         cases += [["--host", "unix:///real.sock", "info", "--format", "{{json .}}"],
                   ["info", "--format", "{{json .}}"],
                   self.host + ["container", "logs", "--tail", "300", "--timestamps", "$(touch forbidden)"],
                   self.host + ["container", "inspect", "--format", "foreign-format", format(1, "064x")],
-                  self.host + ["container", "inspect", "--format", docker.INSPECT_FORMAT, format(3, "064x")]]
+                  self.host + ["container", "inspect", "--format", docker.INSPECT_FORMAT, format(4, "064x")],
+                  self.host + ["container", "stats", "--no-stream", "--no-trunc", "--format", "{{json .}}"],
+                  self.host + ["container", "stats", "--no-stream", "--no-trunc", "--format", "{{json .}}", docker.IDS[0], docker.IDS[0]],
+                  self.host + ["container", "stats", "--no-stream", "--no-trunc", "--format", "{{json .}}", format(4, "064x")],
+                  self.host + ["container", "logs", "--follow", "--tail", "all", "--timestamps", docker.IDS[0]],
+                  self.host + ["container", "logs", "--follow", "--tail", "300", "--timestamps", "$(touch forbidden)"]]
         for arguments in cases:
             with self.subTest(arguments=arguments):
                 result = self.cli(arguments)
@@ -224,6 +292,102 @@ class EvidenceValidationTests(unittest.TestCase):
         for rows in [[], events + [{"phase": "socket-on", "pid": 40, "timeMs": 1400}]]:
             with self.assertRaisesRegex(ValueError, "socket was not removed"):
                 fixture.validate_ui(identity(), report, rows, now_ms=5000)
+
+
+class InsightEvidenceTests(unittest.TestCase):
+    full_id = format(1, "064x")
+
+    def report(self, probe, rows):
+        return {**clear_report(), "steps": [step("started " + probe, 1100), *rows, step("passed " + probe, 2200)]}
+
+    def command(self, words, timestamp=1300, pid=42):
+        return [{"phase": "start", "timeMs": timestamp, "pid": pid, "args": ["--host", "unix:///owned.sock", *words]},
+                {"phase": "end", "timeMs": timestamp + 10, "pid": pid, "exitCode": 0}]
+
+    def ready(self):
+        return {"phase": "follow-ready", "timeMs": 1050, "pid": 41, "fullId": self.full_id}
+
+    def detail(self, **values):
+        return {"fullId": self.full_id, "streamId": "stream-1", **values}
+
+    def test_project_stats_requires_exact_ui_sample_successful_inspect_and_matching_native_batch(self):
+        report = self.report("project-stats", [step("Compose grouping and real stats visible", 1500, {"projectRows": 2, "cpuPercent": 125.5, "memory": "64MiB / 2GiB"}), step("standalone project filter verified", 1600, {"standaloneRows": 1})])
+        ids = [format(number, "064x") for number in [1, 2]]
+        events = self.command(["container", "inspect"], 1050) + self.command(["container", "stats", "--no-stream", "--no-trunc", "--format", "{{json .}}", *ids], 1300, 43)
+        events.append({"phase": "stats-payload", "timeMs": 1305, "pid": 43, "count": 2, "fullIds": ids})
+        self.assertTrue(fixture.validate_ui(identity(), report, events, now_ms=5000)["accepted"])
+        for fault in ["no-inspect", "no-batch", "wrong-ids", "wrong-ui", "no-command"]:
+            ui, trace = copy.deepcopy(report), copy.deepcopy(events)
+            if fault == "no-inspect": trace = trace[2:]
+            elif fault == "no-batch": trace.pop()
+            elif fault == "wrong-ids": trace[-1]["fullIds"] = [ids[0]]
+            elif fault == "wrong-ui": ui["steps"][1]["detail"]["cpuPercent"] = 0
+            else: trace = [row for row in trace if not (row["phase"] == "start" and row["pid"] == 43)]
+            with self.subTest(fault=fault), self.assertRaises(ValueError): fixture.validate_ui(identity(), ui, trace, now_ms=5000)
+
+    def test_live_display_requires_output_from_the_same_native_process_during_each_frozen_interval(self):
+        report = self.report("live-display", [step("paused live display", 1200, self.detail(beforeTick=1)),
+            step("paused display while real stdout and stderr arrived", 1400, self.detail(beforeTick=1, afterTick=4, newFrames=3)),
+            step("resume caught up with ring loss notice", 1450), step("search display frozen", 1500, self.detail(beforeTick=4)),
+            step("search froze and resumed without restarting the stream", 1700, self.detail(afterTick=7, maximumActiveReads=1))])
+        events = [self.ready(), {"phase": "follow-output", "timeMs": 1300, "pid": 41, "fullId": self.full_id, "sequence": 4}, {"phase": "follow-output", "timeMs": 1600, "pid": 41, "fullId": self.full_id, "sequence": 7}]
+        self.assertTrue(fixture.validate_ui(identity(), report, events, now_ms=5000)["accepted"])
+        for fault in ["missing-output", "foreign-pid", "outside-pause", "read-overlap", "restarted", "terminated-before-probe"]:
+            ui, trace = copy.deepcopy(report), copy.deepcopy(events)
+            if fault == "missing-output": trace.pop()
+            elif fault == "foreign-pid": trace[1]["pid"] = 99
+            elif fault == "outside-pause": trace[1]["timeMs"] = 1150
+            elif fault == "read-overlap": ui["steps"][-2]["detail"]["maximumActiveReads"] = 2
+            elif fault == "restarted": trace.append({**self.ready(), "timeMs": 1800, "pid": 99})
+            else: trace.append({"phase": "follow-stopped", "timeMs": 1090, "pid": 41})
+            with self.subTest(fault=fault), self.assertRaises(ValueError): fixture.validate_ui(identity(), ui, trace, now_ms=5000)
+
+    def test_pinned_refresh_requires_native_inventory_without_another_follow(self):
+        report = self.report("pinned-refresh", [step("requested inventory refresh with live stream", 1200, self.detail(starts=1)), step("inventory refreshed with the same live stream", 1500, self.detail(starts=1))])
+        events = [self.ready(), *self.command(["container", "ls"])]
+        self.assertTrue(fixture.validate_ui(identity(), report, events, now_ms=5000)["accepted"])
+        for trace in [[self.ready()], events + [{**self.ready(), "timeMs": 1400, "pid": 99}]]:
+            with self.assertRaises(ValueError): fixture.validate_ui(identity(), report, trace, now_ms=5000)
+
+    def test_pane_resize_requires_real_geometry_restore_and_native_output_without_replacement(self):
+        before = self.detail(height=260, min=220, max=430, detailHeight=260, listHeight=300, beforeTick=1, readCount=2)
+        resized = self.detail(height=280, min=220, max=430, detailHeight=280, listHeight=280, key="ArrowUp", afterTick=4, newReads=3, preservedView=True)
+        after = self.detail(height=260, min=220, max=430, detailHeight=260, listHeight=300, preservedView=True, maximumActiveReads=1)
+        report = self.report("pane-resize", [step("captured live pane before keyboard resize", 1200, before), step("resized live pane with keyboard while receiving", 1600, resized), step("restored live pane without replacing the stream", 1800, after)])
+        events = [self.ready(), {"phase": "follow-output", "timeMs": 1500, "pid": 41, "fullId": self.full_id, "sequence": 4}]
+        self.assertTrue(fixture.validate_ui(identity(), report, events, now_ms=5000)["accepted"])
+        for fault in ["missing-step", "no-output", "foreign-pid", "late-output", "unmoved-geometry", "out-of-bounds", "not-restored", "view-reset", "read-overlap", "replaced"]:
+            ui, trace = copy.deepcopy(report), copy.deepcopy(events)
+            if fault == "missing-step": ui["steps"].pop(2)
+            elif fault == "no-output": trace.pop()
+            elif fault == "foreign-pid": trace[-1]["pid"] = 99
+            elif fault == "late-output": trace[-1]["timeMs"] = 1700
+            elif fault == "unmoved-geometry": ui["steps"][2]["detail"]["detailHeight"] = 260
+            elif fault == "out-of-bounds": ui["steps"][2]["detail"]["max"] = 270
+            elif fault == "not-restored": ui["steps"][3]["detail"]["height"] = 280
+            elif fault == "view-reset": ui["steps"][2]["detail"]["preservedView"] = False
+            elif fault == "read-overlap": ui["steps"][3]["detail"]["maximumActiveReads"] = 2
+            else: trace.append({**self.ready(), "timeMs": 1700, "pid": 99})
+            with self.subTest(fault=fault), self.assertRaises(ValueError): fixture.validate_ui(identity(), ui, trace, now_ms=5000)
+
+    def test_clear_requires_native_stop_and_reap_then_refresh_without_restart(self):
+        report = self.report("clear-cancel", [step("requested live Clear", 1200, self.detail(starts=1)), step("Clear stopped polling and remained cleared after Refresh", 1700, self.detail(starts=1, stoppedStreams=1, readsAfterClear=3))])
+        events = [self.ready(), {"phase": "follow-stopped", "timeMs": 1300, "pid": 41, "fullId": self.full_id}, {"phase": "end", "timeMs": 1310, "pid": 41, "exitCode": 0}, *self.command(["container", "ls"], 1500)]
+        self.assertTrue(fixture.validate_ui(identity(), report, events, now_ms=5000)["accepted"])
+        for fault in ["no-stop", "no-reap", "no-refresh", "foreign-pid"]:
+            trace = copy.deepcopy(events)
+            if fault == "no-stop": trace.pop(1)
+            elif fault == "no-reap": trace.pop(2)
+            elif fault == "no-refresh": trace = trace[:3]
+            else: trace[1]["pid"] = 99
+            with self.subTest(fault=fault), self.assertRaises(ValueError): fixture.validate_ui(identity(), report, trace, now_ms=5000)
+
+    def test_recovery_requires_inventory_without_logs_then_fresh_follow_after_reconnect(self):
+        report = self.report("recovery", [step("requested warning-preserving Refresh", 1200), step("warning retained after successful Refresh without new logs", 1500), step("requested explicit Reconnect", 1600), step("explicit reconnect restored the valid session", 2000)])
+        events = [*self.command(["container", "ls"]), {**self.ready(), "timeMs": 1900}]
+        self.assertTrue(fixture.validate_ui(identity(), report, events, now_ms=5000)["accepted"])
+        for trace in [events[:-1], events + [{**self.ready(), "timeMs": 1400}]]:
+            with self.assertRaises(ValueError): fixture.validate_ui(identity(), report, trace, now_ms=5000)
 
 
 if __name__ == "__main__":

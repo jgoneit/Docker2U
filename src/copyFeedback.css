@@ -1,0 +1,12 @@
+.main-content > .app-footer { position: relative; isolation: isolate; flex: 0 0 44px; height: 44px; min-height: 44px; flex-wrap: nowrap; overflow: hidden; padding-block: 4px; }
+.app-footer > span { position: relative; z-index: 1; flex: none; }
+.copy-feedback-slot { display: flex; align-items: center; justify-content: flex-end; min-width: 0; }
+.clipboard-feedback { flex: 1 1 0; margin-left: auto; }
+.copy-feedback-text { position: relative; z-index: 1; display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 12px; line-height: 16px; font-weight: 400; }
+/* The overlay belongs to the bar, so feedback has no separate card boundary.
+   Its negative delay comes from the shared deadline when a surface mounts. */
+.copy-feedback-glow { position: absolute; z-index: 0; inset-block: 0; right: 0; width: min(72%, 680px); pointer-events: none; background: linear-gradient(to left, var(--feedback-glow), transparent); animation: statusbar-feedback-fade 2s linear both; }
+.copy-feedback-cleared .copy-feedback-glow, .copy-feedback-error .copy-feedback-glow { background: linear-gradient(to left, var(--feedback-danger-glow), transparent); }
+.logs-modal .copy-feedback-slot { position: relative; isolation: isolate; flex: 0 0 50px; height: 50px; overflow: hidden; padding: 8px 12px; border: 0; border-top: 1px solid var(--border-subtle); background: var(--surface); }
+@keyframes statusbar-feedback-fade { from { opacity: 1; } to { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .copy-feedback-glow { animation: none; } }

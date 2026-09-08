@@ -1,0 +1,25 @@
+.log-stream-status { padding: 0 5px; border-radius: 4px; color: var(--text-muted); background: var(--raised); font-weight: 500; }
+.log-stream-following { color: var(--success); background: var(--success-bg); }
+.log-stream-connecting { color: var(--link); background: var(--selected); }
+.log-stream-error { color: var(--danger); background: var(--danger-bg); }
+.log-error.log-stream-error { flex: none; height: auto; max-height: 35%; padding: 8px 12px; border-bottom: 1px solid var(--border-subtle); }
+.log-meta { flex-wrap: wrap; }
+
+.logs-panel .log-toolbar-heading { flex-wrap: wrap; gap: 6px 12px; padding: 6px 10px; border-bottom: 1px solid var(--border-subtle); background: var(--inset); }
+.log-toolbar-heading h3 { flex: none; }
+.log-toolbar-heading h3 > svg { color: var(--link); }
+.logs-panel .log-toolbar { min-width: 0; margin-left: auto; gap: 4px 8px; align-items: center; }
+.log-toolbar-group { display: flex; flex: 0 1 auto; align-items: center; flex-wrap: wrap; min-width: 0; gap: 2px; }
+.log-toolbar-group + .log-toolbar-group { border-left: 1px solid var(--border-subtle); padding-left: 7px; }
+.logs-panel .log-toolbar button { min-height: 28px; }
+.logs-panel .log-toolbar button[hidden] { display: none; }
+.logs-panel .log-toolbar .log-tool-icon { width: 28px; min-width: 28px; padding: 6px; }
+.logs-panel .log-toolbar .log-tool-quiet { color: var(--text-muted); background: transparent; border-color: transparent; }
+.logs-panel .log-toolbar .log-tool-quiet:hover:not(:disabled) { color: var(--text); background: var(--hover); }
+.logs-panel .log-toolbar .log-tool-quiet:disabled { color: var(--disabled-text); }
+.logs-panel .log-toolbar .log-pause-toggle { padding: 5px 9px; font-weight: 600; color: var(--link); background: var(--selected); }
+.logs-panel .log-toolbar .log-pause-toggle:hover { background: var(--selected-hover); }
+.logs-panel .log-toolbar .log-pause-toggle[aria-pressed="true"] { color: var(--on-action); background: var(--primary); }
+.logs-panel .log-toolbar .log-pause-toggle[aria-pressed="true"]:hover { background: var(--primary-hover); }
+.logs-panel .log-toolbar .log-search-toggle[aria-expanded="true"],
+.logs-panel .log-toolbar .log-latest-button { color: var(--link); background: var(--selected); }

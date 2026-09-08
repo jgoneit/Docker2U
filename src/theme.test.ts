@@ -3,6 +3,8 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const css = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8');
+const componentCss = ['containerTable.css', 'summaryLayout.css', 'liveLogs.css', 'copyFeedback.css', 'brandMark.css']
+  .map(file => readFileSync(resolve(process.cwd(), 'src', file), 'utf8')).join('\n');
 const blocks = css.match(/:root(?:, :root\[data-theme="light"\])?\s*\{[^}]+\}|:root\[data-theme="dark"\]\s*\{[^}]+\}/g)!;
 const palettes = blocks.slice(0, 2).map(block => Object.fromEntries([...block.matchAll(/--([\w-]+):\s*(#[\da-f]+);/g)].map(match => [match[1]!, match[2]!])));
 function luminance(hex: string) {
@@ -12,6 +14,10 @@ function luminance(hex: string) {
 function contrast(a: string, b: string) {
   const values = [luminance(a), luminance(b)].sort((left, right) => left - right);
   return (values[1]! + 0.05) / (values[0]! + 0.05);
+}
+function blend(foreground: string, background: string, alpha: number) {
+  return `#${[1, 3, 5].map(index => Math.round(parseInt(foreground.slice(index, index + 2), 16) * alpha
+    + parseInt(background.slice(index, index + 2), 16) * (1 - alpha)).toString(16).padStart(2, '0')).join('')}`;
 }
 
 describe.each(['light', 'dark'])('%s semantic palette', theme => {
@@ -34,17 +40,36 @@ describe.each(['light', 'dark'])('%s semantic palette', theme => {
     ];
     for (const [foreground, background] of pairs) expect(contrast(palette[foreground!]!, palette[background!]!), `${foreground} on ${background}`).toBeGreaterThanOrEqual(4.5);
   });
-  it('keeps identifying icons, borders and focus outlines at least 3:1', () => {
+  it('keeps identifying icons, input borders and keyboard focus outlines at least 3:1', () => {
     for (const foreground of ['border', 'focus', 'neutral']) {
       for (const background of normalSurfaces) expect(contrast(palette[foreground]!, palette[background]!), `${foreground} on ${background}`).toBeGreaterThanOrEqual(3);
+    }
+  });
+  it('keeps blue selections and status badges readable in their actual surfaces', () => {
+    const pairs = [
+      ['link', 'selected'], ['link', 'selected-hover'], ['on-action', 'primary'], ['on-action', 'primary-hover'],
+      ['text-muted', 'raised'], ['success', 'success-bg'], ['danger', 'danger-bg'], ['warning', 'warning-bg'],
+    ];
+    for (const [foreground, background] of pairs) {
+      expect(contrast(palette[foreground!]!, palette[background!]!), `${theme}: ${foreground} on ${background}`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+  it('keeps neutral statusbar text readable through blue and red glow fading on both surfaces', () => {
+    for (const glow of ['feedback-glow', 'feedback-danger-glow']) {
+      for (const surface of ['inset', 'surface']) {
+        for (const alpha of [0, 0.25, 0.5, 0.75, 1]) {
+          expect(contrast(palette['text-muted']!, blend(palette[glow]!, palette[surface]!, alpha)),
+            `${theme}: status text on ${glow} over ${surface} at ${alpha}`).toBeGreaterThanOrEqual(4.5);
+        }
+      }
     }
   });
 });
 
 it('defines every color token in both palettes and keeps literals out of component styles', () => {
   expect(Object.keys(palettes[0]!).sort()).toEqual(Object.keys(palettes[1]!).sort());
-  const componentStyles = css.slice(css.indexOf('* {'));
-  for (const match of css.matchAll(/var\(--([\w-]+)\)/g)) expect(palettes[0]).toHaveProperty(match[1]!);
+  const componentStyles = css.slice(css.indexOf('* {')) + componentCss;
+  for (const match of componentStyles.matchAll(/var\(--([\w-]+)\)/g)) expect(palettes[0]).toHaveProperty(match[1]!);
   expect(componentStyles).not.toMatch(/#[\da-f]{3,8}\b/i);
   expect(componentStyles).not.toMatch(/opacity:\s*\./);
 });
