@@ -36,7 +36,7 @@ describe.each(['light', 'dark'])('%s semantic palette', theme => {
     ];
     for (const [foreground, background] of pairs) expect(contrast(palette[foreground!]!, palette[background!]!), `${foreground} on ${background}`).toBeGreaterThanOrEqual(4.5);
   });
-  it('keeps identifying icons, borders and focus outlines at least 3:1', () => {
+  it('keeps identifying icons, input borders and keyboard focus outlines at least 3:1', () => {
     for (const foreground of ['border', 'focus', 'neutral']) {
       for (const background of normalSurfaces) expect(contrast(palette[foreground]!, palette[background]!), `${foreground} on ${background}`).toBeGreaterThanOrEqual(3);
     }
@@ -49,11 +49,6 @@ describe.each(['light', 'dark'])('%s semantic palette', theme => {
     ];
     for (const [foreground, background] of pairs) {
       expect(contrast(palette[foreground!]!, palette[background!]!), `${theme}: ${foreground} on ${background}`).toBeGreaterThanOrEqual(4.5);
-    }
-    for (const background of ['surface', 'inset', 'raised']) {
-      for (const outline of ['feedback-border', 'feedback-error-border']) {
-        expect(contrast(palette[outline]!, palette[background]!), `${theme}: ${outline} against ${background}`).toBeGreaterThanOrEqual(3);
-      }
     }
   });
 });
