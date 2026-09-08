@@ -24,6 +24,9 @@ import { SettingsDialog } from './SettingsDialog';
 import { useI18n } from './i18n';
 import { appMessages } from './messages/app';
 
+type FeedbackMessage = { id: number; expiresAt: number } & (
+  { key: 'copied'; label: CopyLabel } | { key: 'copyFailure' | 'logsCleared' }
+);
 
 function connectionIssue(error: CoreError | null, unsupported: boolean): [keyof typeof appMessages, keyof typeof appMessages] {
   const issues: Record<string, [keyof typeof appMessages, keyof typeof appMessages]> = {
@@ -66,7 +69,7 @@ function AppContent() {
   const [bulkPending, setBulkPending] = useState<{ action: Action; count: number } | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
-  const [clipboardMessage, setClipboardMessage] = useState<{ id: number; key: 'copied'; label: CopyLabel } | { id: number; key: 'copyFailure' } | null>(null);
+  const [clipboardMessage, setClipboardMessage] = useState<FeedbackMessage | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [logsExpanded, setLogsExpanded] = useState(false);
   const clipboardAttempt = useRef(0);
@@ -88,6 +91,14 @@ function AppContent() {
   const bulkSelectAll = useRef<HTMLInputElement>(null);
   const bulkRegion = useRef<HTMLElement>(null);
   const pendingBulkFocus = useRef<{ epoch: number } | null>(null);
+  useEffect(() => {
+    if (!clipboardMessage) return;
+    const { id, expiresAt } = clipboardMessage;
+    // Both feedback surfaces share this deadline. Preference changes and modal
+    // remounts cannot extend it, and an older timer cannot clear a newer action.
+    const timer = setTimeout(() => setClipboardMessage(current => current?.id === id ? null : current), Math.max(0, expiresAt - Date.now()));
+    return () => clearTimeout(timer);
+  }, [clipboardMessage]);
   const recordIssue = useCallback((issue: SessionIssue) => {
     setSessionIssue(previous => retainSessionIssue(previous, issue));
   }, []);
@@ -229,6 +240,7 @@ function AppContent() {
     setBulkPending(null);
     blocked.current = true;
     setMutationBlocked(true);
+    ++clipboardAttempt.current;
     setClipboardMessage(null);
     setLogsExpanded(false);
     setCheckedHandles(new Set());
@@ -373,10 +385,15 @@ function AppContent() {
     const id = ++clipboardAttempt.current;
     try {
       await navigator.clipboard.writeText(text);
-      if (clipboardAttempt.current === id) setClipboardMessage({ id, key: 'copied', label });
+      if (clipboardAttempt.current === id) setClipboardMessage({ id, key: 'copied', label, expiresAt: Date.now() + 3_000 });
     } catch {
-      if (clipboardAttempt.current === id) setClipboardMessage({ id, key: 'copyFailure' });
+      if (clipboardAttempt.current === id) setClipboardMessage({ id, key: 'copyFailure', expiresAt: Date.now() + 5_000 });
     }
+  }
+  function clearDisplayedLogs() {
+    const id = ++clipboardAttempt.current;
+    clearLogs();
+    setClipboardMessage({ id, key: 'logsCleared', expiresAt: Date.now() + 3_000 });
   }
   function selectWithKeyboard(event: KeyboardEvent<HTMLButtonElement>, index: number) {
     let next = index;
@@ -401,7 +418,7 @@ function AppContent() {
   };
   const connectionError = environmentError ?? environment?.error ?? null;
   const [connectionTitle, connectionHelp] = connectionIssue(connectionError, environment?.status === 'unsupported');
-  const copyFeedback = clipboardMessage ? clipboardMessage.key === 'copied' ? t('copied', { label: t(clipboardMessage.label) }) : t('copyFailure') : '';
+  const copyFeedback = clipboardMessage ? clipboardMessage.key === 'copied' ? t('copied', { label: t(clipboardMessage.label) }) : t(clipboardMessage.key) : '';
   return <div className="app-shell">
     <div className="main-content" inert={!!confirmation || settingsOpen || logsExpanded}>
       <header className="app-header">
@@ -444,7 +461,7 @@ function AppContent() {
             {(operation || bulkOperation) && <div className="latest-operation" aria-label={t('latestOperation')}>{operation ? <OperationResult operation={operation} copy={copy} /> : bulkOperation && <BulkResult operation={bulkOperation} />}</div>}
             {selected && snapshot ? <ContainerSummary container={selected} snapshot={snapshot} copy={copy} mutating={mutating} mutationBlocked={mutationBlocked} mutationAllowed={!!environment?.mutationAllowed} resourceSample={stats.sampleFor(selected)} /> : <div className="panel-heading"><h2>{t('connectTitle')}</h2></div>}
           </div>
-          {connecting ? <div className="startup-panel"><div className="startup-icon"><LoaderCircle className="spin" size={30} aria-hidden="true" /></div><h3>{t('checkingLocal')}</h3><p>{t('checkingCli')}</p></div> : !ready ? <div className="startup-panel"><div className="startup-icon"><Cable size={32} aria-hidden="true" /></div><span className="eyebrow">{t('localEnvironment')}</span><h3>{t(connectionTitle)}</h3><p>{t(connectionHelp)}</p>{connectionError && <div role="alert"><ErrorDetails error={connectionError} /></div>}{!!environment?.diagnostics.length && <details className="technical-details"><summary>{t('originalDiagnostics')}</summary>{environment.diagnostics.map((message, index) => <p key={index}>{message}</p>)}</details>}<button className="primary-button" onClick={() => void connect()}><RefreshCw size={14} aria-hidden="true" />{t('reconnect')}</button></div> : selected && snapshot ? <ContainerDetail container={selected} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} mutationBlocked={mutationBlocked} mutationAllowed={!!environment?.mutationAllowed} liveStatus={liveStatus} loadLogs={loadLogs} clearLogs={clearLogs} requestAction={requestAction} copy={copy} copyFeedback={copyFeedback} copyFeedbackTone={clipboardMessage?.key === 'copyFailure' ? 'error' : 'success'} copyFeedbackId={clipboardMessage?.id} logsExpanded={logsExpanded} onLogsExpandedChange={setLogsExpanded} /> : <div className="startup-panel"><div className="startup-icon"><BrandMark size={56} /></div><h3>{t(refreshing ? 'loadingContainers' : snapshot?.containers.length === 0 ? 'noContainers' : 'selectContainer')}</h3><p>{t(snapshot?.containers.length === 0 ? 'startServices' : 'selectHelp')}</p></div>}
+          {connecting ? <div className="startup-panel"><div className="startup-icon"><LoaderCircle className="spin" size={30} aria-hidden="true" /></div><h3>{t('checkingLocal')}</h3><p>{t('checkingCli')}</p></div> : !ready ? <div className="startup-panel"><div className="startup-icon"><Cable size={32} aria-hidden="true" /></div><span className="eyebrow">{t('localEnvironment')}</span><h3>{t(connectionTitle)}</h3><p>{t(connectionHelp)}</p>{connectionError && <div role="alert"><ErrorDetails error={connectionError} /></div>}{!!environment?.diagnostics.length && <details className="technical-details"><summary>{t('originalDiagnostics')}</summary>{environment.diagnostics.map((message, index) => <p key={index}>{message}</p>)}</details>}<button className="primary-button" onClick={() => void connect()}><RefreshCw size={14} aria-hidden="true" />{t('reconnect')}</button></div> : selected && snapshot ? <ContainerDetail container={selected} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} mutationBlocked={mutationBlocked} mutationAllowed={!!environment?.mutationAllowed} liveStatus={liveStatus} loadLogs={loadLogs} clearLogs={clearDisplayedLogs} requestAction={requestAction} copy={copy} copyFeedback={copyFeedback} copyFeedbackTone={clipboardMessage?.key === 'copyFailure' ? 'error' : 'success'} copyFeedbackId={clipboardMessage?.id} logsExpanded={logsExpanded} onLogsExpandedChange={setLogsExpanded} /> : <div className="startup-panel"><div className="startup-icon"><BrandMark size={56} /></div><h3>{t(refreshing ? 'loadingContainers' : snapshot?.containers.length === 0 ? 'noContainers' : 'selectContainer')}</h3><p>{t(snapshot?.containers.length === 0 ? 'startServices' : 'selectHelp')}</p></div>}
         </section>
       </main>
       <footer className="app-footer"><span><span className="footer-dot" />{t('footer')}</span><CopyFeedback className="clipboard-feedback" message={copyFeedback} tone={clipboardMessage?.key === 'copyFailure' ? 'error' : 'success'} notificationId={clipboardMessage?.id} /></footer>

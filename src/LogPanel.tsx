@@ -264,6 +264,8 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, lo
             // Clearing disables this button; keep keyboard focus on an enabled target.
             if (inModal) closeButton.current?.focus();
             else (inlineContent.current ?? expandButton.current)?.focus();
+            ++copyAttempt.current;
+            setShowCopyFeedback(inModal);
             setSearchOpen(false); setQuery(''); setFrozenLogs(null); setResumeDropped(false); clearLogs();
           }} aria-label={t('clear')} title={t('clear')}><Trash2 size={13} aria-hidden="true" /></button>
         </div>

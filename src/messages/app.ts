@@ -67,6 +67,7 @@ export const appMessages = {
   waiting: { ko: '로컬 환경 연결 대기', en: 'Waiting for a local connection' },
   copied: { ko: '{label} 복사됨', en: '{label} copied' },
   copyFailure: { ko: '클립보드에 복사하지 못했습니다.', en: 'Could not copy to the clipboard.' },
+  logsCleared: { ko: '로그 화면을 비웠습니다.', en: 'Displayed logs cleared.' },
   logs: { ko: '표시된 로그', en: 'Displayed logs' },
   fullId: { ko: '전체 ID', en: 'Full ID' },
   command: { ko: '명령', en: 'Command' },
