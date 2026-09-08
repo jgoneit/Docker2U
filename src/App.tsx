@@ -24,7 +24,7 @@ import { SettingsDialog } from './SettingsDialog';
 import { useI18n } from './i18n';
 import { appMessages } from './messages/app';
 
-type FeedbackMessage = { id: number; expiresAt: number } & (
+type FeedbackMessage = { id: number; highlightUntil: number; highlighted: boolean } & (
   { key: 'copied'; label: CopyLabel } | { key: 'copyFailure' | 'logsCleared' }
 );
 
@@ -92,11 +92,11 @@ function AppContent() {
   const bulkRegion = useRef<HTMLElement>(null);
   const pendingBulkFocus = useRef<{ epoch: number } | null>(null);
   useEffect(() => {
-    if (!clipboardMessage) return;
-    const { id, expiresAt } = clipboardMessage;
-    // Both feedback surfaces share this deadline. Preference changes and modal
-    // remounts cannot extend it, and an older timer cannot clear a newer action.
-    const timer = setTimeout(() => setClipboardMessage(current => current?.id === id ? null : current), Math.max(0, expiresAt - Date.now()));
+    if (!clipboardMessage?.highlighted) return;
+    const { id, highlightUntil } = clipboardMessage;
+    // Keep the last action text. Both surfaces share a highlight deadline that
+    // preference changes, modal remounts, and older timers cannot restart.
+    const timer = setTimeout(() => setClipboardMessage(current => current?.id === id ? { ...current, highlighted: false } : current), Math.max(0, highlightUntil - Date.now()));
     return () => clearTimeout(timer);
   }, [clipboardMessage]);
   const recordIssue = useCallback((issue: SessionIssue) => {
@@ -241,7 +241,6 @@ function AppContent() {
     blocked.current = true;
     setMutationBlocked(true);
     ++clipboardAttempt.current;
-    setClipboardMessage(null);
     setLogsExpanded(false);
     setCheckedHandles(new Set());
     selectContainer(null);
@@ -385,15 +384,15 @@ function AppContent() {
     const id = ++clipboardAttempt.current;
     try {
       await navigator.clipboard.writeText(text);
-      if (clipboardAttempt.current === id) setClipboardMessage({ id, key: 'copied', label, expiresAt: Date.now() + 3_000 });
+      if (clipboardAttempt.current === id) setClipboardMessage({ id, key: 'copied', label, highlightUntil: Date.now() + 2_000, highlighted: true });
     } catch {
-      if (clipboardAttempt.current === id) setClipboardMessage({ id, key: 'copyFailure', expiresAt: Date.now() + 5_000 });
+      if (clipboardAttempt.current === id) setClipboardMessage({ id, key: 'copyFailure', highlightUntil: Date.now() + 2_000, highlighted: true });
     }
   }
   function clearDisplayedLogs() {
     const id = ++clipboardAttempt.current;
     clearLogs();
-    setClipboardMessage({ id, key: 'logsCleared', expiresAt: Date.now() + 3_000 });
+    setClipboardMessage({ id, key: 'logsCleared', highlightUntil: Date.now() + 2_000, highlighted: true });
   }
   function selectWithKeyboard(event: KeyboardEvent<HTMLButtonElement>, index: number) {
     let next = index;
@@ -419,6 +418,7 @@ function AppContent() {
   const connectionError = environmentError ?? environment?.error ?? null;
   const [connectionTitle, connectionHelp] = connectionIssue(connectionError, environment?.status === 'unsupported');
   const copyFeedback = clipboardMessage ? clipboardMessage.key === 'copied' ? t('copied', { label: t(clipboardMessage.label) }) : t(clipboardMessage.key) : '';
+  const copyFeedbackTone = clipboardMessage?.key === 'logsCleared' ? 'cleared' : clipboardMessage?.key === 'copyFailure' ? 'error' : 'success';
   return <div className="app-shell">
     <div className="main-content" inert={!!confirmation || settingsOpen || logsExpanded}>
       <header className="app-header">
@@ -461,10 +461,10 @@ function AppContent() {
             {(operation || bulkOperation) && <div className="latest-operation" aria-label={t('latestOperation')}>{operation ? <OperationResult operation={operation} copy={copy} /> : bulkOperation && <BulkResult operation={bulkOperation} />}</div>}
             {selected && snapshot ? <ContainerSummary container={selected} snapshot={snapshot} copy={copy} mutating={mutating} mutationBlocked={mutationBlocked} mutationAllowed={!!environment?.mutationAllowed} resourceSample={stats.sampleFor(selected)} /> : <div className="panel-heading"><h2>{t('connectTitle')}</h2></div>}
           </div>
-          {connecting ? <div className="startup-panel"><div className="startup-icon"><LoaderCircle className="spin" size={30} aria-hidden="true" /></div><h3>{t('checkingLocal')}</h3><p>{t('checkingCli')}</p></div> : !ready ? <div className="startup-panel"><div className="startup-icon"><Cable size={32} aria-hidden="true" /></div><span className="eyebrow">{t('localEnvironment')}</span><h3>{t(connectionTitle)}</h3><p>{t(connectionHelp)}</p>{connectionError && <div role="alert"><ErrorDetails error={connectionError} /></div>}{!!environment?.diagnostics.length && <details className="technical-details"><summary>{t('originalDiagnostics')}</summary>{environment.diagnostics.map((message, index) => <p key={index}>{message}</p>)}</details>}<button className="primary-button" onClick={() => void connect()}><RefreshCw size={14} aria-hidden="true" />{t('reconnect')}</button></div> : selected && snapshot ? <ContainerDetail container={selected} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} mutationBlocked={mutationBlocked} mutationAllowed={!!environment?.mutationAllowed} liveStatus={liveStatus} loadLogs={loadLogs} clearLogs={clearDisplayedLogs} requestAction={requestAction} copy={copy} copyFeedback={copyFeedback} copyFeedbackTone={clipboardMessage?.key === 'copyFailure' ? 'error' : 'success'} copyFeedbackId={clipboardMessage?.id} logsExpanded={logsExpanded} onLogsExpandedChange={setLogsExpanded} /> : <div className="startup-panel"><div className="startup-icon"><BrandMark size={56} /></div><h3>{t(refreshing ? 'loadingContainers' : snapshot?.containers.length === 0 ? 'noContainers' : 'selectContainer')}</h3><p>{t(snapshot?.containers.length === 0 ? 'startServices' : 'selectHelp')}</p></div>}
+          {connecting ? <div className="startup-panel"><div className="startup-icon"><LoaderCircle className="spin" size={30} aria-hidden="true" /></div><h3>{t('checkingLocal')}</h3><p>{t('checkingCli')}</p></div> : !ready ? <div className="startup-panel"><div className="startup-icon"><Cable size={32} aria-hidden="true" /></div><span className="eyebrow">{t('localEnvironment')}</span><h3>{t(connectionTitle)}</h3><p>{t(connectionHelp)}</p>{connectionError && <div role="alert"><ErrorDetails error={connectionError} /></div>}{!!environment?.diagnostics.length && <details className="technical-details"><summary>{t('originalDiagnostics')}</summary>{environment.diagnostics.map((message, index) => <p key={index}>{message}</p>)}</details>}<button className="primary-button" onClick={() => void connect()}><RefreshCw size={14} aria-hidden="true" />{t('reconnect')}</button></div> : selected && snapshot ? <ContainerDetail container={selected} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} mutationBlocked={mutationBlocked} mutationAllowed={!!environment?.mutationAllowed} liveStatus={liveStatus} loadLogs={loadLogs} clearLogs={clearDisplayedLogs} requestAction={requestAction} copy={copy} copyFeedback={copyFeedback} copyFeedbackTone={copyFeedbackTone} copyFeedbackId={clipboardMessage?.id} copyFeedbackHighlighted={clipboardMessage?.highlighted} copyFeedbackHighlightUntil={clipboardMessage?.highlightUntil} logsExpanded={logsExpanded} onLogsExpandedChange={setLogsExpanded} /> : <div className="startup-panel"><div className="startup-icon"><BrandMark size={56} /></div><h3>{t(refreshing ? 'loadingContainers' : snapshot?.containers.length === 0 ? 'noContainers' : 'selectContainer')}</h3><p>{t(snapshot?.containers.length === 0 ? 'startServices' : 'selectHelp')}</p></div>}
         </section>
       </main>
-      <footer className="app-footer"><span><span className="footer-dot" />{t('footer')}</span><CopyFeedback className="clipboard-feedback" message={copyFeedback} tone={clipboardMessage?.key === 'copyFailure' ? 'error' : 'success'} notificationId={clipboardMessage?.id} /></footer>
+      <footer className="app-footer"><span><span className="footer-dot" />{t('footer')}</span><CopyFeedback className="clipboard-feedback" message={copyFeedback} tone={copyFeedbackTone} notificationId={clipboardMessage?.id} highlighted={clipboardMessage?.highlighted} highlightUntil={clipboardMessage?.highlightUntil} /></footer>
     </div>
     {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} returnFocus={settingsTrigger.current ?? undefined} />}
     {confirmation && <ConfirmDialog confirmation={confirmation} blocked={reconnectRequired} reconnectFocus={reconnectTrigger} onCancel={() => setConfirmation(null)} onConfirm={() => { if (confirmation.containers) void mutateBulk(confirmation.containers, confirmation.action, confirmation.sessionId, confirmation.generation); else void mutate(confirmation.container, confirmation.action, confirmation.sessionId, confirmation.generation); }} />}

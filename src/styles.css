@@ -41,10 +41,8 @@
   --shadow: #17213633;
   --technical-bg: #e4e8f0;
   --brand-shadow: #0054ff22;
-  --feedback-bg: #0054ff;
-  --feedback-text: #ffffff;
-  --feedback-error-bg: #b3273c;
-  --feedback-error-text: #ffffff;
+  --feedback-glow: #e0ebff;
+  --feedback-danger-glow: #f9e2e5;
   --success-glow: #11633f18;
   --log-match-bg: #f5ce57;
   --log-match-text: #1d2537;
@@ -92,10 +90,8 @@
   --shadow: #00000099;
   --technical-bg: #101015;
   --brand-shadow: #0054ff33;
-  --feedback-bg: #0054ff;
-  --feedback-text: #ffffff;
-  --feedback-error-bg: #9e1d30;
-  --feedback-error-text: #ffffff;
+  --feedback-glow: #233a61;
+  --feedback-danger-glow: #482835;
   --success-glow: #8be7bd18;
   --log-match-bg: #ffe0a6;
   --log-match-text: #1d2537;

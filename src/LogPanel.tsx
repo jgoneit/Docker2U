@@ -14,9 +14,9 @@ import './liveLogs.css';
 
 const followStates = new Set(['running', 'paused', 'restarting']);
 
-export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, logRequestPending = false, liveStatus, refreshing, mutating, loadLogs, clearLogs, copy, copyFeedback, copyFeedbackTone, copyFeedbackId, expanded, onExpandedChange }: {
+export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, logRequestPending = false, liveStatus, refreshing, mutating, loadLogs, clearLogs, copy, copyFeedback, copyFeedbackTone, copyFeedbackId, copyFeedbackHighlighted, copyFeedbackHighlightUntil, expanded, onExpandedChange }: {
   container: Container; snapshot: ContainerList; logs: LogSnapshot | null; logsError: CoreError | null;
-  loadingLogs: boolean; logRequestPending?: boolean; liveStatus?: LiveLogStatus; refreshing: boolean; mutating: boolean; loadLogs: () => void; clearLogs: () => void; copy: CopyText; copyFeedback?: string; copyFeedbackTone?: CopyFeedbackTone; copyFeedbackId?: number;
+  loadingLogs: boolean; logRequestPending?: boolean; liveStatus?: LiveLogStatus; refreshing: boolean; mutating: boolean; loadLogs: () => void; clearLogs: () => void; copy: CopyText; copyFeedback?: string; copyFeedbackTone?: CopyFeedbackTone; copyFeedbackId?: number; copyFeedbackHighlighted?: boolean; copyFeedbackHighlightUntil?: number;
   expanded: boolean; onExpandedChange: (expanded: boolean) => void;
 }) {
   const t = useI18n(logMessages);
@@ -171,7 +171,6 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, lo
   async function copyLogs(inModal: boolean) {
     if (!canCopy) return;
     const attempt = ++copyAttempt.current;
-    setShowCopyFeedback(false);
     await copy(text, 'logs');
     if (inModal && copyAttempt.current === attempt) setShowCopyFeedback(true);
   }
@@ -296,6 +295,6 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, lo
   return <>{content(false)}{expanded && createPortal(<div className="modal-backdrop"><div ref={dialog} className="logs-modal" role="dialog" aria-modal="true" aria-labelledby="logs-dialog-title" onKeyDown={keyDown}>
     <div className="logs-dialog-heading section-heading"><h2 id="logs-dialog-title">{t('expandedTitle', { name: container.name })}</h2><button ref={closeButton} className="icon-button" onClick={close} aria-label={t('close')}><X size={18} aria-hidden="true" /></button></div>
     {content(true)}
-    <CopyFeedback className="log-copy-feedback" message={showCopyFeedback ? copyFeedback ?? '' : ''} tone={copyFeedbackTone} notificationId={copyFeedbackId} />
+    <CopyFeedback className="log-copy-feedback" message={showCopyFeedback ? copyFeedback ?? '' : ''} tone={copyFeedbackTone} notificationId={copyFeedbackId} highlighted={copyFeedbackHighlighted} highlightUntil={copyFeedbackHighlightUntil} />
   </div></div>, document.body)}</>;
 }
