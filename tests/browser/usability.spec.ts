@@ -11,6 +11,8 @@ const words = {
     showDiagnostics: '환경 진단 보기', closeDiagnostics: '환경 진단 닫기', executionDetails: '실행 상세',
     bottom: '최신 로그로', snapshotBottom: '맨 아래로', expand: '로그 확대 보기', closeLogs: '로그 확대 보기 닫기',
     showResult: '결과 펼치기', hideResult: '결과 접기', result: '최근 작업 결과',
+    recentResult: '최근 작업 결과 상세 보기', closeResult: '최근 작업 결과 상세 닫기', dismissResult: '작업 알림 닫기',
+    logsTab: '로그', diagnosticsTab: '상태 진단', connectionsTab: '접속 정보',
     unknown: '결과 불명', details: '상세',
     start: '시작', stop: '중지', confirmStop: '중지 확인', cancel: '취소', selectVisible: '보이는 컨테이너 전체 선택',
   },
@@ -22,6 +24,8 @@ const words = {
     showDiagnostics: 'Show environment diagnostics', closeDiagnostics: 'Close diagnostics', executionDetails: 'Execution details',
     bottom: 'Latest logs', snapshotBottom: 'Scroll to bottom', expand: 'Expand logs', closeLogs: 'Close expanded logs',
     showResult: 'Show result details', hideResult: 'Hide result details', result: 'Latest operation result',
+    recentResult: 'Show latest operation details', closeResult: 'Close recent operation details', dismissResult: 'Dismiss operation notification',
+    logsTab: 'Logs', diagnosticsTab: 'Diagnostics', connectionsTab: 'Connections',
     unknown: 'Result unknown', details: 'details',
     start: 'Start', stop: 'Stop', confirmStop: 'Confirm Stop', cancel: 'Cancel', selectVisible: 'Select all visible containers',
   },
@@ -87,7 +91,7 @@ async function visibleTextRange(content: Locator, text: string) {
 async function expectNoHorizontalOverflow(page: Page) {
   const overflow = await page.evaluate(() => ({
     document: document.documentElement.scrollWidth - innerWidth,
-    regions: [...document.querySelectorAll('.app-shell, .workspace, .inventory-panel, .detail-panel, .logs-panel, .log-content, .logs-modal, .operation-result')]
+    regions: [...document.querySelectorAll('.app-shell, .workspace, .inventory-panel, .detail-panel, .logs-panel, .log-content, .logs-modal, .operation-result, .container-insights, .detail-toolbar, .insights-port-binding, .app-footer')]
       .filter(element => element.getBoundingClientRect().width > 0)
       .map(element => ({ name: element.className, amount: element.scrollWidth - element.clientWidth }))
       .filter(value => value.amount > 1),
@@ -103,6 +107,32 @@ async function expectReadableSmallText(page: Page) {
       .filter(value => value.size < 12),
   );
   expect(undersized).toEqual([]);
+}
+
+async function fixtureCalls(page: Page) {
+  return page.evaluate(() => structuredClone((window as unknown as { __docker2uFixtureCalls: Record<string, number> }).__docker2uFixtureCalls));
+}
+
+async function expectStatusbarFits(page: Page) {
+  const layout = await page.locator('.app-footer').evaluate(element => {
+    const bar = element.getBoundingClientRect();
+    const controls = [...element.querySelectorAll('button')].map(button => button.getBoundingClientRect())
+      .filter(rect => rect.width > 0).map(({ top, bottom, left, right }) => ({ top, bottom, left, right }));
+    return { top: bar.top, bottom: bar.bottom, height: bar.height, left: bar.left, right: bar.right,
+      viewportHeight: innerHeight, viewportWidth: innerWidth, overflow: element.scrollWidth - element.clientWidth, controls };
+  });
+  expect(layout.height).toBe(44);
+  expect(layout.bottom).toBeLessThanOrEqual(layout.viewportHeight + 1);
+  expect(layout.left).toBeGreaterThanOrEqual(0);
+  expect(layout.right).toBeLessThanOrEqual(layout.viewportWidth + 1);
+  expect(layout.overflow).toBeLessThanOrEqual(1);
+  for (const control of layout.controls) {
+    expect(control.top).toBeGreaterThanOrEqual(layout.top);
+    expect(control.bottom).toBeLessThanOrEqual(layout.bottom);
+    expect(control.left).toBeGreaterThanOrEqual(layout.left);
+    expect(control.right).toBeLessThanOrEqual(layout.right);
+  }
+  return layout;
 }
 
 test('shows inventory age without selection and advances it without inventory or log reloads', async ({ page }, testInfo) => {
@@ -408,18 +438,21 @@ test('search moves the current text into the visible viewport and survives expan
   await expectLogFits(page);
 });
 
-test('keeps completed result controls reachable and the result after another selection', async ({ page }, testInfo) => {
+test('opens completed results from the statusbar and retains their target after another selection', async ({ page }, testInfo) => {
   const t = words[language(testInfo)];
   await openFixture(page);
   await page.getByRole('button', { name: t.restart, exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: t.confirmRestart, exact: true }).click();
   const result = page.getByRole('region', { name: t.result, exact: true });
+  const recent = page.locator('.app-footer').getByRole('button', { name: t.recentResult, exact: true });
+  await expect(recent).toBeInViewport();
+  await expect(result).toHaveCount(0);
+  await expectStatusbarFits(page);
+  await recent.click();
   await expect(result).toContainText(backend);
-  await expectLogFits(page);
-  const show = result.getByRole('button', { name: t.showResult, exact: true });
-  await expect(show).toHaveAttribute('aria-expanded', 'false');
-  await show.click();
-  await expect(result.getByRole('button', { name: t.hideResult, exact: true })).toHaveAttribute('aria-expanded', 'true');
+  await expect(recent).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.getByRole('button', { name: t.closeResult, exact: true })).toBeFocused();
+  await expect(result.getByRole('button', { name: t.showResult, exact: true })).toHaveCount(0);
   await expectLogFits(page);
   await result.getByText(t.executionDetails, { exact: true }).click();
   await expect(result.getByText('Synthetic command completed.', { exact: true })).toBeVisible();
@@ -427,30 +460,191 @@ test('keeps completed result controls reachable and the result after another sel
   await page.getByRole('button', { name: t.openSearch, exact: true }).click();
   await expectLogFits(page);
   await page.getByRole('button', { name: t.closeSearch, exact: true }).click();
-  await result.getByRole('button', { name: t.hideResult, exact: true }).click();
+  await page.getByRole('button', { name: t.closeResult, exact: true }).click();
+  await expect(result).toHaveCount(0);
+  await expect(recent).toBeFocused();
   await page.getByRole('button', { name: `${redis} ${t.details}`, exact: true }).click();
+  await recent.click();
   await expect(result).toContainText(backend);
-  await expect(show).toBeInViewport();
+  await expect(recent).toBeInViewport();
+  await expectStatusbarFits(page);
   await expectLogFits(page);
   await expectNoHorizontalOverflow(page);
   await scrollToLatest(page.locator('.log-content'), page.getByRole('button', { name: t.snapshotBottom, exact: true }));
   await visibleTextRange(page.locator('.log-content'), 'LAST_LINE_300');
 });
 
-test('keeps an unknown result expanded while other details remain usable', async ({ page }, testInfo) => {
+test('allows unknown notices and result details to close independently while retaining their original outcome', async ({ page }, testInfo) => {
   const t = words[language(testInfo)];
   await openFixture(page, 'unknown-result');
   await page.getByRole('button', { name: t.restart, exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: t.confirmRestart, exact: true }).click();
   const result = page.getByRole('region', { name: t.result, exact: true });
+  const recent = page.locator('.app-footer').getByRole('button', { name: t.recentResult, exact: true });
+  const notice = page.locator('.app-footer .operation-feedback-message');
+  await expect(notice).toContainText(t.unknown);
+  await expect(result).toHaveCount(0);
+  await recent.click();
   await expect(result.getByRole('heading')).toContainText(t.unknown);
   await expect(result.getByRole('button', { name: t.showResult, exact: true })).toHaveCount(0);
   await expect(result.getByRole('button', { name: t.hideResult, exact: true })).toHaveCount(0);
   await expectLogFits(page);
   await page.getByRole('button', { name: `${redis} ${t.details}`, exact: true }).click();
   await expect(result).toContainText(backend);
+  await page.getByRole('button', { name: t.closeResult, exact: true }).click();
+  await expect(result).toHaveCount(0);
+  await expect(notice).toContainText(t.unknown);
+  await page.locator('.app-footer').getByRole('button', { name: t.dismissResult, exact: true }).click();
+  await expect(notice).toBeEmpty();
+  await expect(recent).toBeFocused();
+  await expectStatusbarFits(page);
+  await recent.click();
+  await expect(result.getByRole('heading')).toContainText(t.unknown);
+  await expect(result).toContainText(backend);
   await expectNoHorizontalOverflow(page);
   await expectLogFits(page);
+});
+
+test('uses manual keyboard tabs while preserving a paused live log search and its scroll position', async ({ page }, testInfo) => {
+  const lang = language(testInfo), t = words[lang];
+  await openFixture(page, 'live', 'MacIntel');
+  await expect(page.locator('.log-content')).toContainText('LIVE 2');
+  await page.locator('.log-pause-toggle').click();
+  await page.getByRole('button', { name: t.openSearch, exact: true }).click();
+  const search = page.getByRole('searchbox', { name: t.search, exact: true });
+  await search.fill('Request processed');
+  await page.getByRole('button', { name: t.next, exact: true }).click();
+  const content = page.locator('.log-content');
+  await content.evaluate(element => { element.scrollTop = 145; element.dispatchEvent(new Event('scroll', { bubbles: true })); });
+  const original = await content.elementHandle();
+  const before = await content.evaluate(element => ({ text: element.textContent, scrollTop: element.scrollTop }));
+  const callsBefore = await fixtureCalls(page);
+  expect(callsBefore.getContainerDetails).toBe(0);
+  const logsTab = page.getByRole('tab', { name: t.logsTab, exact: true });
+  const diagnosticsTab = page.getByRole('tab', { name: t.diagnosticsTab, exact: true });
+  const connectionsTab = page.getByRole('tab', { name: t.connectionsTab, exact: true });
+  await logsTab.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(diagnosticsTab).toBeFocused();
+  await expect(diagnosticsTab).toHaveAttribute('aria-selected', 'false');
+  expect((await fixtureCalls(page)).getContainerDetails).toBe(0);
+  await page.keyboard.press('Enter');
+  const diagnostics = page.getByRole('tabpanel', { name: t.diagnosticsTab, exact: true });
+  await expect(diagnostics.locator('.insights-summary')).toContainText(lang === 'ko' ? '관측된 상태' : 'Observed state');
+  await expect(content).toBeHidden();
+  await expect.poll(async () => (await fixtureCalls(page)).getContainerDetails).toBe(1);
+  const toolbar = await page.locator('.detail-toolbar').evaluate(element => {
+    const tabs = element.querySelector('[role="tablist"]')!.getBoundingClientRect();
+    const actions = element.querySelector('.recovery-actions')!.getBoundingClientRect();
+    return { tabTop: tabs.top, tabBottom: tabs.bottom, actionTop: actions.top, actionBottom: actions.bottom };
+  });
+  expect(Math.max(toolbar.tabTop, toolbar.actionTop)).toBeLessThan(Math.min(toolbar.tabBottom, toolbar.actionBottom));
+  await expectStatusbarFits(page);
+  await diagnosticsTab.focus();
+  await page.keyboard.press('End');
+  await expect(connectionsTab).toBeFocused();
+  await expect(connectionsTab).toHaveAttribute('aria-selected', 'false');
+  await page.keyboard.press('Space');
+  await expect(connectionsTab).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tabpanel', { name: t.connectionsTab, exact: true }).locator('.insights-port-list > li')).toHaveCount(2);
+  await page.keyboard.press('Meta+f');
+  await expect(search).toBeHidden();
+  await expect(connectionsTab).toBeFocused();
+  await expect.poll(async () => (await fixtureCalls(page)).readLogStream).toBeGreaterThan(callsBefore.readLogStream! + 2);
+  await page.keyboard.press('Home');
+  await expect(logsTab).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(logsTab).toHaveAttribute('aria-selected', 'true');
+  await expect(search).toHaveValue('Request processed');
+  await expect(page.locator('.log-search-count')).toHaveText(lang === 'ko' ? '2 / 298건' : '2 / 298 matches');
+  await expect(page.locator('.log-pause-toggle')).toHaveAttribute('aria-pressed', 'true');
+  expect(await content.evaluate((element, node) => element === node, original)).toBe(true);
+  await expect.poll(() => content.evaluate(element => ({ text: element.textContent, scrollTop: element.scrollTop }))).toEqual(before);
+  const after = await fixtureCalls(page);
+  expect(after.getContainerDetails).toBe(1);
+  for (const name of ['getEnvironment', 'listContainers', 'startLogStream', 'stopLogStream', 'mutateContainer', 'mutateContainers']) expect(after[name]).toBe(callsBefore[name]);
+  await expectNoHorizontalOverflow(page);
+  await expectLogFits(page);
+  await testInfo.attach('detail-tabs-preserved-logs', { body: await page.screenshot(), contentType: 'image/png' });
+});
+
+test('keeps long IPv6 bindings and the final published port copy reachable in the lower pane', async ({ page }, testInfo) => {
+  const lang = language(testInfo), t = words[lang];
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { (window as unknown as { __copiedInsight: string }).__copiedInsight = text; } } });
+  });
+  await openFixture(page, 'long-metadata');
+  const callsBefore = await fixtureCalls(page);
+  const selected = page.locator('.container-list-item[data-selected="true"]');
+  await selected.locator('.container-connection-link').click();
+  await expect(page.getByRole('tab', { name: t.connectionsTab, exact: true })).toHaveAttribute('aria-selected', 'true');
+  const panel = page.getByRole('tabpanel', { name: t.connectionsTab, exact: true });
+  await expect(panel.locator('.insights-port-list > li')).toHaveCount(24);
+  const address = '[2001:db8:1234:5678:9abc:def0:1234:5678]:18081';
+  const copyName = (value: string) => lang === 'ko' ? `주소 복사: ${value}` : `Copy address: ${value}`;
+  const ipv6 = panel.getByRole('button', { name: copyName(address), exact: true });
+  await ipv6.scrollIntoViewIfNeeded();
+  await expect(ipv6).toBeInViewport();
+  await ipv6.click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __copiedInsight: string }).__copiedInsight)).toBe(address);
+  await expectNoHorizontalOverflow(page);
+  const last = panel.locator('.insights-port-list > li').last();
+  await expect(last.locator('strong')).toHaveText('8103/TCP');
+  const lastCopy = last.getByRole('button', { name: copyName('127.0.0.1:18103'), exact: true });
+  await lastCopy.scrollIntoViewIfNeeded();
+  await expect(lastCopy).toBeInViewport();
+  await lastCopy.click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __copiedInsight: string }).__copiedInsight)).toBe('127.0.0.1:18103');
+  await expect(page.locator('.app-footer .clipboard-feedback')).toHaveText(lang === 'ko' ? '접속 주소 복사됨' : 'Connection address copied');
+  await expect(panel.locator('.insights-hint').filter({ hasText: lang === 'ko' ? 'Mac의 포트 포워딩과 실제 연결은 확인하지 않았습니다.' : 'Mac port forwarding and actual connectivity have not been verified.' })).toHaveCount(1);
+  const portChoice = panel.getByRole('combobox', { name: lang === 'ko' ? '내부 주소 복사에 사용할 포트' : 'Port for container-network addresses' });
+  await portChoice.selectOption('8080/tcp');
+  const aliasCopy = panel.getByRole('button', { name: copyName('api:8080'), exact: true });
+  await aliasCopy.scrollIntoViewIfNeeded();
+  await expect(aliasCopy).toBeInViewport();
+  await aliasCopy.click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __copiedInsight: string }).__copiedInsight)).toBe('api:8080');
+  await expect(page.locator('.container-checkbox:checked')).toHaveCount(0);
+  const after = await fixtureCalls(page);
+  expect(after.getContainerDetails).toBe(1);
+  for (const name of ['getEnvironment', 'listContainers', 'mutateContainer', 'mutateContainers']) expect(after[name]).toBe(callsBefore[name]);
+  await expectStatusbarFits(page);
+  await expectNoHorizontalOverflow(page);
+  await testInfo.attach('connection-long-bindings', { body: await page.screenshot(), contentType: 'image/png' });
+});
+
+test('hides successful operation text after five seconds without moving the statusbar or replacing copy feedback', async ({ page }, testInfo) => {
+  const lang = language(testInfo), t = words[lang];
+  await page.clock.install({ time: new Date('2026-09-08T00:00:00Z') });
+  await page.addInitScript(() => { Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => {} } }); });
+  await openFixture(page);
+  await page.clock.pauseAt(new Date('2026-09-08T00:01:00Z'));
+  await page.getByRole('button', { name: t.restart, exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: t.confirmRestart, exact: true }).click();
+  const notice = page.locator('.app-footer .operation-feedback-message');
+  await expect(notice).toContainText(lang === 'ko' ? '성공' : 'Succeeded');
+  const before = await expectStatusbarFits(page);
+  await expect(page.getByRole('region', { name: t.result, exact: true })).toHaveCount(0);
+  await page.getByRole('tab', { name: t.connectionsTab, exact: true }).click();
+  await page.getByRole('button', { name: lang === 'ko' ? '주소 복사: 127.0.0.1:18080' : 'Copy address: 127.0.0.1:18080', exact: true }).click();
+  const copied = lang === 'ko' ? '접속 주소 복사됨' : 'Connection address copied';
+  await expect(page.locator('.app-footer .clipboard-feedback')).toHaveText(copied);
+  await expect(notice).toContainText(lang === 'ko' ? '성공' : 'Succeeded');
+  const recent = page.locator('.app-footer').getByRole('button', { name: t.recentResult, exact: true });
+  await recent.focus();
+  await page.clock.fastForward(4_999);
+  await expect(notice).toContainText(lang === 'ko' ? '성공' : 'Succeeded');
+  await page.clock.fastForward(1);
+  await expect(notice).toBeEmpty();
+  await expect(recent).toBeFocused();
+  await expect(recent).toBeInViewport();
+  await expect(page.locator('.app-footer .clipboard-feedback')).toHaveText(copied);
+  const after = await expectStatusbarFits(page);
+  expect({ top: after.top, bottom: after.bottom, height: after.height }).toEqual({ top: before.top, bottom: before.bottom, height: before.height });
+  await recent.press('Enter');
+  await expect(page.getByRole('region', { name: t.result, exact: true })).toContainText(backend);
+  await expectNoHorizontalOverflow(page);
+  await testInfo.attach('operation-statusbar-after-expiry', { body: await page.screenshot(), contentType: 'image/png' });
 });
 
 test('opens log search with the platform shortcut and selects the retained query', async ({ page }, testInfo) => {

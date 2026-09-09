@@ -216,6 +216,20 @@ if (import.meta.env.DEV) {
         items: handles.map(handle => ({ handle, fullId: targetFor(handle).fullId, cpuPercent: 125.5,
           memoryUsage: '64MiB / 2GiB', memoryPercent: 3.125, available: true })) };
     },
+    getContainerDetails: async (id, requestedGeneration, handle) => {
+      requireSession(id);
+      if (requestedGeneration !== generation) return reject('StaleHandle', 'Synthetic list generation changed.');
+      const target = targetFor(handle);
+      return { sessionId: id, generation: requestedGeneration, handle, fullId: target.fullId, observedAt: new Date().toISOString(),
+        diagnostics: { state: target.state, exitCode: target.state === 'exited' ? 137 : null,
+          startedAt: '2026-09-08T00:00:00Z', finishedAt: target.state === 'exited' ? '2026-09-08T00:05:00Z' : null,
+          oomKilled: target.state === 'exited', restartCount: 2, healthConfigured: target.health !== null && target.health !== 'none', healthAvailable: true,
+          health: target.health && target.health !== 'none' ? { status: target.health, failingStreak: target.health === 'unhealthy' ? 2 : 0,
+            recentFailures: target.health === 'unhealthy' ? [{ startedAt: '2026-09-08T00:01:00Z', finishedAt: '2026-09-08T00:01:02Z', exitCode: 1, output: 'Synthetic healthcheck: connection refused · 합성 상태 검사 출력', truncated: false }] : [] } : null },
+        connectivity: { networkMode: 'orders_default', portsAvailable: true, networksAvailable: true,
+          ports: target.ports.length ? Array.from({ length: scenario === 'long-metadata' ? 24 : 2 }, (_, index) => ({ containerPort: 8080 + index, protocol: index === 1 ? 'udp' : 'tcp', bindings: [{ hostIp: index === 1 ? (scenario === 'long-metadata' ? '2001:db8:1234:5678:9abc:def0:1234:5678' : '::') : '0.0.0.0', hostPort: 18080 + index }] })) : [],
+          networks: [{ name: 'orders_default', aliases: [target.composeService ?? 'service'], ipv4Address: '172.18.0.2', ipv6Address: 'fd00:1234:5678:abcd::2' }] } };
+    },
     mutateContainer: async (id, handle, action): Promise<MutationResult> => {
       requireSession(id);
       return resultFor(targetFor(handle), action);
@@ -240,7 +254,7 @@ if (import.meta.env.DEV) {
   if (Object.keys(api).some(key => !Object.hasOwn(fixtureApi, key))) {
     throw new Error('Visual fixture refused to mount: an API method has no fake.');
   }
-  const calls: Record<keyof typeof api, number> = { getEnvironment: 0, listContainers: 0, getRecentLogs: 0, mutateContainer: 0, mutateContainers: 0, startLogStream: 0, readLogStream: 0, stopLogStream: 0, getContainerStats: 0 };
+  const calls: Record<keyof typeof api, number> = { getEnvironment: 0, listContainers: 0, getRecentLogs: 0, mutateContainer: 0, mutateContainers: 0, startLogStream: 0, readLogStream: 0, stopLogStream: 0, getContainerStats: 0, getContainerDetails: 0 };
   Object.assign(window, { __docker2uFixtureCalls: calls });
   for (const name of Object.keys(fixtureApi) as (keyof typeof api)[]) {
     const original = fixtureApi[name] as (...args: unknown[]) => unknown;

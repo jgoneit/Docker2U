@@ -42,6 +42,14 @@ it('ignores a hidden inline panel and waits for the visible panel to be ready', 
   expect(readyNativeLogs(document)).toBeNull();
 });
 
+it('ignores a mounted log panel inside an inactive tab', () => {
+  const panel = document.querySelector<HTMLElement>('.logs-panel')!;
+  const tab = document.createElement('div'); panel.replaceWith(tab); tab.append(panel); tab.hidden = true;
+  expect(readyNativeLogs(document)).toBeNull();
+  tab.hidden = false;
+  expect(readyNativeLogs(document)).not.toBeNull();
+});
+
 
 it('accepts bounded UTF-8 live content without requiring an ASCII-sized snapshot', () => {
   document.querySelector('pre')!.textContent = '한글 실시간 로그';

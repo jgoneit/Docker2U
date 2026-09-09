@@ -11,7 +11,7 @@ export function nativePaneSize(root: ParentNode): NativePaneSize | null {
 }
 
 function visiblePanel(root: ParentNode) {
-  return Array.from(root.querySelectorAll<HTMLElement>('.logs-panel')).find(element => !element.hidden);
+  return Array.from(root.querySelectorAll<HTMLElement>('.logs-panel')).find(element => !element.closest('[hidden]'));
 }
 
 export function nativeCheckpoint(root: ParentNode): NativeCheckpoint {
