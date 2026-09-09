@@ -111,6 +111,25 @@ class FixtureIsolationTests(unittest.TestCase):
         self.assertEqual([row["ComposeProject"] for row in rows], ["native-smoke-project", "native-smoke-project", None])
         self.assertEqual([row["ComposeService"] for row in rows], ["api", "redis", None])
 
+    def test_details_accepts_only_the_current_bounded_single_target_inspect(self):
+        source = (REPO / "src-tauri/src/docker_details.rs").read_text()
+        current_format = source.split('const DETAILS_FORMAT: &str = r#"', 1)[1].split('"#;', 1)[0]
+        self.assertEqual(docker.DETAILS_FORMAT, current_format)
+        result = self.cli(self.host + ["container", "inspect", "--format", current_format, docker.IDS[0]])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        row = json.loads(result.stdout)
+        self.assertEqual((row["Id"], row["ExitCode"], row["OOMKilled"], row["HealthConfigured"]), (docker.IDS[0], 137, False, True))
+        self.assertEqual(row["Health"]["Log"][0]["Output"], "NATIVE_SMOKE_HEALTH_FAILURE <b>refused</b>")
+        self.assertEqual([binding["HostIp"] for binding in row["Ports"]["5432/tcp"]], ["0.0.0.0", "::"])
+        self.assertNotIn("Config", row)
+        self.assertNotIn("Env", row)
+        self.assertEqual(next(event for event in fixture.read_trace(self.root) if event["phase"] == "details-payload")["fullId"], docker.IDS[0])
+        for arguments in [[current_format, *docker.IDS[:2]], [current_format + " ", docker.IDS[0]], [current_format, format(4, "064x")]]:
+            with self.subTest(arguments=arguments):
+                rejected = self.cli(self.host + ["container", "inspect", "--format", *arguments])
+                self.assertEqual(rejected.returncode, 95)
+                self.assertEqual(rejected.stdout, b"")
+
     def test_stats_samples_only_explicit_full_ids_in_one_batch(self):
         targets = [docker.IDS[1], docker.IDS[0]]
         result = self.cli(self.host + ["container", "stats", "--no-stream", "--no-trunc", "--format", "{{json .}}", *targets])
@@ -309,6 +328,26 @@ class InsightEvidenceTests(unittest.TestCase):
 
     def detail(self, **values):
         return {"fullId": self.full_id, "streamId": "stream-1", **values}
+
+    def test_detail_tabs_require_native_inspect_and_retained_log_identity(self):
+        report = self.report("detail-tabs", [step("captured log view before detail tabs", 1200, self.detail(starts=1)),
+            step("native diagnostics and bounded health output verified", 1500, {"fullId": self.full_id, "exitCode": 137, "oomKilled": False, "healthConfigured": True, "healthFailures": 1}),
+            step("native connection candidates verified", 1600, {"ipv4Candidate": "127.0.0.1:15432", "ipv6Candidate": "[::1]:15432", "alias": "native-api", "unpublishedUdp": True}),
+            step("restored logs after all three tabs", 1800, self.detail(starts=1, preservedView=True, detailsReads=1, maximumActiveReads=1))])
+        events = [self.ready(), *self.command(["container", "inspect", "--format", docker.DETAILS_FORMAT, self.full_id], 1300, 43),
+                  {"phase": "details-payload", "timeMs": 1305, "pid": 43, "fullId": self.full_id}]
+        self.assertTrue(fixture.validate_ui(identity(), report, events, now_ms=5000)["accepted"])
+        for fault in ["no-payload", "wrong-target", "no-command", "no-completion", "invented-oom", "view-reset", "duplicate-read", "stream-replaced"]:
+            ui, trace = copy.deepcopy(report), copy.deepcopy(events)
+            if fault == "no-payload": trace.pop()
+            elif fault == "wrong-target": trace[-1]["fullId"] = docker.IDS[1]
+            elif fault == "no-command": trace.pop(1)
+            elif fault == "no-completion": trace.pop(2)
+            elif fault == "invented-oom": ui["steps"][2]["detail"]["oomKilled"] = True
+            elif fault == "view-reset": ui["steps"][-2]["detail"]["preservedView"] = False
+            elif fault == "duplicate-read": ui["steps"][-2]["detail"]["detailsReads"] = 2
+            else: trace.append({**self.ready(), "timeMs": 1700, "pid": 99})
+            with self.subTest(fault=fault), self.assertRaises(ValueError): fixture.validate_ui(identity(), ui, trace, now_ms=5000)
 
     def test_project_stats_requires_exact_ui_sample_successful_inspect_and_matching_native_batch(self):
         report = self.report("project-stats", [step("Compose grouping and real stats visible", 1500, {"projectRows": 2, "cpuPercent": 125.5, "memory": "64MiB / 2GiB"}), step("standalone project filter verified", 1600, {"standaloneRows": 1})])

@@ -178,6 +178,7 @@ describe('appearance and language preserve the active Docker session', () => {
     expect(callCounts()).toEqual(before);
     mock.listContainers.mockResolvedValue({ ...snapshot, generation: 2 });
     await act(async () => pending.resolve(succeeded));
+    await user.click(await screen.findByRole('button', { name: 'Show latest operation details' }));
     await screen.findByRole('heading', { name: /^Succeeded · Restart · backend$/ });
     expect(mock.mutateContainer).toHaveBeenCalledExactlyOnceWith('session-1', 'handle-1', 'restart');
     expect(mock.listContainers).toHaveBeenCalledTimes(2);
@@ -208,7 +209,7 @@ describe('appearance and language preserve the active Docker session', () => {
     vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
     const mounted = render(<App />);
     await screen.findByText(/LAST_LINE/);
-    const feedback = within(screen.getByRole('contentinfo')).getByRole('status');
+    const feedback = screen.getByRole('contentinfo').querySelector<HTMLElement>('.clipboard-feedback')!;
     expect(feedback).toHaveAttribute('aria-live', 'polite');
     expect(feedback).toHaveAttribute('aria-atomic', 'true');
     expect(feedback).toBeEmptyDOMElement();
@@ -218,7 +219,7 @@ describe('appearance and language preserve the active Docker session', () => {
     expect(feedback).toHaveClass('copy-feedback-success');
     await toEnglishAndLight(user);
     expect(screen.getByText('Displayed logs copied')).toBeVisible();
-    expect(within(screen.getByRole('contentinfo')).getByRole('status')).toBe(feedback);
+    expect(screen.getByRole('contentinfo').querySelector<HTMLElement>('.clipboard-feedback')!).toBe(feedback);
     expect(feedback.querySelector('.copy-feedback-text')).toBe(notification);
     mounted.unmount();
     render(<App />);
@@ -226,7 +227,7 @@ describe('appearance and language preserve the active Docker session', () => {
     expect(document.documentElement).toHaveAttribute('data-theme', 'light');
     expect(document.documentElement).toHaveAttribute('lang', 'en');
     expect(screen.queryByText('표시된 로그 복사됨')).not.toBeInTheDocument();
-    expect(within(screen.getByRole('contentinfo')).getByRole('status')).toBeEmptyDOMElement();
+    expect(screen.getByRole('contentinfo').querySelector<HTMLElement>('.clipboard-feedback')!).toBeEmptyDOMElement();
   });
 });
 
@@ -237,7 +238,7 @@ describe('clipboard feedback follows the latest copy attempt', () => {
     render(<App />);
     const output = await screen.findByLabelText('최근 로그 내용');
     await screen.findByText(/LAST_LINE/);
-    const feedback = within(screen.getByRole('contentinfo')).getByRole('status');
+    const feedback = screen.getByRole('contentinfo').querySelector<HTMLElement>('.clipboard-feedback')!;
     const copyButton = screen.getByRole('button', { name: '표시된 로그 복사' });
     const before = callCounts();
 
@@ -250,7 +251,7 @@ describe('clipboard feedback follows the latest copy attempt', () => {
     expect(feedback).toHaveClass('copy-feedback-success');
     expect(repeatedSuccess).not.toBe(firstSuccess);
     expect(firstSuccess).not.toBeInTheDocument();
-    expect(within(screen.getByRole('contentinfo')).getByRole('status')).toBe(feedback);
+    expect(screen.getByRole('contentinfo').querySelector<HTMLElement>('.clipboard-feedback')!).toBe(feedback);
 
     writeText.mockRejectedValueOnce(new Error('Clipboard denied'));
     await user.click(copyButton);
@@ -281,7 +282,7 @@ describe('clipboard feedback follows the latest copy attempt', () => {
     render(<App />);
     await screen.findByText(/LAST_LINE/);
     const before = callCounts();
-    const feedback = within(screen.getByRole('contentinfo')).getByRole('status');
+    const feedback = screen.getByRole('contentinfo').querySelector<HTMLElement>('.clipboard-feedback')!;
     await user.click(screen.getByRole('button', { name: '표시된 로그 복사' }));
     expect(feedback).toBeEmptyDOMElement();
     await user.click(screen.getByText('컨테이너 정보'));
@@ -324,7 +325,7 @@ describe('clipboard feedback follows the latest copy attempt', () => {
     await within(feedback).findByText('클립보드에 복사하지 못했습니다.');
     expect(feedback).toHaveClass('copy-feedback-error');
     expect(feedback).not.toHaveClass('copy-feedback-success');
-    expect(within(screen.getByRole('contentinfo')).getByRole('status')).toHaveClass('copy-feedback-error');
+    expect(screen.getByRole('contentinfo').querySelector<HTMLElement>('.clipboard-feedback')!).toHaveClass('copy-feedback-error');
     await user.click(copyButton);
     await within(feedback).findByText('표시된 로그 복사됨');
     expect(feedback).toHaveClass('copy-feedback-success');
@@ -362,7 +363,7 @@ describe('clipboard feedback follows the latest copy attempt', () => {
       else pending.reject(new Error('Previous dialog clipboard denied'));
     });
     // The operation can finish globally, but the new dialog must not claim it initiated that copy.
-    expect(within(screen.getByRole('contentinfo')).getByRole('status')).toHaveTextContent(outcome === 'success' ? '표시된 로그 복사됨' : '클립보드에 복사하지 못했습니다.');
+    expect(screen.getByRole('contentinfo').querySelector<HTMLElement>('.clipboard-feedback')!).toHaveTextContent(outcome === 'success' ? '표시된 로그 복사됨' : '클립보드에 복사하지 못했습니다.');
     expect(feedback).toBeEmptyDOMElement();
     await user.click(within(reopenedDialog).getByRole('button', { name: '표시된 로그 복사' }));
     await within(feedback).findByText('표시된 로그 복사됨');

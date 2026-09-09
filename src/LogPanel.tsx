@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowDownToLine, ChevronDown, ChevronUp, Copy, FileText, Info, Maximize2, Pause, Play, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import type { Container, ContainerList, CoreError } from './api';
@@ -14,10 +14,11 @@ import './liveLogs.css';
 
 const followStates = new Set(['running', 'paused', 'restarting']);
 
-export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, logRequestPending = false, liveStatus, refreshing, mutating, loadLogs, clearLogs, copy, copyFeedback, copyFeedbackTone, copyFeedbackId, copyFeedbackHighlighted, copyFeedbackHighlightUntil, expanded, onExpandedChange }: {
+export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, logRequestPending = false, liveStatus, refreshing, mutating, loadLogs, clearLogs, copy, copyFeedback, copyFeedbackTone, copyFeedbackId, copyFeedbackHighlighted, copyFeedbackHighlightUntil, expanded, onExpandedChange, visible = true, operationFeedback }: {
   container: Container; snapshot: ContainerList; logs: LogSnapshot | null; logsError: CoreError | null;
   loadingLogs: boolean; logRequestPending?: boolean; liveStatus?: LiveLogStatus; refreshing: boolean; mutating: boolean; loadLogs: () => void; clearLogs: () => void; copy: CopyText; copyFeedback?: string; copyFeedbackTone?: CopyFeedbackTone; copyFeedbackId?: number; copyFeedbackHighlighted?: boolean; copyFeedbackHighlightUntil?: number;
   expanded: boolean; onExpandedChange: (expanded: boolean) => void;
+  visible?: boolean; operationFeedback?: ReactNode;
 }) {
   const t = useI18n(logMessages);
   const { language } = usePreferences();
@@ -101,20 +102,21 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, lo
     }
   }, [container.state, snapshot.stale, logs]);
   useLayoutEffect(() => {
+    if (!visible && !expanded) return;
     const content = expanded ? modalContent.current : inlineContent.current;
     if (content) {
       content.scrollTop = scrollPosition.current;
       if (expanded) modalInitialPosition.current = content.scrollTop;
     }
-  }, [expanded]);
+  }, [expanded, visible]);
   useLayoutEffect(() => {
-    if (!hasLiveControls || frozen || !followingBottom.current) return;
+    if ((!visible && !expanded) || !hasLiveControls || frozen || !followingBottom.current) return;
     const content = expanded ? modalContent.current : inlineContent.current;
     if (content) { content.scrollTop = content.scrollHeight; scrollPosition.current = content.scrollTop; }
-  }, [text, frozen, hasLiveControls]);
+  }, [text, frozen, hasLiveControls, visible, expanded]);
   useLayoutEffect(() => {
     const viewport = inlineContent.current;
-    if (expanded || !viewport || !hasLiveControls || typeof ResizeObserver === 'undefined') return;
+    if (!visible || expanded || !viewport || !hasLiveControls || typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(() => {
       if (!viewport.clientHeight || frozen || !followingBottom.current) return;
       // Resizing the pane changes the bottom offset without receiving new text.
@@ -124,11 +126,11 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, lo
     });
     observer.observe(viewport);
     return () => observer.disconnect();
-  }, [expanded, hasLiveControls, frozen, !!logsError]);
+  }, [expanded, hasLiveControls, frozen, !!logsError, visible]);
   useLayoutEffect(() => {
     const content = expanded ? modalContent.current : inlineContent.current;
     const match = expanded ? modalMatch.current : inlineMatch.current;
-    if (!searchOpen || !content || !match) return;
+    if ((!visible && !expanded) || !searchOpen || !content || !match) return;
     const viewport = content.getBoundingClientRect();
     const position = match.getBoundingClientRect();
     content.scrollTop += position.top - viewport.top - (content.clientHeight - position.height) / 2;
@@ -282,7 +284,7 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, lo
       {displayDropped && <p className="truncation-notice" role="status">{t('truncated')}</p>}
       {(droppedWhileFrozen || resumeDropped) && <p className="truncation-notice" role="status">{t(droppedWhileFrozen ? 'pendingDropped' : 'resumedDropped')}</p>}
       {logsError && <div className={`log-error ${hasLiveControls ? 'log-stream-error' : ''}`} role="alert"><p>{t('failed')}</p><ErrorDetails error={logsError} /></div>}
-      {(!logsError || hasLiveControls) && <pre ref={inModal ? modalContent : inlineContent} tabIndex={0} className={`log-content ${!text ? 'log-placeholder' : ''}`} aria-label={t('content')} aria-busy={loadingLogs} onScroll={event => { if (inModal || !expanded) {
+      {(!logsError || hasLiveControls) && <pre ref={inModal ? modalContent : inlineContent} tabIndex={0} className={`log-content ${!text ? 'log-placeholder' : ''}`} aria-label={t('content')} aria-busy={loadingLogs} onScroll={event => { if (inModal || (!expanded && visible)) {
         const element = event.currentTarget; scrollPosition.current = element.scrollTop;
         if (hasLiveControls && element.scrollHeight - element.clientHeight - element.scrollTop > 24) {
           // Resizing can clamp a scrolled-up viewport onto its new bottom. A scroll
@@ -295,6 +297,6 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, lo
   return <>{content(false)}{expanded && createPortal(<div className="modal-backdrop"><div ref={dialog} className="logs-modal" role="dialog" aria-modal="true" aria-labelledby="logs-dialog-title" onKeyDown={keyDown}>
     <div className="logs-dialog-heading section-heading"><h2 id="logs-dialog-title">{t('expandedTitle', { name: container.name })}</h2><button ref={closeButton} className="icon-button" onClick={close} aria-label={t('close')}><X size={18} aria-hidden="true" /></button></div>
     {content(true)}
-    <CopyFeedback className="log-copy-feedback" message={showCopyFeedback ? copyFeedback ?? '' : ''} tone={copyFeedbackTone} notificationId={copyFeedbackId} highlighted={copyFeedbackHighlighted} highlightUntil={copyFeedbackHighlightUntil} />
+    <div className="operation-statusbar">{operationFeedback}<CopyFeedback className="log-copy-feedback" message={showCopyFeedback ? copyFeedback ?? '' : ''} tone={copyFeedbackTone} notificationId={copyFeedbackId} highlighted={copyFeedbackHighlighted} highlightUntil={copyFeedbackHighlightUntil} /></div>
   </div></div>, document.body)}</>;
 }

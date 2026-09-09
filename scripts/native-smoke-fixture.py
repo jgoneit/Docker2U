@@ -89,6 +89,7 @@ INSIGHT_STEPS = {
     "pinned-refresh": ["requested inventory refresh with live stream", "inventory refreshed with the same live stream"],
     "clear-cancel": ["requested live Clear", "Clear stopped polling and remained cleared after Refresh"],
     "pane-resize": ["captured live pane before keyboard resize", "resized live pane with keyboard while receiving", "restored live pane without replacing the stream"],
+    "detail-tabs": ["captured log view before detail tabs", "native diagnostics and bounded health output verified", "native connection candidates verified", "restored logs after all three tabs"],
 }
 
 
@@ -131,7 +132,29 @@ def validate_insights(probe, by_name, attempt, events, launch_start):
     native_pid = ready[-1]["pid"]
     if any(row.get("pid") == native_pid and row.get("phase") in ["follow-stopped", "end"] and ready[-1]["timeMs"] <= row.get("timeMs", 0) < first["timeMs"] for row in events):
         raise ValueError("Live probe cites an already terminated native process")
-    if probe == "live-display":
+    if probe == "detail-tabs":
+        diagnostic = by_name["native diagnostics and bounded health output verified"]
+        connections = by_name["native connection candidates verified"]
+        if diagnostic.get("detail") != {"fullId": full_id, "exitCode": 137, "oomKilled": False, "healthConfigured": True, "healthFailures": 1}:
+            raise ValueError("Diagnostic UI values do not match the synthetic native response")
+        if connections.get("detail") != {"ipv4Candidate": "127.0.0.1:15432", "ipv6Candidate": "[::1]:15432", "alias": "native-api", "unpublishedUdp": True}:
+            raise ValueError("Connection UI values do not match the synthetic native response")
+        payloads = [row for row in events if row.get("phase") == "details-payload" and first["timeMs"] <= row.get("timeMs", 0) <= diagnostic["timeMs"]]
+        if len(payloads) != 1 or payloads[0].get("fullId") != full_id:
+            raise ValueError("Detail tabs lack one matching native inspect response")
+        payload = payloads[0]
+        commands = [row for row in events if row.get("phase") == "start" and row.get("pid") == payload.get("pid")
+                    and first["timeMs"] <= row.get("timeMs", 0) <= payload["timeMs"]
+                    and row.get("args", [])[2:5] == ["container", "inspect", "--format"]
+                    and row.get("args", [])[-1:] == [full_id]]
+        if not commands or len(commands[0]["args"]) != 7 or '"HealthConfigured"' not in commands[0]["args"][5]:
+            raise ValueError("Details evidence lacks the allowlisted native inspect command")
+        if not any(row.get("phase") == "end" and row.get("pid") == payload.get("pid") and row.get("exitCode") == 0
+                   and payload["timeMs"] <= row.get("timeMs", 0) <= diagnostic["timeMs"] for row in events):
+            raise ValueError("Detail inspect did not finish successfully")
+        if after.get("preservedView") is not True or after.get("detailsReads") != 1 or after.get("starts") != before.get("starts") or after.get("maximumActiveReads") != 1:
+            raise ValueError("Detail tabs did not preserve their shared read and log view")
+    elif probe == "live-display":
         paused = by_name["paused display while real stdout and stderr arrived"]
         searching = by_name["search display frozen"]
         for left, right in [(first, paused), (searching, last)]:

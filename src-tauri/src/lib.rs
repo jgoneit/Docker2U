@@ -4,8 +4,8 @@ mod process;
 mod process_tests;
 
 use docker::{
-    Action, ApiError, BulkMutation, ContainerList, Core, Environment, LogStreamChunk,
-    LogStreamStarted, Logs, Mutation, StatsSnapshot,
+    Action, ApiError, BulkMutation, ContainerDetails, ContainerList, Core, Environment,
+    LogStreamChunk, LogStreamStarted, Logs, Mutation, StatsSnapshot,
 };
 use tauri::Manager;
 
@@ -43,6 +43,16 @@ async fn get_recent_logs(
 ) -> Result<Logs, ApiError> {
     let core = core.inner().clone();
     worker(move || core.get_recent_logs(&session_id, &handle)).await
+}
+#[tauri::command]
+async fn get_container_details(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    generation: u64,
+    handle: String,
+) -> Result<ContainerDetails, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.get_container_details(&session_id, generation, &handle)).await
 }
 #[tauri::command]
 async fn get_container_stats(
@@ -111,6 +121,7 @@ pub fn run() {
             get_environment,
             list_containers,
             get_recent_logs,
+            get_container_details,
             get_container_stats,
             start_log_stream,
             read_log_stream,
@@ -143,6 +154,7 @@ mod ipc_tests {
                 "allow-get-environment",
                 "allow-list-containers",
                 "allow-get-recent-logs",
+                "allow-get-container-details",
                 "allow-get-container-stats",
                 "allow-start-log-stream",
                 "allow-read-log-stream",

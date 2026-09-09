@@ -7,7 +7,7 @@
 .container-table-memory-column { width: 16%; }
 .container-table thead th { position: sticky; top: 0; z-index: 1; padding: 7px 10px; border-bottom: 1px solid var(--border-subtle); background: var(--inset); color: var(--text-muted); font-size: 12px; font-weight: 500; text-align: left; }
 .container-table td { height: 40px; padding: 4px 10px; vertical-align: middle; }
-.container-table .container-list-item { position: static; padding: 0; }
+.container-table .container-list-item { position: static; padding: 0; cursor: pointer; }
 .container-table .container-list-item:hover { background: var(--hover); }
 .container-table .container-list-item[data-selected="true"] { background: var(--selected); }
 .container-table .container-list-item[data-selected="true"]:hover { background: var(--selected-hover); }
@@ -24,6 +24,8 @@
 .container-table .container-table-number { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .container-table .container-memory-value, .container-table-ports > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .container-table-ports { color: var(--text-muted); font-size: 12px; }
+.container-table-ports .container-connection-link { display: block; max-width: 100%; min-width: 0; padding: 3px 0; border: 0; border-radius: 3px; background: transparent; color: var(--link); font: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.container-table-ports .container-connection-link:hover { text-decoration: underline; background: transparent; }
 .container-table .resource-stale { display: block; color: var(--warning); font-size: 12px; line-height: 1.25; }
 .container-table .container-project-header { display: table-row; padding: 0; background: transparent; border: 0; }
 .container-table .container-project-header td { height: 28px; padding: 6px 15px 3px; }

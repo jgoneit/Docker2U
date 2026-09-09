@@ -11,6 +11,8 @@ use std::{
 
 #[path = "docker_bulk_tests.rs"]
 mod bulk;
+#[path = "docker_details_tests.rs"]
+mod details;
 #[path = "docker_insights_tests.rs"]
 mod insights;
 
@@ -183,6 +185,21 @@ if a[1]=='ls':
     if mode=='malformed': print('{')
     sys.exit()
 if a[1]=='inspect':
+    if '"OOMKilled"' in a[3]:
+        assert len(a)==5, repr(a)
+        if mode=='held_details':
+            (p/'reading-details').write_text('1')
+            deadline=time.monotonic()+10
+            while not (p/'release-details').exists():
+                if time.monotonic()>deadline: sys.exit(1)
+                time.sleep(.005)
+        if mode=='details_fail': print('container disappeared',file=sys.stderr);sys.exit(1)
+        if mode=='details_missing': sys.exit()
+        row=json.loads((p/'detail-row.json').read_text()) if (p/'detail-row.json').exists() else {'Id':a[4],'State':'exited','ExitCode':137,'StartedAt':'2026-09-08T01:00:00Z','FinishedAt':'2026-09-08T01:00:04Z','OOMKilled':True,'RestartCount':2,'HealthConfigured':False,'Health':None,'NetworkMode':'bridge','Ports':None,'Networks':None}
+        if mode=='details_wrong_id': row['Id']='f'*64
+        print(json.dumps(row))
+        if mode=='details_duplicate': print(json.dumps(row))
+        sys.exit()
     if mode=='reconcile_fail' and (p/'mutated').exists(): print('cannot connect',file=sys.stderr);sys.exit(1)
     if mode in ['held_inspect','held_inspect_failure']:
         (p/'inspecting').write_text('1')

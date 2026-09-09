@@ -1,7 +1,7 @@
 import type { BulkMutationResult, CoreError, MutationResult } from './api';
 import { frontendErrorDescriptor } from './frontendErrors';
 
-export type IssueStage = 'connect' | 'list' | 'logs' | 'stats' | 'singleAction' | 'bulkAction';
+export type IssueStage = 'connect' | 'list' | 'logs' | 'stats' | 'details' | 'singleAction' | 'bulkAction';
 export interface SessionIssue {
   stage: IssueStage;
   origin: 'frontendError' | 'nativeError' | 'exception' | 'nativeResult';

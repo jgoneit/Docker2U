@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from '../../App';
-import { api } from '../../api';
+import { api, type ContainerDetails } from '../../api';
 import '../../styles.css';
 import { initializePreferences } from '../../preferences';
 import { nativeCheckpoint, nativePaneSize, readyNativeInventory, readyNativeLogs, type NativeCheckpoint } from './readiness';
@@ -13,6 +13,8 @@ type Binding = { runId: string; binarySha256: string; startedAtMs: number };
 const storedMode = sessionStorage.getItem(marker);
 const mode: Mode = storedMode === 'constructor-fail' || storedMode === 'never-ready' ? storedMode : 'worker';
 const streamEvidence = { starts: 0, reads: 0, stops: 0, activeReads: 0, maximumActiveReads: 0, nonEmptyReads: 0, receivedBytes: 0, streamId: '', fullId: '', statsReads: 0, lastStatsCount: 0, stdoutTick: 0, stderrTick: 0 };
+let detailsReads = 0;
+let lastDetails: ContainerDetails | null = null;
 const report = { marker, mode, streamEvidence, nativeIpc: '__TAURI_INTERNALS__' in window, status: 'ready', binding: null as Binding | null, steps: [] as Evidence[], workerEvents: [] as Evidence[], failures: [] as string[] };
 let changed = () => {};
 function record(name: string, detail?: Record<string, unknown>) {
@@ -77,6 +79,8 @@ const nativeStats = api.getContainerStats;
 api.getContainerStats = async (...args) => { const sample = await nativeStats(...args); ++streamEvidence.statsReads; streamEvidence.lastStatsCount = sample.items.length; changed(); return sample; };
 const nativeStop = api.stopLogStream;
 api.stopLogStream = async (...args) => { await nativeStop(...args); ++streamEvidence.stops; changed(); };
+const nativeDetails = api.getContainerDetails;
+api.getContainerDetails = async (...args) => { const details = await nativeDetails(...args); ++detailsReads; lastDetails = details; return details; };
 
 localStorage.setItem('docker2u.preferences.v1', JSON.stringify({ theme: 'light', language: 'ko' }));
 initializePreferences();
@@ -94,7 +98,7 @@ async function waitFor(check: () => unknown, description: string, timeout = 8000
   throw new Error(`Timed out: ${description}`);
 }
 function panel() {
-  const value = Array.from(document.querySelectorAll<HTMLElement>('.logs-panel')).find(element => !element.hidden);
+  const value = Array.from(document.querySelectorAll<HTMLElement>('.logs-panel')).find(element => !element.closest('[hidden]'));
   assert(value, 'Select a fixture container with an inline log panel');
   return value;
 }
@@ -279,30 +283,38 @@ async function projectStatsProbe() {
   click('native-smoke-1 상세'); await ready();
 }
 async function liveDisplayProbe() {
+  const searchClosed = () => panel().querySelector('.log-search-toggle')?.getAttribute('aria-expanded') === 'false' && panel().querySelector<HTMLElement>('.log-search')?.hidden === true;
+  const hasLossNotice = (message: string) => Array.from(panel().querySelectorAll('.truncation-notice[role="status"]')).some(notice => notice.textContent?.includes(message));
   await ready(); closeLogSearch();
+  await waitFor(() => searchClosed(), 'search closed before live display');
   const resume = Array.from(panel().querySelectorAll<HTMLButtonElement>('button')).find(element => element.textContent?.trim() === '재개');
   resume?.click();
-  await waitFor(() => streamEvidence.stdoutTick > 0 && streamEvidence.stderrTick > 0, 'live-on fixture stdout and stderr ticks', 10000);
+  await waitFor(() => panel().querySelector('.log-pause-toggle')?.getAttribute('aria-pressed') === 'false', 'display resumed before live probe');
+  await waitFor(() => streamEvidence.stdoutTick > 0 && streamEvidence.stderrTick > 0 && content().textContent?.includes('NATIVE_SMOKE_LIVE_STDOUT') && content().textContent?.includes('NATIVE_SMOKE_LIVE_STDERR'), 'live-on fixture stdout and stderr rendered', 10000);
   const streamId = streamEvidence.streamId;
   click('일시정지', panel());
-  await waitFor(() => button('재개', panel()).getAttribute('aria-pressed') === 'true', 'display pause');
+  await waitFor(() => panel().querySelector('.log-pause-toggle')?.getAttribute('aria-pressed') === 'true', 'display pause');
   const frozenText = content().textContent; const pauseTick = Math.max(streamEvidence.stdoutTick, streamEvidence.stderrTick);
   record('paused live display', { streamId, fullId: streamEvidence.fullId, beforeTick: pauseTick }); const beforeReads = streamEvidence.nonEmptyReads;
   await waitFor(() => streamEvidence.stdoutTick >= pauseTick + 3 && streamEvidence.stderrTick >= pauseTick + 3 && streamEvidence.nonEmptyReads > beforeReads, 'native bytes while display is paused');
+  // IPC counters advance before LiveLogController and React receive the frame.
+  // Resume only after the rendered paused view has observed buffer loss.
+  await waitFor(() => hasLossNotice('표시를 멈춘 사이 일부 로그'), 'pending loss notice rendered while paused');
   assert(content().textContent === frozenText, 'Paused display changed while real IPC bytes arrived');
   assert(streamEvidence.streamId === streamId, 'Pausing replaced the stream');
   record('paused display while real stdout and stderr arrived', { streamId, fullId: streamEvidence.fullId, beforeTick: pauseTick, afterTick: Math.min(streamEvidence.stdoutTick, streamEvidence.stderrTick), newFrames: streamEvidence.nonEmptyReads - beforeReads });
   click('재개', panel());
-  await waitFor(() => content().textContent !== frozenText && content().textContent?.includes('NATIVE_SMOKE_LIVE_STDOUT'), 'display catches up after resume');
-  assert(panel().textContent?.includes('오래된 로그를 건너뛰고'), 'Resuming after ring eviction did not show the loss notice');
+  await waitFor(() => panel().querySelector('.log-pause-toggle')?.getAttribute('aria-pressed') === 'false' && content().textContent !== frozenText && content().textContent?.includes('NATIVE_SMOKE_LIVE_STDOUT') && hasLossNotice('오래된 로그를 건너뛰고'), 'resumed display catches up with the ring loss notice');
   record('resume caught up with ring loss notice');
-  click('로그 검색 열기', panel()); await waitFor(() => panel().querySelector('.log-search-input'), 'search opened'); input('NATIVE_SMOKE_LIVE');
+  click('로그 검색 열기', panel()); await waitFor(() => panel().querySelector('.log-search-toggle')?.getAttribute('aria-expanded') === 'true' && panel().querySelector<HTMLElement>('.log-search')?.hidden === false, 'search opened'); input('NATIVE_SMOKE_LIVE');
+  await waitFor(() => panel().querySelector('mark')?.textContent === 'NATIVE_SMOKE_LIVE', 'live search result rendered');
   const searchText = content().textContent; const searchTick = Math.max(streamEvidence.stdoutTick, streamEvidence.stderrTick);
   record('search display frozen', { streamId, fullId: streamEvidence.fullId, beforeTick: searchTick });
   await waitFor(() => streamEvidence.stdoutTick >= searchTick + 3 && streamEvidence.stderrTick >= searchTick + 3, 'real bytes while search is frozen');
+  await waitFor(() => hasLossNotice('표시를 멈춘 사이 일부 로그'), 'pending loss notice rendered during search');
   assert(content().textContent === searchText, 'Search results moved with incoming logs');
   click('로그 검색 닫기', panel());
-  await waitFor(() => content().textContent !== searchText, 'closing search resumes the display');
+  await waitFor(() => searchClosed() && panel().querySelector('.log-pause-toggle')?.getAttribute('aria-pressed') === 'false' && content().textContent !== searchText, 'closing search resumes the display');
   assert(streamEvidence.streamId === streamId && streamEvidence.maximumActiveReads === 1, 'Live probe replaced the stream or overlapped read IPC');
   record('search froze and resumed without restarting the stream', { streamId, fullId: streamEvidence.fullId, afterTick: Math.min(streamEvidence.stdoutTick, streamEvidence.stderrTick), maximumActiveReads: streamEvidence.maximumActiveReads });
 }
@@ -376,6 +388,56 @@ async function clearCancelProbe() {
   record('Clear stopped polling and remained cleared after Refresh', { streamId: streamEvidence.streamId, fullId: streamEvidence.fullId, stoppedStreams: streamEvidence.stops - stops, readsAfterClear: reads, starts });
 }
 
+async function detailTabsProbe() {
+  click('로그');
+  click('native-smoke-1 상세');
+  await ready(); closeLogSearch();
+  const beforeRefresh = nativeCheckpoint(document);
+  click('새로고침');
+  await waitFor(() => readyNativeInventory(document, beforeRefresh), 'new inventory before detail tabs');
+  await ready();
+  if (panel().querySelector('.log-pause-toggle')?.getAttribute('aria-pressed') !== 'true') click('일시정지', panel());
+  await waitFor(() => panel().querySelector('.log-pause-toggle')?.getAttribute('aria-pressed') === 'true', 'paused logs before detail tabs');
+  click('로그 검색 열기', panel());
+  await waitFor(() => panel().querySelector('.log-search-input'), 'log search before detail tabs');
+  input('NATIVE_SMOKE');
+  await waitFor(() => panel().querySelector('mark'), 'native fixture log search match');
+  const log = content(); const frozenText = log.textContent;
+  log.scrollTop = Math.min(80, log.scrollHeight - log.clientHeight); log.dispatchEvent(new Event('scroll'));
+  const scrollTop = log.scrollTop;
+  const identity = { streamId: streamEvidence.streamId, fullId: streamEvidence.fullId };
+  const starts = streamEvidence.starts; const previousDetailsReads = detailsReads;
+  record('captured log view before detail tabs', { ...identity, starts });
+  click('상태 진단');
+  await waitFor(() => detailsReads === previousDetailsReads + 1 && document.querySelector('.container-insights')?.getAttribute('aria-busy') === 'false', 'real native diagnostic response');
+  const diagnostic = document.querySelector<HTMLElement>('.container-insights');
+  assert(diagnostic && diagnostic.getBoundingClientRect().height > 0, 'Diagnostic tab is not visible');
+  assert(diagnostic.textContent?.includes('종료 코드 137만으로') && diagnostic.textContent?.includes('상태 검사 결과가 비정상'), 'Factual exit/OOM/health diagnostics missing');
+  const output = diagnostic.querySelector<HTMLDetailsElement>('.insights-output-disclosure');
+  assert(output && !output.open, 'Health output is not initially collapsed');
+  output.querySelector('summary')!.click();
+  await waitFor(() => output.open, 'health output disclosure opens');
+  assert(output.querySelector('pre')?.textContent === 'NATIVE_SMOKE_HEALTH_FAILURE <b>refused</b>' && !output.querySelector('b'), 'Health output was altered or interpreted as HTML');
+  const details = lastDetails;
+  assert(details && details.fullId === identity.fullId && details.diagnostics.health?.recentFailures.length === 1, 'Diagnostic UI lacks the matching IPC identity');
+  record('native diagnostics and bounded health output verified', { fullId: details.fullId, exitCode: details.diagnostics.exitCode, oomKilled: details.diagnostics.oomKilled, healthConfigured: details.diagnostics.healthConfigured, healthFailures: details.diagnostics.health.recentFailures.length });
+  click('접속 정보');
+  await waitFor(() => document.querySelector('.container-insights')?.textContent?.includes('호스트에서 접속'), 'native connection tab');
+  const connections = document.querySelector<HTMLElement>('.container-insights')!;
+  assert(connections.getBoundingClientRect().height > 0 && button('주소 복사: 127.0.0.1:15432', connections) && button('주소 복사: [::1]:15432', connections) && button('주소 복사: native-api', connections), 'Native connection candidates are missing');
+  assert(connections.textContent?.includes('53/UDP') && connections.textContent?.includes('호스트에 게시되지 않음'), 'Unpublished UDP observation missing');
+  assert(!connections.querySelector('button[aria-label="주소 복사: 0.0.0.0:15432"], button[aria-label="주소 복사: [::]:15432"]'), 'Wildcard binding offered as a copyable address');
+  record('native connection candidates verified', { ipv4Candidate: '127.0.0.1:15432', ipv6Candidate: '[::1]:15432', alias: 'native-api', unpublishedUdp: true });
+  click('로그');
+  await waitFor(() => !log.closest('[hidden]'), 'log tab is visible again');
+  await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  const preservedView = content() === log && log.textContent === frozenText && Math.abs(log.scrollTop - scrollTop) <= 1
+    && panel().querySelector<HTMLInputElement>('.log-search-input')?.value === 'NATIVE_SMOKE'
+    && panel().querySelector('.log-pause-toggle')?.getAttribute('aria-pressed') === 'true';
+  assert(preservedView && streamEvidence.streamId === identity.streamId && streamEvidence.starts === starts && detailsReads === previousDetailsReads + 1, 'Detail tabs replaced the log state, stream or shared detail snapshot');
+  record('restored logs after all three tabs', { ...identity, starts: streamEvidence.starts, preservedView, detailsReads: detailsReads - previousDetailsReads, maximumActiveReads: streamEvidence.maximumActiveReads });
+}
+
 function Harness() {
   const [, update] = useState(0);
   const [open, setOpen] = useState(true);
@@ -394,6 +456,7 @@ function Harness() {
     {open && <><h2 style={{ fontSize: 16 }}>Native smoke · isolated real IPC</h2><p>Arm the next Engine failure, or remove/restore the fixture socket using the runner before its corresponding probe. No real Docker is used. Keep live-off for dense search; bind a ready stream before enabling live-on for the live display probe.</p>
       <label>Worker mode <select disabled={running} value={mode} onChange={event => { sessionStorage.setItem(marker, event.target.value); location.reload(); }}><option value="worker">Real Worker</option><option value="constructor-fail">Injected constructor failure</option><option value="never-ready">Suppress ready for timeout</option></select></label>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, margin: '8px 0' }}>
+        <button disabled={running} onClick={() => void run('detail-tabs', detailTabsProbe)}>Run native diagnostics / connection tabs</button>
         <button disabled={running} onClick={() => void run('project-stats', projectStatsProbe)}>Run project / stats probe</button>
         <button disabled={running} onClick={() => void run('live-display', liveDisplayProbe)}>Run live pause / search</button>
         <button disabled={running} onClick={() => void run('pane-resize', paneResizeProbe)}>Run live pane keyboard resize</button>

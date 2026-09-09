@@ -9,10 +9,13 @@ use std::{
     time::Duration,
 };
 
+#[path = "docker_details.rs"]
+mod details;
 #[path = "docker_stats.rs"]
 mod stats;
 #[path = "docker_stream.rs"]
 mod stream;
+pub use details::ContainerDetails;
 pub use stats::StatsSnapshot;
 pub use stream::{LogStreamChunk, LogStreamStarted};
 
@@ -493,6 +496,7 @@ struct State {
     diagnosing: bool,
     mutating: bool,
     stats_running: bool,
+    details_running: bool,
     stream_starting: bool,
     log_stream: Option<stream::ActiveLogStream>,
 }

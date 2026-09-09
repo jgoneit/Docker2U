@@ -17,6 +17,7 @@ describe('native IPC boundary', () => {
     await expect(api.getEnvironment()).rejects.toMatchObject({ code: 'NATIVE_REQUIRED' });
     await expect(api.mutateContainer('session', 'handle', 'start')).rejects.toMatchObject({ code: 'NATIVE_REQUIRED' });
     await expect(api.mutateContainers('session', 1, ['handle'], 'start')).rejects.toMatchObject({ code: 'NATIVE_REQUIRED' });
+    await expect(api.getContainerDetails('session', 1, 'handle')).rejects.toMatchObject({ code: 'NATIVE_REQUIRED' });
     expect(native.invoke).not.toHaveBeenCalled();
   });
 
@@ -25,12 +26,14 @@ describe('native IPC boundary', () => {
     await api.getEnvironment();
     await api.listContainers('session-a');
     await api.getRecentLogs('session-a', 'opaque-handle');
+    await api.getContainerDetails('session-a', 7, 'opaque-handle');
     await api.mutateContainer('session-a', 'opaque-handle', 'restart');
     await api.mutateContainers('session-a', 7, ['opaque-a', 'opaque-b'], 'stop');
     expect(native.invoke.mock.calls).toEqual([
       ['get_environment', undefined],
       ['list_containers', { sessionId: 'session-a' }],
       ['get_recent_logs', { sessionId: 'session-a', handle: 'opaque-handle' }],
+      ['get_container_details', { sessionId: 'session-a', generation: 7, handle: 'opaque-handle' }],
       ['mutate_container', { sessionId: 'session-a', handle: 'opaque-handle', action: 'restart' }],
       ['mutate_containers', { sessionId: 'session-a', generation: 7, handles: ['opaque-a', 'opaque-b'], action: 'stop' }],
     ]);

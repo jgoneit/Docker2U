@@ -11,6 +11,7 @@ import time
 LIMIT = 2 * 1024 * 1024
 END = b"\nNATIVE_SMOKE_END\n"
 INSPECT_FORMAT = '{"Id":{{json .Id}},"Name":{{json .Name}},"Image":{{json .Config.Image}},"Created":{{json .Created}},"State":{{json .State.Status}},"Health":{{with index .State "Health"}}{{json .Status}}{{else}}null{{end}},"Ports":{{json (index .NetworkSettings "Ports")}},"ComposeProject":{{with index .Config.Labels "com.docker.compose.project"}}{{json .}}{{else}}null{{end}},"ComposeService":{{with index .Config.Labels "com.docker.compose.service"}}{{json .}}{{else}}null{{end}}}'
+DETAILS_FORMAT = '{"Id":{{json .Id}},"State":{{json .State.Status}},"ExitCode":{{json (index .State "ExitCode")}},"StartedAt":{{json (index .State "StartedAt")}},"FinishedAt":{{json (index .State "FinishedAt")}},"OOMKilled":{{json (index .State "OOMKilled")}},"RestartCount":{{json .RestartCount}},"HealthConfigured":{{$config := .Config}}{{if eq (printf "%T" $config) "map[string]interface {}"}}{{$health := index $config "Healthcheck"}}{{$healthType := printf "%T" $health}}{{if eq $healthType "<nil>"}}false{{else if eq $healthType "map[string]interface {}"}}{{$test := index $health "Test"}}{{$testType := printf "%T" $test}}{{if eq $testType "<nil>"}}false{{else if or (eq $testType "[]interface {}") (eq $testType "[]string")}}{{if eq (len $test) 0}}false{{else}}{{$kind := index $test 0}}{{if eq (printf "%T" $kind) "string"}}{{if or (eq $kind "CMD") (eq $kind "CMD-SHELL")}}true{{else if eq $kind "NONE"}}false{{else}}null{{end}}{{else}}null{{end}}{{end}}{{else}}null{{end}}{{else}}null{{end}}{{else}}null{{end}},"Health":{{with index .State "Health"}}{"Status":{{json .Status}},"FailingStreak":{{json .FailingStreak}},"Log":[{{range $i,$entry := .Log}}{{if $i}},{{end}}{"Start":{{json $entry.Start}},"End":{{json $entry.End}},"ExitCode":{{json $entry.ExitCode}},"Output":{{json $entry.Output}}}{{end}}]}{{else}}null{{end}},"NetworkMode":{{json (index .HostConfig "NetworkMode")}},"Ports":{{json (index .NetworkSettings "Ports")}},"Networks":{{with index .NetworkSettings "Networks"}}{ {{$first := true}}{{range $name,$network := .}}{{if not $first}},{{end}}{{$first = false}}{{json $name}}:{"Aliases":{{json $network.Aliases}},"IPAddress":{{json $network.IPAddress}},"GlobalIPv6Address":{{json $network.GlobalIPv6Address}}}{{end}} }{{else}}null{{end}}}'
 IDS = [format(number, "064x") for number in [1, 2, 3]]
 STOP_REQUESTED = False
 
@@ -94,6 +95,19 @@ def run(root, arguments):
     if args == ["container", "ls", "--all", "--no-trunc", "--format", "{{json .}}"]:
         for identifier in IDS:
             print(json.dumps({"ID": identifier}))
+        return 0
+    if len(args) == 5 and args[:4] == ["container", "inspect", "--format", DETAILS_FORMAT] and args[4] in IDS:
+        identifier = args[4]
+        record(root, phase="details-payload", fullId=identifier, exitCode=137, oomKilled=False, healthConfigured=True)
+        print(json.dumps({"Id": identifier, "State": "running", "ExitCode": 137,
+                          "StartedAt": "2026-09-08T00:00:00Z", "FinishedAt": "2026-09-07T23:59:00Z",
+                          "OOMKilled": False, "RestartCount": 3, "HealthConfigured": True,
+                          "Health": {"Status": "unhealthy", "FailingStreak": 1, "Log": [
+                              {"Start": "2026-09-08T00:00:01Z", "End": "2026-09-08T00:00:02Z", "ExitCode": 1,
+                               "Output": "NATIVE_SMOKE_HEALTH_FAILURE <b>refused</b>"}]},
+                          "NetworkMode": "bridge", "Ports": {"5432/tcp": [
+                              {"HostIp": "0.0.0.0", "HostPort": "15432"}, {"HostIp": "::", "HostPort": "15432"}], "53/udp": None},
+                          "Networks": {"native-smoke-default": {"Aliases": ["native-api"], "IPAddress": "172.18.0.2", "GlobalIPv6Address": "fd00::2"}}}))
         return 0
     if len(args) >= 5 and args[:4] == ["container", "inspect", "--format", INSPECT_FORMAT]:
         for identifier in args[4:]:

@@ -14,7 +14,7 @@ const rows: Container[] = ['alpha', 'beta'].map((name, index) => ({ handle: name
 const raw = 'raw log line\nLAST_LINE';
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 const advance = (milliseconds: number) => act(async () => { await vi.advanceTimersByTimeAsync(milliseconds); });
-const footerFeedback = () => within(screen.getByRole('contentinfo')).getByRole('status');
+const footerFeedback = () => screen.getByRole('contentinfo').querySelector<HTMLElement>('.clipboard-feedback')!;
 // Dispatch without user-event's real-time scheduling; these tests own the clock.
 const click = (element: HTMLElement) => act(async () => { element.focus(); fireEvent.click(element); });
 const change = (element: HTMLElement, value: string) => act(async () => { fireEvent.change(element, { target: { value } }); });

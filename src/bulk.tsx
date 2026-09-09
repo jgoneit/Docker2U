@@ -1,5 +1,5 @@
 import { useEffect, type RefObject } from 'react';
-import { AlertTriangle, LoaderCircle, Play, RefreshCw, Square } from 'lucide-react';
+import { AlertTriangle, Play, RefreshCw, Square } from 'lucide-react';
 import type { Action, BulkMutationResult, ConnectionTarget, Container, CoreError } from './api';
 import { actionLabel, ConnectionFacts, ErrorDetails, ResultDisclosure, stateLabel } from './components';
 import { translate, useI18n } from './i18n';
@@ -34,9 +34,8 @@ export function isBoundBulkResult(value: BulkMutationResult, sessionId: string, 
   });
 }
 
-export function BulkSelection({ visible, checked, disabled, actionsDisabled, pending, selectAllRef, regionRef, onToggleAll, onClear, onAction }: {
+export function BulkSelection({ visible, checked, disabled, actionsDisabled, selectAllRef, regionRef, onToggleAll, onClear, onAction }: {
   visible: Container[]; checked: Container[]; disabled: boolean; actionsDisabled: boolean;
-  pending: { action: Action; count: number } | null;
   selectAllRef: RefObject<HTMLInputElement | null>; regionRef: RefObject<HTMLElement | null>;
   onToggleAll: () => void; onClear: () => void; onAction: (action: Action, returnFocus?: HTMLElement) => void;
 }) {
@@ -54,7 +53,6 @@ export function BulkSelection({ visible, checked, disabled, actionsDisabled, pen
       const excluded = checked.filter(container => !canApply(container, action));
       return <div key={action}><h3>{t('excluded', { action: actionLabel(action, language), count: excluded.length })}</h3>{excluded.length ? <ul>{excluded.map(container => <li key={container.handle}><strong>{container.name}</strong> · {container.shortId}<p>{exclusionReason(container, action, language)}</p></li>)}</ul> : <p>{t('allEligible')}</p>}</div>;
     })}</details></>}
-    {pending && <p className="operation-notice" role="status"><LoaderCircle size={16} className="spin" aria-hidden="true" />{t('pending', { action: actionLabel(pending.action, language), count: pending.count })}</p>}
   </section>;
 }
 
@@ -66,7 +64,7 @@ function resultClass(operation: BulkOperation) {
   if (result.items.some(item => item.outcome === 'failed')) return 'outcome-failed';
   return result.items.some(item => item.outcome === 'succeeded') ? '' : 'outcome-neutral';
 }
-export function BulkResult({ operation }: { operation: BulkOperation }) {
+export function BulkResult({ operation, disclosure = true }: { operation: BulkOperation; disclosure?: boolean }) {
   const t = useI18n(bulkMessages);
   const { language } = usePreferences();
   const { result } = operation;
@@ -84,8 +82,8 @@ export function BulkResult({ operation }: { operation: BulkOperation }) {
   return <section className={`bulk-result operation-result ${resultClass(operation)}`} aria-label={t('regionResult')}>
     <h3>{!result && <AlertTriangle size={16} aria-hidden="true" />}{t(result ? 'titleResult' : operation.uncertain ? 'titleUnknown' : 'titleRejected', { action: actionLabel(operation.action, language) })}</h3>
     <p>{t('selected', { count: operation.containers.length })}</p>
-    {result && <p role="status" className="bulk-summary">{outcomes.map(outcome => <span key={outcome}>{t('outcomeCount', { outcome: t(outcome), count: result.items.filter(item => item.outcome === outcome).length })}</span>)}</p>}
+    {result && <p role={disclosure ? 'status' : undefined} className="bulk-summary">{outcomes.map(outcome => <span key={outcome}>{t('outcomeCount', { outcome: t(outcome), count: result.items.filter(item => item.outcome === outcome).length })}</span>)}</p>}
     {result?.items.some(item => item.outcome === 'resultUnknown' || item.outcome === 'notExecuted') && <p>{t('uncertainItems')}</p>}
-    {warning ? content : <ResultDisclosure identity={operation}>{content}</ResultDisclosure>}
+    {warning || !disclosure ? content : <ResultDisclosure identity={operation}>{content}</ResultDisclosure>}
   </section>;
 }

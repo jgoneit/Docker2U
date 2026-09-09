@@ -1,6 +1,8 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { frontendError } from './frontendErrors';
 import { sessionDiagnostics, type FrontendSession } from './frontendSession';
+import type { ContainerDetails } from './containerDetailsTypes';
+export type { ContainerDetails } from './containerDetailsTypes';
 
 export type Action = 'start' | 'stop' | 'restart';
 export interface Environment {
@@ -109,6 +111,7 @@ export const api = {
   readLogStream: (sessionId: string, streamId: string) => call<LogStreamRead>('read_log_stream', { sessionId, streamId }),
   stopLogStream: (sessionId: string, streamId: string) => call<void>('stop_log_stream', { sessionId, streamId }),
   getContainerStats: (sessionId: string, generation: number, handles: string[]) => call<ContainerStats>('get_container_stats', { sessionId, generation, handles }),
+  getContainerDetails: (sessionId: string, generation: number, handle: string) => call<ContainerDetails>('get_container_details', { sessionId, generation, handle }),
   mutateContainer: (sessionId: string, handle: string, action: Action) => call<MutationResult>('mutate_container', { sessionId, handle, action }),
   mutateContainers: (sessionId: string, generation: number, handles: string[], action: Action) => call<BulkMutationResult>('mutate_containers', { sessionId, generation, handles, action }),
 };

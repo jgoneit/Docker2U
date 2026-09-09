@@ -1,10 +1,11 @@
 import { ResourceMetadata, ResourceUsage } from './ResourceUsage';
 import './summaryLayout.css';
+import './detailTabs.css';
 import type { ResourceSample } from './useContainerStats';
 import type { LiveLogStatus } from './useLiveLogs';
 import { useEffect, useId, useRef, useState } from 'react';
-import type { KeyboardEvent, MouseEvent, RefObject } from 'react';
-import { AlertTriangle, CheckCircle2, Copy, LoaderCircle, Play, RefreshCw, Square, X } from 'lucide-react';
+import type { KeyboardEvent, MouseEvent, ReactNode, RefObject } from 'react';
+import { AlertTriangle, CheckCircle2, Copy, Play, RefreshCw, Square, X } from 'lucide-react';
 import type { Action, ConnectionTarget, Container, ContainerList, CoreError, Environment, MutationResult } from './api';
 import { diagnosticsText } from './api';
 import { displayErrorMessage, type FrontendErrorDescriptor } from './frontendErrors';
@@ -29,7 +30,8 @@ export const readableStates = new Set(['created', 'running', 'paused', 'restarti
 export type Operation = MutationResult & ConnectionTarget & { fullId: string; name: string; action: Action; frontendError?: FrontendErrorDescriptor };
 export type Confirmation = ConnectionTarget & { action: 'stop' | 'restart'; sessionId: string; generation: number; returnFocus?: HTMLElement }
   & ({ container: Container; containers?: never } | { containers: Container[]; container?: never });
-export type CopyLabel = 'logs' | 'fullId' | 'diagnostics' | 'command';
+export type CopyLabel = 'logs' | 'fullId' | 'diagnostics' | 'command' | 'address' | 'healthOutput';
+export type DetailTab = 'logs' | 'diagnostics' | 'connectivity';
 export type CopyText = (text: string, label: CopyLabel) => Promise<void>;
 
 export function formatTime(value?: string, language: Language = 'ko') {
@@ -112,7 +114,7 @@ export function ConfirmDialog({ confirmation, blocked = false, reconnectFocus, o
 function DiagnosticIssue({ issue }: { issue: SessionIssue }) {
   const t = useI18n(componentMessages);
   const { language } = usePreferences();
-  const stageKeys = { connect: 'stageConnect', list: 'stageList', logs: 'stageLogs', stats: 'stageStats', singleAction: 'stageSingleAction', bulkAction: 'stageBulkAction' } as const;
+  const stageKeys = { connect: 'stageConnect', list: 'stageList', logs: 'stageLogs', stats: 'stageStats', details: 'stageDetails', singleAction: 'stageSingleAction', bulkAction: 'stageBulkAction' } as const;
   const originKeys = { frontendError: 'originFrontendError', nativeError: 'originNativeError', exception: 'originException', nativeResult: 'originNativeResult' } as const;
   return <div className="diagnostic-issue">
     <h3>{t(issue.requiresReconnect ? 'reconnectCause' : 'latestIssue')}</h3>
@@ -147,8 +149,8 @@ export function Diagnostics({ environment, frontendSession, close, copy }: { env
     {(environment || frontendSession) && <><button onClick={() => void copy(diagnosticsText(environment, frontendSession), 'diagnostics')}><Copy size={14} aria-hidden="true" />{t('diagnosticsCopy')}</button><p className="muted small">{t('copyAllowlist')}</p></>}
   </section>;
 }
-export function ContainerSummary({ container, snapshot, copy, mutating, mutationBlocked, mutationAllowed, resourceSample }: {
-  container: Container; snapshot: ContainerList; copy: CopyText; mutating: boolean; mutationBlocked: boolean; mutationAllowed: boolean; resourceSample?: ResourceSample;
+export function ContainerSummary({ container, snapshot, copy, mutationBlocked, mutationAllowed, resourceSample, onShowConnections }: {
+  container: Container; snapshot: ContainerList; copy: CopyText; mutationBlocked: boolean; mutationAllowed: boolean; resourceSample?: ResourceSample; onShowConnections?: () => void;
 }) {
   const t = useI18n(componentMessages);
   const { language } = usePreferences();
@@ -159,7 +161,7 @@ export function ContainerSummary({ container, snapshot, copy, mutating, mutation
       <dl className="summary-facts">
         <div><dt>{t('image')}</dt><dd>{container.image}</dd></div>
         <div><dt>{t('containerId')}</dt><dd><code>{container.fullId}</code><button className="icon-button" aria-label={t('copyFullId')} onClick={() => void copy(container.fullId, 'fullId')}><Copy size={13} aria-hidden="true" /></button></dd></div>
-        <div><dt>{t('ports')}</dt><dd>{container.ports.length ? container.ports.join(' · ') : t('noPorts')}</dd></div>
+        <div><dt>{t('ports')}</dt><dd>{onShowConnections ? <button className="text-button" onClick={onShowConnections}>{t('viewConnectivity')}</button> : container.ports.length ? container.ports.join(' · ') : t('noPorts')}</dd></div>
         <div><dt>{t('project')}</dt><dd>{container.composeProject || t('noProject')}</dd></div>
         <div><dt>{t('service')}</dt><dd>{container.composeService || '—'}</dd></div>
         {(!container.health || container.health === 'none') && <div><dt>{t('health')}</dt><dd><Health value={container.health} /></dd></div>}
@@ -167,18 +169,27 @@ export function ContainerSummary({ container, snapshot, copy, mutating, mutation
       </dl>
       <ResourceMetadata sample={resourceSample} />
     </details>
-    {mutating && <p className="operation-notice" role="status"><LoaderCircle size={16} className="spin" aria-hidden="true" />{t('operating')}</p>}
     {mutationBlocked && mutationAllowed && <div className="operation-warning" role="alert">{t('blocked')}</div>}
     {snapshot.stale && <p className="operation-warning">{t('staleActions')}</p>}
   </div>;
 }
-export function ContainerDetail({ container, snapshot, logs, logsError, loadingLogs, logRequestPending = false, refreshing, mutating, mutationBlocked, mutationAllowed, loadLogs, clearLogs, requestAction, copy, copyFeedback, copyFeedbackTone, copyFeedbackId, copyFeedbackHighlighted, copyFeedbackHighlightUntil, logsExpanded, onLogsExpandedChange, liveStatus }: {
+export function ContainerDetail({ container, snapshot, logs, logsError, loadingLogs, logRequestPending = false, refreshing, mutating, mutationBlocked, mutationAllowed, loadLogs, clearLogs, requestAction, copy, copyFeedback, copyFeedbackTone, copyFeedbackId, copyFeedbackHighlighted, copyFeedbackHighlightUntil, logsExpanded, onLogsExpandedChange, liveStatus, activeTab = 'logs', onTabChange, insights, operationFeedback }: {
   container: Container; snapshot: ContainerList; logs: LogSnapshot | null; logsError: CoreError | null;
   loadingLogs: boolean; logRequestPending?: boolean; refreshing: boolean; mutating: boolean; mutationBlocked: boolean; mutationAllowed: boolean;
   loadLogs: () => void; clearLogs: () => void; requestAction: (action: Action, returnFocus?: HTMLElement) => void; copy: CopyText;
   liveStatus?: LiveLogStatus; copyFeedback?: string; copyFeedbackTone?: CopyFeedbackTone; copyFeedbackId?: number; copyFeedbackHighlighted?: boolean; copyFeedbackHighlightUntil?: number; logsExpanded?: boolean; onLogsExpandedChange?: (expanded: boolean) => void;
+  activeTab?: DetailTab; onTabChange?: (tab: DetailTab) => void; insights?: ReactNode; operationFeedback?: ReactNode;
 }) {
   const t = useI18n(componentMessages);
+  const tabId = useId();
+  const tabs = ['logs', 'diagnostics', 'connectivity'] as const;
+  const tabLabels = { logs: 'tabLogs', diagnostics: 'tabDiagnostics', connectivity: 'tabConnectivity' } as const;
+  function tabKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : null;
+    if (next === null) return;
+    event.preventDefault();
+    event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+  }
   const [localExpanded, setLocalExpanded] = useState(false);
   const expanded = logsExpanded ?? localExpanded;
   const setExpanded = onLogsExpandedChange ?? setLocalExpanded;
@@ -189,8 +200,14 @@ export function ContainerDetail({ container, snapshot, logs, logsError, loadingL
     requestAction(action, event.currentTarget);
   }
   return <div className="container-detail">
-    <section className="recovery-panel" aria-labelledby="recovery-title"><h3 id="recovery-title">{t('recovery')}</h3><div className="recovery-actions"><button className="action-button action-start" disabled={actionsDisabled || !['created', 'exited'].includes(container.state)} onClick={() => requestAction('start')}><Play size={14} aria-hidden="true" />{t('start')}</button><button className="action-button action-stop" disabled={actionsDisabled || container.state !== 'running'} onClick={event => requestConfirmation(event, 'stop')}><Square size={13} aria-hidden="true" />{t('stop')}</button><button className="action-button action-restart" disabled={actionsDisabled || container.state !== 'running'} onClick={event => requestConfirmation(event, 'restart')}><RefreshCw size={14} aria-hidden="true" />{t('restart')}</button></div></section>
-    <LogPanel liveStatus={liveStatus} container={container} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} loadLogs={loadLogs} clearLogs={clearLogs} copy={copy} copyFeedback={copyFeedback} copyFeedbackTone={copyFeedbackTone} copyFeedbackId={copyFeedbackId} copyFeedbackHighlighted={copyFeedbackHighlighted} copyFeedbackHighlightUntil={copyFeedbackHighlightUntil} expanded={expanded} onExpandedChange={setExpanded} />
+    <section className="recovery-panel detail-toolbar" aria-label={t('recovery')}>
+      <div className="detail-tabs" role="tablist" aria-label={t('detailTabs')}>{tabs.map((tab, index) => <button key={tab} type="button" role="tab" id={`${tabId}-${tab}-tab`} aria-selected={activeTab === tab} aria-controls={`${tabId}-${tab}-panel`} tabIndex={activeTab === tab ? 0 : -1} onClick={() => onTabChange?.(tab)} onKeyDown={event => tabKeyDown(event, index)}>{t(tabLabels[tab])}</button>)}</div>
+      <div className="recovery-actions"><button className="action-button action-start" disabled={actionsDisabled || !['created', 'exited'].includes(container.state)} onClick={() => requestAction('start')}><Play size={14} aria-hidden="true" />{t('start')}</button><button className="action-button action-stop" disabled={actionsDisabled || container.state !== 'running'} onClick={event => requestConfirmation(event, 'stop')}><Square size={13} aria-hidden="true" />{t('stop')}</button><button className="action-button action-restart" disabled={actionsDisabled || container.state !== 'running'} onClick={event => requestConfirmation(event, 'restart')}><RefreshCw size={14} aria-hidden="true" />{t('restart')}</button></div>
+    </section>
+    <div className="detail-tab-panel" id={`${tabId}-logs-panel`} role="tabpanel" aria-labelledby={`${tabId}-logs-tab`} hidden={activeTab !== 'logs'}>
+      <LogPanel visible={activeTab === 'logs'} operationFeedback={operationFeedback} liveStatus={liveStatus} container={container} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} loadLogs={loadLogs} clearLogs={clearLogs} copy={copy} copyFeedback={copyFeedback} copyFeedbackTone={copyFeedbackTone} copyFeedbackId={copyFeedbackId} copyFeedbackHighlighted={copyFeedbackHighlighted} copyFeedbackHighlightUntil={copyFeedbackHighlightUntil} expanded={expanded} onExpandedChange={setExpanded} />
+    </div>
+    {tabs.filter(tab => tab !== 'logs').map(tab => <div key={tab} className="detail-tab-panel" id={`${tabId}-${tab}-panel`} role="tabpanel" aria-labelledby={`${tabId}-${tab}-tab`} hidden={activeTab !== tab}>{activeTab === tab && insights}</div>)}
   </div>;
 }
 
@@ -202,7 +219,7 @@ export function ResultDisclosure({ identity, children }: { identity: object; chi
   useEffect(() => { setOpen(false); }, [identity]);
   return <><button className="result-toggle" aria-expanded={open} aria-controls={id} onClick={() => setOpen(value => !value)}>{t(open ? 'hideResult' : 'showResult')}</button><div id={id} hidden={!open}>{children}</div></>;
 }
-export function OperationResult({ operation, copy }: { operation: Operation; copy: CopyText }) {
+export function OperationResult({ operation, copy, disclosure = true }: { operation: Operation; copy: CopyText; disclosure?: boolean }) {
   const t = useI18n(componentMessages);
   const { language } = usePreferences();
   const warning = operation.outcome === 'resultUnknown' || operation.mutationBlocked || operation.reconciliation === 'failed';
@@ -217,6 +234,6 @@ export function OperationResult({ operation, copy }: { operation: Operation; cop
   </>;
   return <section className={`operation-result outcome-${warning ? 'resultUnknown' : operation.outcome}`} aria-label={t('operationRegion')}>
     <h3 className="operation-summary">{warning || operation.outcome !== 'succeeded' ? <AlertTriangle size={16} aria-hidden="true" /> : <CheckCircle2 size={16} aria-hidden="true" />}{t(operation.outcome)} · {actionLabel(operation.action, language)} · {operation.name}</h3>
-    {warning ? content : <ResultDisclosure identity={operation}>{content}</ResultDisclosure>}
+    {warning || !disclosure ? content : <ResultDisclosure identity={operation}>{content}</ResultDisclosure>}
   </section>;
 }

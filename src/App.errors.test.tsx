@@ -51,6 +51,7 @@ describe('retained frontend errors follow language changes without Docker reques
       mock.mutateContainers.mockResolvedValueOnce({ sessionId: 'session-1', generation, action: 'start', items: [], mutationBlocked: false });
       await user.click(screen.getByRole('checkbox', { name: '보이는 컨테이너 전체 선택' }));
       await user.click(screen.getByRole('button', { name: '시작 (1)' }));
+      await user.click(await screen.findByRole('button', { name: '최근 작업 결과 상세 보기' }));
     }
     const code = key === 'invalidBulkResponse' ? 'INVALID_BULK_RESPONSE' : 'STALE_RESPONSE';
     await user.click(await screen.findByText(`진단 상세 · ${code}`));
@@ -73,6 +74,7 @@ describe('retained frontend errors follow language changes without Docker reques
     await screen.findByText(logs.text);
     const recovery = screen.getByRole('region', { name: '서비스 복구' });
     await user.click(within(recovery).getByRole('button', { name: '시작' }));
+    await user.click(await screen.findByRole('button', { name: '최근 작업 결과 상세 보기' }));
     const result = await screen.findByRole('region', { name: '최근 작업 결과' });
     await user.click(within(result).getByText('실행 상세'));
     expect(within(result).getByText(frontendErrorMessages.ipcFailure.ko)).toBeVisible();
