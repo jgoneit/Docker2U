@@ -4,6 +4,7 @@ fn main() {
             "get_environment",
             "list_containers",
             "get_recent_logs",
+            "get_container_details",
             "get_container_stats",
             "start_log_stream",
             "read_log_stream",
