@@ -149,7 +149,7 @@ describe('container table', () => {
         <ContainerTable groups={groupContainers(snapshot.containers)} selectedId={api.fullId} checkedHandles={new Set()}
           checkboxDisabled={false} sampleFor={stats.sampleFor} inventoryRef={inventoryRef}
           onSelect={() => {}} onToggle={() => {}} onRowKeyDown={() => {}} busy={false} />
-        <ContainerSummary container={api} snapshot={snapshot} copy={async () => {}} mutating={false} mutationBlocked={false}
+        <ContainerSummary container={api} snapshot={snapshot} copy={async () => {}} mutationBlocked={false}
           mutationAllowed resourceSample={stats.sampleFor(api)} />
       </>;
     }
@@ -203,7 +203,7 @@ describe('container table', () => {
     expect(row('api').querySelector('.container-table-health')).toBeNull();
     expect(row('standalone').querySelector('.container-table-health')).toBeNull();
     expect(screen.queryByText('정상')).not.toBeInTheDocument();
-    expect(screen.queryByText('상태 검사 없음')).not.toBeInTheDocument();
+    expect(screen.queryByText('상태 검사 기록 없음')).not.toBeInTheDocument();
   });
 
   it('retains full names and ports for assistive text and hover while exposing list busy state', () => {

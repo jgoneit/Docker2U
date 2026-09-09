@@ -1,0 +1,23 @@
+/* A second, independent slot keeps clipboard feedback from replacing a result. */
+.app-footer .operation-feedback { flex: 1 1 0; min-width: 0; }
+.app-footer:has(.operation-feedback[data-active]) .clipboard-feedback { flex: 0 1 28%; max-width: 28%; }
+.operation-feedback { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--text-muted); font-size: 12px; line-height: 16px; }
+.operation-feedback { position: relative; z-index: 1; }
+.operation-feedback:not([data-active]):not(:has(button)) { display: none; }
+.operation-feedback-message { display: flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; }
+.operation-feedback-message:empty { display: none; }
+.operation-feedback-message svg { flex: none; }
+.operation-feedback-outcome { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.operation-feedback-single .operation-feedback-outcome { flex-shrink: 0; }
+.operation-feedback-target { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.operation-feedback-qualifier { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.operation-feedback-success .operation-feedback-outcome { color: var(--success); }
+.operation-feedback-danger .operation-feedback-outcome { color: var(--danger); }
+.operation-feedback-warning .operation-feedback-outcome, .operation-feedback-qualifier { color: var(--warning); }
+.operation-feedback .operation-feedback-details, .operation-feedback .operation-feedback-dismiss { flex: none; min-height: 28px; padding: 4px; }
+.operation-feedback .operation-feedback-details { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.operation-feedback .operation-feedback-dismiss { width: 26px; }
+/* Expanded logs can reuse both slots without adding another notification surface. */
+.logs-modal .operation-statusbar { display: flex; align-items: center; gap: 12px; flex: 0 0 44px; min-height: 44px; padding: 8px 12px; border-top: 1px solid var(--border-subtle); background: var(--surface); overflow: hidden; }
+.operation-statusbar .operation-feedback { flex: 1 1 0; }
+.logs-modal .operation-statusbar .log-copy-feedback { flex: 0 1 35%; min-width: 0; height: auto; padding: 0; border: 0; }

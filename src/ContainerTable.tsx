@@ -17,6 +17,7 @@ const messages = {
   health: { ko: '헬스', en: 'Health' },
   stale: { ko: '오래된 값', en: 'Stale sample' },
   count: { ko: '{count}개 컨테이너', en: '{count} containers' },
+  connectionsFor: { ko: '{name} 접속 정보 보기', en: 'View connections for {name}' },
 };
 
 export interface ContainerTableProps {
@@ -27,13 +28,14 @@ export interface ContainerTableProps {
   sampleFor: (container: Container) => ResourceSample | undefined;
   inventoryRef: RefObject<HTMLTableSectionElement | null>;
   onSelect: (container: Container) => void;
+  onShowConnections?: (container: Container) => void;
   onToggle: (container: Container) => void;
   onRowKeyDown: (event: KeyboardEvent<HTMLButtonElement>, index: number) => void;
   busy: boolean;
 }
 
 export function ContainerTable({ groups, selectedId, checkedHandles, checkboxDisabled, sampleFor,
-  inventoryRef, onSelect, onToggle, onRowKeyDown, busy }: ContainerTableProps) {
+  inventoryRef, onSelect, onShowConnections, onToggle, onRowKeyDown, busy }: ContainerTableProps) {
   const t = useI18n(messages);
   const app = useI18n(appMessages);
   const id = useId();
@@ -80,7 +82,7 @@ export function ContainerTable({ groups, selectedId, checkedHandles, checkboxDis
               <td className="container-table-cpu container-table-number"><span className="container-cpu-value" aria-describedby={staleId}>{cpu}</span></td>
               <td className="container-table-memory container-table-number"><span className="container-memory-value" title={memory} aria-describedby={staleId}>{memory.split(' / ')[0]}</span>
                 {sample?.stale && <span id={staleId} className="resource-stale">{t('stale')}</span>}</td>
-              <td className="container-table-ports"><span title={ports}>{ports}</span></td>
+              <td className="container-table-ports">{onShowConnections && container.ports.length > 0 ? <button type="button" className="container-connection-link" aria-label={t('connectionsFor', { name: container.name })} title={ports} onClick={() => onShowConnections(container)}>{ports}</button> : <span title={ports}>{ports}</span>}</td>
             </tr>;
           })}
         </Fragment>)}

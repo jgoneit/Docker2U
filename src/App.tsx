@@ -5,10 +5,14 @@ import { AlertTriangle, Cable, ChevronsUpDown, FolderClosed, Info, LoaderCircle,
 import { api, coreError } from './api';
 import { frontendError, frontendErrorDescriptor, type FrontendErrorDescriptor } from './frontendErrors';
 import type { Action, ConnectionTarget, Container, ContainerList, CoreError, Environment, MutationResult } from './api';
-import { ConfirmDialog, ContainerDetail, ContainerSummary, Diagnostics, ErrorDetails, OperationResult } from './components';
-import type { Confirmation, Operation, CopyLabel } from './components';
+import { ConfirmDialog, ContainerDetail, ContainerSummary, Diagnostics, ErrorDetails, OperationResult, formatTime } from './components';
+import type { Confirmation, CopyLabel, DetailTab } from './components';
 import { BulkResult, BulkSelection, canApply, isBoundBulkResult } from './bulk';
-import type { BulkOperation } from './bulk';
+import type { CompletedOperation } from './operationFeedbackModel';
+import { useOperationFeedback } from './useOperationFeedback';
+import { OperationFeedback } from './OperationFeedback';
+import { useContainerDetails } from './useContainerDetails';
+import { ContainerInsights } from './ContainerInsights';
 import { useLiveLogs } from './useLiveLogs';
 import { useContainerStats } from './useContainerStats';
 import { ContainerTable } from './ContainerTable';
@@ -19,7 +23,7 @@ import { allProjects, groupContainers, matchesContainer, parseProjectFilter, pro
 import { RefreshAge } from './RefreshAge';
 import { bulkResultIssue, errorIssue, resultIssue, retainSessionIssue, type FrontendSession, type SessionIssue } from './frontendSession';
 
-import { PreferencesProvider } from './preferences';
+import { PreferencesProvider, usePreferences } from './preferences';
 import { SettingsDialog } from './SettingsDialog';
 import { useI18n } from './i18n';
 import { appMessages } from './messages/app';
@@ -46,7 +50,10 @@ export default function App() {
 }
 function AppContent() {
   const t = useI18n(appMessages);
+  const { language } = usePreferences();
   const pane = usePaneResize();
+  const feedback = useOperationFeedback();
+  const [activeTab, setActiveTab] = useState<DetailTab>('logs');
   const [environment, setEnvironment] = useState<Environment | null>(null);
   const [connecting, setConnecting] = useState(true);
   const [environmentError, setEnvironmentError] = useState<CoreError | null>(null);
@@ -64,9 +71,6 @@ function AppContent() {
   const [reconnectRequired, setReconnectRequired] = useState(false);
   const [mutationBlocked, setMutationBlocked] = useState(false);
   const [sessionIssue, setSessionIssue] = useState<SessionIssue | null>(null);
-  const [operation, setOperation] = useState<Operation | null>(null);
-  const [bulkOperation, setBulkOperation] = useState<BulkOperation | null>(null);
-  const [bulkPending, setBulkPending] = useState<{ action: Action; count: number } | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [clipboardMessage, setClipboardMessage] = useState<FeedbackMessage | null>(null);
@@ -75,6 +79,9 @@ function AppContent() {
   const clipboardAttempt = useRef(0);
   const settingsTrigger = useRef<HTMLButtonElement>(null);
   const reconnectTrigger = useRef<HTMLButtonElement>(null);
+  const recentOperationTrigger = useRef<HTMLButtonElement>(null);
+  const operationClose = useRef<HTMLButtonElement>(null);
+  const operationFocus = useRef<'details' | 'trigger' | null>(null);
   const session = useRef<string | null>(null);
   const currentSnapshot = useRef<ContainerList | null>(null);
   const epoch = useRef(0);
@@ -128,7 +135,7 @@ function AppContent() {
   const projectOptions = groupContainers(snapshot?.containers ?? []);
   const selected = visible.find(container => container.fullId === selectedId) ?? null;
   const checked = visible.filter(container => checkedHandles.has(container.handle));
-  const onReadError = useCallback((stage: 'logs' | 'stats', original: unknown, failure: CoreError, sessionId: string) => {
+  const onReadError = useCallback((stage: 'logs' | 'stats' | 'details', original: unknown, failure: CoreError, sessionId: string) => {
     if (session.current !== sessionId) return;
     const invalidates = connectionInvalidatingErrors.has(failure.code);
     if (invalidates) {
@@ -141,6 +148,9 @@ function AppContent() {
   }, [recordIssue]);
   const onLogError = useCallback((original: unknown, failure: CoreError, sessionId: string) => onReadError('logs', original, failure, sessionId), [onReadError]);
   const onStatsError = useCallback((original: unknown, failure: CoreError, sessionId: string) => onReadError('stats', original, failure, sessionId), [onReadError]);
+  const onDetailsError = useCallback((original: unknown, failure: CoreError, sessionId: string) => onReadError('details', original, failure, sessionId), [onReadError]);
+  const detailsEnabled = !connecting && !refreshing && !mutating && !reconnectRequired;
+  const details = useContainerDetails({ container: selected, snapshot, active: activeTab !== 'logs', enabled: detailsEnabled, onError: onDetailsError });
   const { logs, logsError, loadingLogs, logRequestPending, liveStatus, loadLogs, clearLogs } = useLiveLogs({
     container: selected, snapshot, enabled: !connecting && !refreshing && !mutating && !reconnectRequired,
     invalidated: !!snapshot?.stale || reconnectRequired, restartVersion: logRestartVersion, replaceVersion: logReplaceVersion, onError: onLogError,
@@ -154,6 +164,24 @@ function AppContent() {
     clearLogs();
     setLogsExpanded(false);
   }, [clearLogs]);
+  function showConnections(container?: Container) {
+    if (container) selectContainer(container.fullId);
+    setActiveTab('connectivity');
+  }
+  function openOperationDetails() {
+    operationFocus.current = 'details';
+    setLogsExpanded(false);
+    feedback.openDetails();
+  }
+  function closeOperationDetails() {
+    operationFocus.current = 'trigger';
+    feedback.closeDetails();
+  }
+  useEffect(() => {
+    if (logsExpanded || !operationFocus.current) return;
+    const target = operationFocus.current === 'details' ? operationClose.current : recentOperationTrigger.current;
+    if (target) { operationFocus.current = null; target.focus(); }
+  }, [logsExpanded, feedback.detailsOpen]);
   function updateSearch(nextQuery: string, nextFilter: Filter, nextProject: ProjectFilter = searchCriteria.current.project) {
     if (busy.current) return;
     pendingRemovedFocus.current = document.activeElement;
@@ -237,7 +265,6 @@ function AppContent() {
     clearLogs();
     setRefreshing(false);
     setConfirmation(null);
-    setBulkPending(null);
     blocked.current = true;
     setMutationBlocked(true);
     ++clipboardAttempt.current;
@@ -285,8 +312,7 @@ function AppContent() {
     if (busy.current || refreshBusy.current || blocked.current || selectedIdRef.current !== container.fullId || !actionAllowed || session.current !== targetSession || current?.stale || current?.generation !== generation || !current.containers.some(item => item.handle === container.handle)) return;
     busy.current = true;
     setMutating(true);
-    setOperation(null);
-    setBulkOperation(null);
+    const feedbackAttempt = feedback.begin({ kind: 'single', action, name: container.name, sessionId: targetSession });
     setConfirmation(null);
     const requestEpoch = epoch.current;
     const target = connectionTarget(environment);
@@ -301,21 +327,22 @@ function AppContent() {
       result = { outcome: uncertain ? 'resultUnknown' : 'failed', message: failure.message, command: failure.command ?? '', stderr: failure.stderr ?? '', reconciliation: uncertain ? 'failed' : 'notNeeded', mutationBlocked: true };
       issue = errorIssue('singleAction', error, failure, true);
     }
-    if (epoch.current !== requestEpoch) return;
+    if (epoch.current !== requestEpoch) { feedback.cancel(feedbackAttempt); return; }
     blocked.current = blocked.current || result.mutationBlocked || result.reconciliation === 'failed';
     setMutationBlocked(blocked.current);
     if (blocked.current) setReconnectRequired(true);
     if (issue) recordIssue(issue);
     else if (result.outcome !== 'succeeded' || result.mutationBlocked || result.reconciliation === 'failed') recordIssue(resultIssue('singleAction', blocked.current, result));
-    setOperation({ ...result, frontendError: frontendFailure, fullId: container.fullId, name: container.name, action, ...target });
+    const completion: CompletedOperation = { kind: 'single', operation: { ...result, frontendError: frontendFailure, fullId: container.fullId, name: container.name, action, ...target } };
     const refreshed = await refresh(targetSession);
     if (epoch.current === requestEpoch) {
       busy.current = false; setMutating(false);
+      feedback.finish(feedbackAttempt, completion, refreshed);
       if (refreshed && !blocked.current && result.outcome === 'succeeded' && selectedIdRef.current === container.fullId) {
         if (action === 'restart') setLogReplaceVersion(value => value + 1);
         else setLogRestartVersion(value => value + 1);
       }
-    }
+    } else feedback.cancel(feedbackAttempt);
   }
   function requestAction(action: Action, returnFocus?: HTMLElement) {
     if (settingsOpen || logsExpanded || busy.current || refreshBusy.current || blocked.current || !selected || selectedIdRef.current !== selected.fullId || !snapshot || snapshot.stale || !environment?.mutationAllowed || !session.current || !canApply(selected, action)) return;
@@ -330,14 +357,13 @@ function AppContent() {
     if (action !== 'start') pendingBulkFocus.current = { epoch: epoch.current };
     busy.current = true;
     setMutating(true);
-    setBulkPending({ action, count: containers.filter(container => canApply(container, action)).length });
-    setBulkOperation(null);
-    setOperation(null);
+    const feedbackAttempt = feedback.begin({ kind: 'bulk', action, count: containers.length, sessionId: targetSession });
     setConfirmation(null);
     const requestEpoch = epoch.current;
     const context = { action, ...connectionTarget(environment), containers };
     const selectedAtStart = selectedIdRef.current;
     let selectedSucceeded = false;
+    let completion: CompletedOperation | undefined;
     try {
       const result = await api.mutateContainers(targetSession, generation, containers.map(container => container.handle), action);
       if (epoch.current !== requestEpoch) return;
@@ -346,7 +372,7 @@ function AppContent() {
       blocked.current = blocked.current || result.mutationBlocked || result.items.some(item => item.result?.mutationBlocked || item.result?.reconciliation === 'failed');
       const issue = bulkResultIssue(result, blocked.current);
       if (issue) recordIssue(issue);
-      setBulkOperation({ ...context, result, needsReconnect: blocked.current });
+      completion = { kind: 'bulk', operation: { ...context, result, needsReconnect: blocked.current } };
     } catch (error) {
       if (epoch.current !== requestEpoch) return;
       const failure = coreError(error);
@@ -355,20 +381,21 @@ function AppContent() {
       const recoverableRejection = ['Busy', 'StaleHandle', 'InvalidSelection'].includes(failure.code);
       blocked.current = blocked.current || !recoverableRejection;
       recordIssue(errorIssue('bulkAction', error, failure, !recoverableRejection));
-      setBulkOperation({ ...context, error: failure, uncertain: !preflightRejection, needsReconnect: blocked.current });
+      completion = { kind: 'bulk', operation: { ...context, error: failure, uncertain: !preflightRejection, needsReconnect: blocked.current } };
     } finally {
       if (epoch.current === requestEpoch) {
         setMutationBlocked(blocked.current);
         if (blocked.current) setReconnectRequired(true);
         const refreshed = await refresh(targetSession);
         if (epoch.current === requestEpoch) {
-          busy.current = false; setMutating(false); setBulkPending(null);
+          busy.current = false; setMutating(false);
+          if (completion) feedback.finish(feedbackAttempt, completion, refreshed);
           if (refreshed && !blocked.current && selectedSucceeded && selectedIdRef.current === selectedAtStart) {
             if (action === 'restart') setLogReplaceVersion(value => value + 1);
             else setLogRestartVersion(value => value + 1);
           }
-        }
-      }
+        } else feedback.cancel(feedbackAttempt);
+      } else feedback.cancel(feedbackAttempt);
     }
   }
   function requestBulkAction(action: Action, returnFocus?: HTMLElement) {
@@ -452,13 +479,13 @@ function AppContent() {
             <button title={t('refreshHint')} className="inventory-refresh" disabled={!ready || refreshing || mutating} onClick={() => { if (session.current && !busy.current && !refreshBusy.current) void refresh(session.current).then(refreshed => { if (refreshed) setLogRestartVersion(value => value + 1); }); }}><RefreshCw size={14} className={refreshing ? 'spin' : ''} aria-hidden="true" />{t(refreshing ? 'refreshing' : 'refresh')}</button>
           </div>
           <div className="inventory-body">
-          <BulkSelection visible={visible} checked={checked} disabled={mutating || refreshing || connecting || !snapshot || snapshot.stale} actionsDisabled={mutating || refreshing || mutationBlocked || !environment?.mutationAllowed || !snapshot || snapshot.stale} pending={bulkPending} selectAllRef={bulkSelectAll} regionRef={bulkRegion} onToggleAll={() => changeSelection(() => checked.length === visible.length ? new Set() : new Set(visible.map(container => container.handle)))} onClear={() => changeSelection(() => new Set())} onAction={requestBulkAction} />
+          <BulkSelection visible={visible} checked={checked} disabled={mutating || refreshing || connecting || !snapshot || snapshot.stale} actionsDisabled={mutating || refreshing || mutationBlocked || !environment?.mutationAllowed || !snapshot || snapshot.stale} selectAllRef={bulkSelectAll} regionRef={bulkRegion} onToggleAll={() => changeSelection(() => checked.length === visible.length ? new Set() : new Set(visible.map(container => container.handle)))} onClear={() => changeSelection(() => new Set())} onAction={requestBulkAction} />
           {snapshot?.stale && <div className="stale-notice" role="status"><AlertTriangle size={14} aria-hidden="true" /><span>{t('stale')}</span></div>}
           {listError && <div className="inline-error" role="alert"><p>{t('listFailure')}</p>{connectionInvalidatingErrors.has(listError.code) && <p>{t('validateAgain')}</p>}<ErrorDetails error={listError} /></div>}
           {stats.error && <p className="stats-notice" role="status">{t('statsFailure')}</p>}
           <ContainerTable groups={groups} selectedId={selectedId} checkedHandles={checkedHandles}
             checkboxDisabled={mutating || refreshing || !!snapshot?.stale} sampleFor={stats.sampleFor}
-            inventoryRef={inventory} onSelect={container => selectContainer(container.fullId)}
+            inventoryRef={inventory} onSelect={container => selectContainer(container.fullId)} onShowConnections={showConnections}
             onToggle={container => changeSelection(previous => { const next = new Set(previous); if (next.has(container.handle)) next.delete(container.handle); else next.add(container.handle); return next; })}
             onRowKeyDown={selectWithKeyboard} busy={refreshing || mutating} />
           {!visible.length && <div className="inventory-placeholder"><BrandMark size={48} /><p>{t(connecting || (refreshing && !snapshot) ? 'checkingContainers' : !ready ? 'connectForList' : !snapshot ? 'reloadList' : snapshot.containers.length === 0 ? 'emptyEngine' : 'noResults')}</p>{snapshot && snapshot.containers.length > 0 && <button className="text-button" disabled={mutating} onClick={() => updateSearch('', 'all', allProjects)}>{t('resetFilters')}</button>}</div>}
@@ -467,13 +494,17 @@ function AppContent() {
         <button type="button" role="separator" className="pane-resizer" aria-label={t('resizeLogs')} title={t('resizeLogsHint')} aria-orientation="horizontal" aria-controls="inventory-pane detail-pane" {...pane.separatorProps}><span aria-hidden="true" /></button>
         <section id="detail-pane" className="detail-panel" aria-label={t(selected ? 'detailTitle' : 'connectTitle')}>
           <div className="detail-context" tabIndex={0} aria-label={t('detailContext')}>
-            {(operation || bulkOperation) && <div className="latest-operation" aria-label={t('latestOperation')}>{operation ? <OperationResult operation={operation} copy={copy} /> : bulkOperation && <BulkResult operation={bulkOperation} />}</div>}
-            {selected && snapshot ? <ContainerSummary container={selected} snapshot={snapshot} copy={copy} mutating={mutating} mutationBlocked={mutationBlocked} mutationAllowed={!!environment?.mutationAllowed} resourceSample={stats.sampleFor(selected)} /> : <div className="panel-heading"><h2>{t('connectTitle')}</h2></div>}
+            {feedback.detailsOpen && feedback.completed && <div id="latest-operation-details" className="latest-operation operation-details-dismissable" aria-label={t('latestOperation')} onKeyDown={event => { if (event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); closeOperationDetails(); } }}>
+              <div className="operation-details-heading"><p>{t('operationTime')} · <time dateTime={feedback.completed.completedAt}>{formatTime(feedback.completed.completedAt, language)}</time></p><button ref={operationClose} className="icon-button" aria-label={t('closeOperationDetails')} onClick={closeOperationDetails}><X size={15} aria-hidden="true" /></button></div>
+              {feedback.completed.result.kind === 'single' ? <OperationResult disclosure={false} operation={feedback.completed.result.operation} copy={copy} /> : <BulkResult disclosure={false} operation={feedback.completed.result.operation} />}
+              {!feedback.completed.refreshed && <p className="operation-warning">{t('operationRefreshFailed')}</p>}
+            </div>}
+            {selected && snapshot ? <ContainerSummary container={selected} snapshot={snapshot} copy={copy} mutationBlocked={mutationBlocked} mutationAllowed={!!environment?.mutationAllowed} resourceSample={stats.sampleFor(selected)} onShowConnections={() => showConnections()} /> : <div className="panel-heading"><h2>{t('connectTitle')}</h2></div>}
           </div>
-          {connecting ? <div className="startup-panel"><div className="startup-icon"><LoaderCircle className="spin" size={30} aria-hidden="true" /></div><h3>{t('checkingLocal')}</h3><p>{t('checkingCli')}</p></div> : !ready ? <div className="startup-panel"><div className="startup-icon"><Cable size={32} aria-hidden="true" /></div><span className="eyebrow">{t('localEnvironment')}</span><h3>{t(connectionTitle)}</h3><p>{t(connectionHelp)}</p>{connectionError && <div role="alert"><ErrorDetails error={connectionError} /></div>}{!!environment?.diagnostics.length && <details className="technical-details"><summary>{t('originalDiagnostics')}</summary>{environment.diagnostics.map((message, index) => <p key={index}>{message}</p>)}</details>}<button className="primary-button" onClick={() => void connect()}><RefreshCw size={14} aria-hidden="true" />{t('reconnect')}</button></div> : selected && snapshot ? <ContainerDetail container={selected} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} mutationBlocked={mutationBlocked} mutationAllowed={!!environment?.mutationAllowed} liveStatus={liveStatus} loadLogs={loadLogs} clearLogs={clearDisplayedLogs} requestAction={requestAction} copy={copy} copyFeedback={copyFeedback} copyFeedbackTone={copyFeedbackTone} copyFeedbackId={clipboardMessage?.id} copyFeedbackHighlighted={clipboardMessage?.highlighted} copyFeedbackHighlightUntil={clipboardMessage?.highlightUntil} logsExpanded={logsExpanded} onLogsExpandedChange={setLogsExpanded} /> : <div className="startup-panel"><div className="startup-icon"><BrandMark size={56} /></div><h3>{t(refreshing ? 'loadingContainers' : snapshot?.containers.length === 0 ? 'noContainers' : 'selectContainer')}</h3><p>{t(snapshot?.containers.length === 0 ? 'startServices' : 'selectHelp')}</p></div>}
+          {connecting ? <div className="startup-panel"><div className="startup-icon"><LoaderCircle className="spin" size={30} aria-hidden="true" /></div><h3>{t('checkingLocal')}</h3><p>{t('checkingCli')}</p></div> : !ready ? <div className="startup-panel"><div className="startup-icon"><Cable size={32} aria-hidden="true" /></div><span className="eyebrow">{t('localEnvironment')}</span><h3>{t(connectionTitle)}</h3><p>{t(connectionHelp)}</p>{connectionError && <div role="alert"><ErrorDetails error={connectionError} /></div>}{!!environment?.diagnostics.length && <details className="technical-details"><summary>{t('originalDiagnostics')}</summary>{environment.diagnostics.map((message, index) => <p key={index}>{message}</p>)}</details>}<button className="primary-button" onClick={() => void connect()}><RefreshCw size={14} aria-hidden="true" />{t('reconnect')}</button></div> : selected && snapshot ? <ContainerDetail activeTab={activeTab} onTabChange={setActiveTab} insights={activeTab !== 'logs' ? <ContainerInsights tab={activeTab} {...details} disabled={!detailsEnabled || !!snapshot.stale} copy={copy} /> : undefined} operationFeedback={<OperationFeedback model={feedback} detailsId="latest-operation-details" onOpenDetails={openOperationDetails} />} container={selected} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} mutationBlocked={mutationBlocked} mutationAllowed={!!environment?.mutationAllowed} liveStatus={liveStatus} loadLogs={loadLogs} clearLogs={clearDisplayedLogs} requestAction={requestAction} copy={copy} copyFeedback={copyFeedback} copyFeedbackTone={copyFeedbackTone} copyFeedbackId={clipboardMessage?.id} copyFeedbackHighlighted={clipboardMessage?.highlighted} copyFeedbackHighlightUntil={clipboardMessage?.highlightUntil} logsExpanded={logsExpanded} onLogsExpandedChange={setLogsExpanded} /> : <div className="startup-panel"><div className="startup-icon"><BrandMark size={56} /></div><h3>{t(refreshing ? 'loadingContainers' : snapshot?.containers.length === 0 ? 'noContainers' : 'selectContainer')}</h3><p>{t(snapshot?.containers.length === 0 ? 'startServices' : 'selectHelp')}</p></div>}
         </section>
       </main>
-      <footer className="app-footer"><span><span className="footer-dot" />{t('footer')}</span><CopyFeedback className="clipboard-feedback" message={copyFeedback} tone={copyFeedbackTone} notificationId={clipboardMessage?.id} highlighted={clipboardMessage?.highlighted} highlightUntil={clipboardMessage?.highlightUntil} /></footer>
+      <footer className="app-footer"><span><span className="footer-dot" />{t('footer')}</span><OperationFeedback model={feedback} detailsId="latest-operation-details" recentButtonRef={recentOperationTrigger} onOpenDetails={openOperationDetails} announce={!logsExpanded} /><CopyFeedback className="clipboard-feedback" message={copyFeedback} tone={copyFeedbackTone} notificationId={clipboardMessage?.id} highlighted={clipboardMessage?.highlighted} highlightUntil={clipboardMessage?.highlightUntil} /></footer>
     </div>
     {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} returnFocus={settingsTrigger.current ?? undefined} />}
     {confirmation && <ConfirmDialog confirmation={confirmation} blocked={reconnectRequired} reconnectFocus={reconnectTrigger} onCancel={() => setConfirmation(null)} onConfirm={() => { if (confirmation.containers) void mutateBulk(confirmation.containers, confirmation.action, confirmation.sessionId, confirmation.generation); else void mutate(confirmation.container, confirmation.action, confirmation.sessionId, confirmation.generation); }} />}

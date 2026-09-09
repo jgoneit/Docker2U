@@ -26,7 +26,7 @@ describe('compact container summary', () => {
     const user = userEvent.setup();
     const copy = vi.fn(async () => {});
     renderUI(<PreferencesProvider initialPreferences={{ theme: 'light', language }}><ContainerSummary container={{ ...container, composeProject: 'orders', composeService: 'api' }} snapshot={snapshot}
-      copy={copy} mutating={false} mutationBlocked={false} mutationAllowed resourceSample={resourceSample} /></PreferencesProvider>);
+      copy={copy} mutationBlocked={false} mutationAllowed resourceSample={resourceSample} /></PreferencesProvider>);
     expect(screen.getByRole('heading', { name: 'backend' })).toBeVisible();
     expect(screen.getByText(language === 'ko' ? '실행 중' : 'Running')).toBeVisible();
     expect(screen.getByText(language === 'ko' ? '정상' : 'Healthy')).toBeVisible();
@@ -50,17 +50,17 @@ describe('compact container summary', () => {
   });
   it('keeps stale resources, unhealthy status and blocked-operation warnings outside closed metadata', () => {
     render(<ContainerSummary container={{ ...container, health: 'unhealthy' }} snapshot={{ ...snapshot, stale: true }}
-      copy={async () => {}} mutating mutationBlocked mutationAllowed resourceSample={{ ...resourceSample, stale: true }} />);
+      copy={async () => {}} mutationBlocked mutationAllowed resourceSample={{ ...resourceSample, stale: true }} />);
     const disclosure = document.querySelector('.container-summary details')!;
     expect(disclosure).not.toHaveAttribute('open');
-    for (const text of ['비정상', '이전 정보', '자원 이전 값', '작업 실행 및 상태 재조회 중입니다.', '추가 복구 작업이 차단되었습니다. 재연결로 환경을 다시 검증하세요.', '최신 상태를 확인할 수 없어 복구 작업을 잠시 사용할 수 없습니다. 새로고침을 실행하세요.']) {
+    for (const text of ['비정상', '이전 정보', '자원 이전 값', '추가 복구 작업이 차단되었습니다. 재연결로 환경을 다시 검증하세요.', '최신 상태를 확인할 수 없어 복구 작업을 잠시 사용할 수 없습니다. 새로고침을 실행하세요.']) {
       const warning = screen.getByText(text); expect(warning).toBeVisible(); expect(disclosure).not.toContainElement(warning);
     }
   });
   it('puts absent healthcheck information in metadata without hiding real state', () => {
-    render(<ContainerSummary container={{ ...container, health: null }} snapshot={snapshot} copy={async () => {}} mutating={false} mutationBlocked={false} mutationAllowed />);
+    render(<ContainerSummary container={{ ...container, health: null }} snapshot={snapshot} copy={async () => {}} mutationBlocked={false} mutationAllowed />);
     expect(screen.getByText('실행 중')).toBeVisible();
-    expect(screen.getByText('상태 검사 없음')).not.toBeVisible();
+    expect(screen.getByText('상태 검사 기록 없음')).not.toBeVisible();
     expect(screen.getByText('수집된 값 없음')).not.toBeVisible();
   });
   it('keeps metadata open across refreshed handles and updated resource samples', async () => {
@@ -68,7 +68,7 @@ describe('compact container summary', () => {
     function SummaryHarness() {
       const [generation, setGeneration] = useState(1);
       return <><button onClick={() => setGeneration(2)}>Refresh sample</button><ContainerSummary container={{ ...container, handle: `handle-${generation}` }} snapshot={{ ...snapshot, generation }}
-        copy={async () => {}} mutating={false} mutationBlocked={false} mutationAllowed resourceSample={{ ...resourceSample, cpuPercent: generation === 1 ? 125.5 : 0 }} /></>;
+        copy={async () => {}} mutationBlocked={false} mutationAllowed resourceSample={{ ...resourceSample, cpuPercent: generation === 1 ? 125.5 : 0 }} /></>;
     }
     render(<SummaryHarness />);
     await user.click(screen.getByText('컨테이너 정보'));
@@ -206,8 +206,10 @@ describe('compact operation details', () => {
     expect(within(report).getByText(operation.message)).toBeVisible();
     expect(within(report).getByText(command)).toBeVisible();
     expect(within(report).getByText('RAW_ENGINE')).toBeVisible();
-    const sections = Array.from(document.querySelectorAll('.container-detail > section'));
-    expect(sections.indexOf(screen.getByRole('region', { name: '서비스 복구' }))).toBeLessThan(sections.indexOf(screen.getByRole('region', { name: '최근 로그' })));
+    const recovery = screen.getByRole('region', { name: '서비스 복구' });
+    const logs = screen.getByRole('region', { name: '최근 로그' });
+    expect(recovery.compareDocumentPosition(logs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole('tabpanel', { name: '로그' })).toContainElement(logs);
   });
 
   it('closes locally controlled expanded logs when the selected target changes', async () => {
@@ -215,7 +217,7 @@ describe('compact operation details', () => {
     function SelectionHarness() {
       const [selected, setSelected] = useState(container);
       return <><button onClick={() => setSelected({ ...container, handle: 'new-handle', name: 'another-container' })}>Simulate selection change</button>
-        <ContainerSummary container={selected} snapshot={snapshot} copy={async () => {}} mutating={false} mutationBlocked={false} mutationAllowed />
+        <ContainerSummary container={selected} snapshot={snapshot} copy={async () => {}} mutationBlocked={false} mutationAllowed />
         <ContainerDetail container={selected} snapshot={snapshot} logs={null} logsError={null}
           loadingLogs={false} refreshing={false} mutating={false} mutationBlocked={false} mutationAllowed
           loadLogs={vi.fn()} clearLogs={vi.fn()} copy={vi.fn(async () => {})} requestAction={vi.fn()} />
