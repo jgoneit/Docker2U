@@ -283,30 +283,38 @@ async function projectStatsProbe() {
   click('native-smoke-1 상세'); await ready();
 }
 async function liveDisplayProbe() {
+  const searchClosed = () => panel().querySelector('.log-search-toggle')?.getAttribute('aria-expanded') === 'false' && panel().querySelector<HTMLElement>('.log-search')?.hidden === true;
+  const hasLossNotice = (message: string) => Array.from(panel().querySelectorAll('.truncation-notice[role="status"]')).some(notice => notice.textContent?.includes(message));
   await ready(); closeLogSearch();
+  await waitFor(() => searchClosed(), 'search closed before live display');
   const resume = Array.from(panel().querySelectorAll<HTMLButtonElement>('button')).find(element => element.textContent?.trim() === '재개');
   resume?.click();
-  await waitFor(() => streamEvidence.stdoutTick > 0 && streamEvidence.stderrTick > 0, 'live-on fixture stdout and stderr ticks', 10000);
+  await waitFor(() => panel().querySelector('.log-pause-toggle')?.getAttribute('aria-pressed') === 'false', 'display resumed before live probe');
+  await waitFor(() => streamEvidence.stdoutTick > 0 && streamEvidence.stderrTick > 0 && content().textContent?.includes('NATIVE_SMOKE_LIVE_STDOUT') && content().textContent?.includes('NATIVE_SMOKE_LIVE_STDERR'), 'live-on fixture stdout and stderr rendered', 10000);
   const streamId = streamEvidence.streamId;
   click('일시정지', panel());
-  await waitFor(() => button('재개', panel()).getAttribute('aria-pressed') === 'true', 'display pause');
+  await waitFor(() => panel().querySelector('.log-pause-toggle')?.getAttribute('aria-pressed') === 'true', 'display pause');
   const frozenText = content().textContent; const pauseTick = Math.max(streamEvidence.stdoutTick, streamEvidence.stderrTick);
   record('paused live display', { streamId, fullId: streamEvidence.fullId, beforeTick: pauseTick }); const beforeReads = streamEvidence.nonEmptyReads;
   await waitFor(() => streamEvidence.stdoutTick >= pauseTick + 3 && streamEvidence.stderrTick >= pauseTick + 3 && streamEvidence.nonEmptyReads > beforeReads, 'native bytes while display is paused');
+  // IPC counters advance before LiveLogController and React receive the frame.
+  // Resume only after the rendered paused view has observed buffer loss.
+  await waitFor(() => hasLossNotice('표시를 멈춘 사이 일부 로그'), 'pending loss notice rendered while paused');
   assert(content().textContent === frozenText, 'Paused display changed while real IPC bytes arrived');
   assert(streamEvidence.streamId === streamId, 'Pausing replaced the stream');
   record('paused display while real stdout and stderr arrived', { streamId, fullId: streamEvidence.fullId, beforeTick: pauseTick, afterTick: Math.min(streamEvidence.stdoutTick, streamEvidence.stderrTick), newFrames: streamEvidence.nonEmptyReads - beforeReads });
   click('재개', panel());
-  await waitFor(() => content().textContent !== frozenText && content().textContent?.includes('NATIVE_SMOKE_LIVE_STDOUT'), 'display catches up after resume');
-  assert(panel().textContent?.includes('오래된 로그를 건너뛰고'), 'Resuming after ring eviction did not show the loss notice');
+  await waitFor(() => panel().querySelector('.log-pause-toggle')?.getAttribute('aria-pressed') === 'false' && content().textContent !== frozenText && content().textContent?.includes('NATIVE_SMOKE_LIVE_STDOUT') && hasLossNotice('오래된 로그를 건너뛰고'), 'resumed display catches up with the ring loss notice');
   record('resume caught up with ring loss notice');
-  click('로그 검색 열기', panel()); await waitFor(() => panel().querySelector('.log-search-input'), 'search opened'); input('NATIVE_SMOKE_LIVE');
+  click('로그 검색 열기', panel()); await waitFor(() => panel().querySelector('.log-search-toggle')?.getAttribute('aria-expanded') === 'true' && panel().querySelector<HTMLElement>('.log-search')?.hidden === false, 'search opened'); input('NATIVE_SMOKE_LIVE');
+  await waitFor(() => panel().querySelector('mark')?.textContent === 'NATIVE_SMOKE_LIVE', 'live search result rendered');
   const searchText = content().textContent; const searchTick = Math.max(streamEvidence.stdoutTick, streamEvidence.stderrTick);
   record('search display frozen', { streamId, fullId: streamEvidence.fullId, beforeTick: searchTick });
   await waitFor(() => streamEvidence.stdoutTick >= searchTick + 3 && streamEvidence.stderrTick >= searchTick + 3, 'real bytes while search is frozen');
+  await waitFor(() => hasLossNotice('표시를 멈춘 사이 일부 로그'), 'pending loss notice rendered during search');
   assert(content().textContent === searchText, 'Search results moved with incoming logs');
   click('로그 검색 닫기', panel());
-  await waitFor(() => content().textContent !== searchText, 'closing search resumes the display');
+  await waitFor(() => searchClosed() && panel().querySelector('.log-pause-toggle')?.getAttribute('aria-pressed') === 'false' && content().textContent !== searchText, 'closing search resumes the display');
   assert(streamEvidence.streamId === streamId && streamEvidence.maximumActiveReads === 1, 'Live probe replaced the stream or overlapped read IPC');
   record('search froze and resumed without restarting the stream', { streamId, fullId: streamEvidence.fullId, afterTick: Math.min(streamEvidence.stdoutTick, streamEvidence.stderrTick), maximumActiveReads: streamEvidence.maximumActiveReads });
 }
