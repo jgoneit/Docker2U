@@ -69,7 +69,12 @@ export function ContainerTable({ groups, selectedId, checkedHandles, checkboxDis
             const ports = container.ports.join(', ') || '—';
             const staleId = sample?.stale ? `${id}-stale-${container.fullId}` : undefined;
             const healthIssue = container.health && container.health !== 'none' && container.health !== 'healthy';
-            return <tr key={container.fullId} className="container-list-item" data-selected={selected || undefined}>
+            return <tr key={container.fullId} className="container-list-item" data-selected={selected || undefined}
+              onClick={event => {
+                if (event.target instanceof Element && event.target.closest('button, input')) return;
+                event.currentTarget.querySelector<HTMLButtonElement>('.container-row')?.focus({ preventScroll: true });
+                onSelect(container);
+              }}>
               <td className="container-table-check"><input type="checkbox" className="container-checkbox"
                 aria-label={app('selectTarget', { name: container.name })} checked={checkedHandles.has(container.handle)}
                 disabled={checkboxDisabled} onChange={() => onToggle(container)} /></td>

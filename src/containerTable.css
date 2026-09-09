@@ -7,7 +7,7 @@
 .container-table-memory-column { width: 16%; }
 .container-table thead th { position: sticky; top: 0; z-index: 1; padding: 7px 10px; border-bottom: 1px solid var(--border-subtle); background: var(--inset); color: var(--text-muted); font-size: 12px; font-weight: 500; text-align: left; }
 .container-table td { height: 40px; padding: 4px 10px; vertical-align: middle; }
-.container-table .container-list-item { position: static; padding: 0; }
+.container-table .container-list-item { position: static; padding: 0; cursor: pointer; }
 .container-table .container-list-item:hover { background: var(--hover); }
 .container-table .container-list-item[data-selected="true"] { background: var(--selected); }
 .container-table .container-list-item[data-selected="true"]:hover { background: var(--selected-hover); }
