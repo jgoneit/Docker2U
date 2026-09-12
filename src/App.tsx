@@ -1,6 +1,6 @@
 import { connectionInvalidatingErrors } from './frontendSession';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { AlertTriangle, Cable, Info, LoaderCircle, RefreshCw, Search, Settings, X } from 'lucide-react';
+import { AlertTriangle, Cable, Info, LoaderCircle, Plus, RefreshCw, Search, Settings, Terminal, X } from 'lucide-react';
 import { api, coreError } from './api';
 import { frontendError, frontendErrorDescriptor, type FrontendErrorDescriptor } from './frontendErrors';
 import type { Action, ConnectionTarget, Container, ContainerList, CoreError, Environment, MutationResult } from './api';
@@ -24,7 +24,7 @@ import { ContainerTable, type NavigationTarget } from './ContainerTable';
 import { BrandMark } from './BrandMark';
 import { CopyFeedback } from './CopyFeedback';
 import { usePaneResize } from './usePaneResize';
-import { allProjects, groupContainers, matchesContainer, projectName, type ProjectFilter, type ContainerFilter as Filter } from './projects';
+import { allProjects, groupContainers, projectTreeGroups, matchesContainer, projectName, type ProjectFilter, type ContainerFilter as Filter } from './projects';
 import { RefreshAge } from './RefreshAge';
 import { bulkResultIssue, errorIssue, resultIssue, retainSessionIssue, type FrontendSession, type SessionIssue } from './frontendSession';
 
@@ -32,6 +32,9 @@ import { PreferencesProvider, usePreferences } from './preferences';
 import { SettingsDialog } from './SettingsDialog';
 import { useI18n } from './i18n';
 import { appMessages } from './messages/app';
+import { composeMessages } from './messages/compose';
+import { useComposeProjects } from './useComposeProjects';
+import { ComposeEditorDialog, ComposeForgetDialog, ComposePrepareDialog, ComposeProgressDialog, ComposeProjectControls } from './ComposeDialogs';
 
 type FeedbackMessage = { id: number; highlightUntil: number; highlighted: boolean } & (
   { key: 'copied'; label: CopyLabel } | { key: 'copyFailure' | 'logsCleared' }
@@ -56,6 +59,7 @@ export default function App() {
 function AppContent() {
   const t = useI18n(appMessages);
   const ot = useI18n(observationMessages);
+  const ct = useI18n(composeMessages);
   const { language } = usePreferences();
   const pane = usePaneResize();
   const feedback = useOperationFeedback();
@@ -148,11 +152,16 @@ function AppContent() {
     if (bulkSelectAll.current && !bulkSelectAll.current.disabled) bulkSelectAll.current.focus();
     else bulkRegion.current?.focus();
   }, [mutating, refreshing, confirmation, settingsOpen, logsExpanded, snapshot]);
-  const groups = groupContainers((snapshot?.containers ?? []).filter(container => matchesContainer(container, query, filter)));
+  const composeRefresh = useRef<(sessionId: string) => Promise<boolean>>(async () => false);
+  const composeError = useRef<(error: CoreError, sessionId: string) => void>(() => {});
+  const compose = useComposeProjects({ environment, enabled: !connecting && !reconnectRequired,
+    refresh: sessionId => composeRefresh.current(sessionId), onError: (error, sessionId) => composeError.current(error, sessionId) });
+  const groups = projectTreeGroups(snapshot?.containers ?? [], compose.projects, query, filter, compose.issues);
   if (selectedTarget?.kind === 'project' && !query && filter === 'all' && !groups.some(group => group.name === selectedTarget.name)) groups.push({ name: selectedTarget.name, containers: [] });
   const visible = groups.flatMap(group => group.containers);
   const selected = selectedTarget?.kind === 'container' ? snapshot?.containers.find(container => container.fullId === selectedTarget.fullId) ?? null : null;
   const observedProject = selectedTarget?.kind === 'project' ? selectedTarget.name : selected ? projectName(selected) : null;
+  const registeredProject = compose.projects.find(item => item.name === observedProject) ?? null;
   const project: ProjectFilter = observedProject ? { kind: 'project', name: observedProject } : { kind: 'none' };
   const projectContainers = (snapshot?.containers ?? []).filter(container => matchesContainer(container, '', 'all', project));
   const targetHidden = selectedTarget?.kind === 'container' ? !visible.some(item => item.fullId === selectedTarget.fullId)
@@ -170,6 +179,7 @@ function AppContent() {
     recordIssue(errorIssue(stage, original, failure, invalidates));
     return invalidates;
   }, [recordIssue]);
+  composeError.current = (error, sessionId) => onReadError('details', error, error, sessionId);
   const onLogError = useCallback((original: unknown, failure: CoreError, sessionId: string) => onReadError('logs', original, failure, sessionId), [onReadError]);
   const onStatsError = useCallback((original: unknown, failure: CoreError, sessionId: string) => onReadError('stats', original, failure, sessionId), [onReadError]);
   const onDetailsError = useCallback((original: unknown, failure: CoreError, sessionId: string) => onReadError('details', original, failure, sessionId), [onReadError]);
@@ -191,6 +201,9 @@ function AppContent() {
   }, [clearLogs]);
   const selectContainer = useCallback((id: string | null) => selectTarget(id ? { kind: 'container', fullId: id } : null), [selectTarget]);
   const openProject = useCallback((name: string | null) => { if (name !== null) selectTarget({ kind: 'project', name }); }, [selectTarget]);
+  useEffect(() => {
+    if (!connecting && snapshot && !snapshot.containers.length && !selectionRef.current && compose.projects[0]) openProject(compose.projects[0].name);
+  }, [connecting, snapshot, compose.projects, openProject]);
   const reconcileTarget = useCallback((next: ContainerList, previous: ContainerList | null) => {
     const target = selectionRef.current;
     if (target?.kind !== 'container' || next.containers.some(item => item.fullId === target.fullId)) return;
@@ -220,7 +233,7 @@ function AppContent() {
   }
   function closeConfirmation() { setConfirmation(null); void releaseObservationHold(); }
   async function prepareConfirmation(containers: Container[], action: 'stop' | 'restart', returnFocus?: HTMLElement, bulk = false) {
-    if (!session.current || preparingAction) return;
+    if (!session.current || preparingAction || compose.busyRef.current) return;
     const targetSession = session.current;
     setPreparingAction(true);
     try {
@@ -239,7 +252,7 @@ function AppContent() {
     finally { setPreparingAction(false); }
   }
   async function startObserved(containers: Container[], bulk = false) {
-    if (!session.current || preparingAction) return;
+    if (!session.current || preparingAction || compose.busyRef.current) return;
     const targetSession = session.current;
     setPreparingAction(true);
     try {
@@ -326,6 +339,7 @@ function AppContent() {
       if (epoch.current === requestEpoch && request === listSequence.current) { refreshBusy.current = false; setRefreshing(false); }
     }
   }, [clearLogs, selectContainer, recordIssue, reconcileTarget]);
+  composeRefresh.current = refresh;
   const connect = useCallback(async () => {
     if (busy.current || refreshBusy.current) return;
     pendingBulkFocus.current = null;
@@ -390,7 +404,7 @@ function AppContent() {
     const current = currentSnapshot.current;
     const currentContainer = current?.containers.find(item => item.handle === container.handle);
     const actionAllowed = currentContainer && canApply(currentContainer, action);
-    if (busy.current || refreshBusy.current || blocked.current || selectedIdRef.current !== container.fullId || !actionAllowed || session.current !== targetSession || current?.stale || current?.generation !== generation || !current.containers.some(item => item.handle === container.handle)) return;
+    if (compose.busyRef.current || busy.current || refreshBusy.current || blocked.current || selectedIdRef.current !== container.fullId || !actionAllowed || session.current !== targetSession || current?.stale || current?.generation !== generation || !current.containers.some(item => item.handle === container.handle)) return;
     busy.current = true;
     setMutating(true);
     const feedbackAttempt = feedback.begin({ kind: 'single', action, name: container.name, sessionId: targetSession });
@@ -427,7 +441,7 @@ function AppContent() {
     } else feedback.cancel(feedbackAttempt);
   }
   function requestAction(action: Action, returnFocus?: HTMLElement) {
-    if (settingsOpen || logsExpanded || preparingAction || observation.restoring || busy.current || refreshBusy.current || blocked.current || !selected || selectedIdRef.current !== selected.fullId || !snapshot || snapshot.stale || !environment?.mutationAllowed || !session.current || !canApply(selected, action)) return;
+    if (compose.busyRef.current || compose.modal || settingsOpen || logsExpanded || preparingAction || observation.restoring || busy.current || refreshBusy.current || blocked.current || !selected || selectedIdRef.current !== selected.fullId || !snapshot || snapshot.stale || !environment?.mutationAllowed || !session.current || !canApply(selected, action)) return;
     if (action === 'start') { if (nativeObservation) void startObserved([selected]); else void mutate(selected, action, session.current, snapshot.generation); }
     else if (nativeObservation) void prepareConfirmation([selected], action, returnFocus);
     else setConfirmation({ container: selected, action, sessionId: session.current, generation: snapshot.generation, ...connectionTarget(environment), returnFocus });
@@ -436,7 +450,7 @@ function AppContent() {
     const current = currentSnapshot.current;
     const criteria = searchCriteria.current;
     if (containers.some(container => !matchesContainer(container, criteria.query, criteria.filter, criteria.project))) return;
-    if (busy.current || refreshBusy.current || blocked.current || !containers.length || !containers.some(container => canApply(container, action)) || session.current !== targetSession || current?.stale || current?.generation !== generation || containers.some(container => !current.containers.some(item => item.handle === container.handle))) return;
+    if (compose.busyRef.current || busy.current || refreshBusy.current || blocked.current || !containers.length || !containers.some(container => canApply(container, action)) || session.current !== targetSession || current?.stale || current?.generation !== generation || containers.some(container => !current.containers.some(item => item.handle === container.handle))) return;
     if (action !== 'start') pendingBulkFocus.current = { epoch: epoch.current };
     busy.current = true;
     setMutating(true);
@@ -485,7 +499,7 @@ function AppContent() {
     }
   }
   function requestBulkAction(action: Action, returnFocus?: HTMLElement) {
-    if (settingsOpen || logsExpanded || preparingAction || observation.restoring || busy.current || refreshBusy.current || blocked.current || !checked.length || !checked.some(container => canApply(container, action)) || !snapshot || snapshot.stale || !environment?.mutationAllowed || !session.current) return;
+    if (compose.busyRef.current || compose.modal || settingsOpen || logsExpanded || preparingAction || observation.restoring || busy.current || refreshBusy.current || blocked.current || !checked.length || !checked.some(container => canApply(container, action)) || !snapshot || snapshot.stale || !environment?.mutationAllowed || !session.current) return;
     if (action === 'start') { if (nativeObservation) void startObserved(checked, true); else void mutateBulk(checked, action, session.current, snapshot.generation); }
     else if (nativeObservation) void prepareConfirmation(checked, action, returnFocus, true);
     else setConfirmation({ containers: checked, action, sessionId: session.current, generation: snapshot.generation, ...connectionTarget(environment), returnFocus });
@@ -519,7 +533,7 @@ function AppContent() {
   const connectionClass = connecting ? 'checking' : reconnectRequired ? 'reconnect-required' : ready ? 'connected' : '';
   const frontendSession: FrontendSession = {
     currentStatus: connecting ? 'checking' : reconnectRequired ? 'reconnectRequired' : ready ? 'connected' : 'disconnected',
-    effectiveMutationBlocked: preparingAction || observation.restoring || connecting || !ready || !environment?.mutationAllowed || !snapshot || snapshot.stale || refreshing || mutating || mutationBlocked,
+    effectiveMutationBlocked: compose.busy || preparingAction || observation.restoring || connecting || !ready || !environment?.mutationAllowed || !snapshot || snapshot.stale || refreshing || mutating || mutationBlocked,
     reconnectRequired,
     inventoryStale: snapshot?.stale ?? null, inventoryRefreshedAt: snapshot?.refreshedAt ?? null,
     issue: sessionIssue,
@@ -531,7 +545,7 @@ function AppContent() {
   const projectCopyProps = { copy, onClearStarted: beginDisplayedLogsClear, copyFeedback, copyFeedbackTone, copyFeedbackId: clipboardMessage?.id,
     copyFeedbackHighlighted: clipboardMessage?.highlighted, copyFeedbackHighlightUntil: clipboardMessage?.highlightUntil } as const;
   return <div className="app-shell">
-    <div className="main-content" inert={!!confirmation || settingsOpen || logsExpanded}>
+    <div className="main-content" inert={!!confirmation || settingsOpen || logsExpanded || !!compose.modal}>
       <header className="app-header">
         <div className="brand"><BrandMark /><h1>Docker2U</h1></div>
         <section className="connection-bar" aria-label={t('connection')}>
@@ -539,6 +553,7 @@ function AppContent() {
           <button ref={reconnectTrigger} className="text-button" title={t('reconnectHint')} onClick={() => void connect()} disabled={preparingAction || connecting || refreshing || mutating}><Cable size={14} aria-hidden="true" />{t('reconnect')}</button>
         </section>
         <div className="header-right">
+          {compose.available && <button className="text-button" aria-haspopup="dialog" disabled={compose.busy || preparingAction || mutating} onClick={() => compose.openEditor()}><Plus size={15} aria-hidden="true" />{ct('add')}</button>}
           <button className="icon-button" title={t('showDiagnostics')} aria-label={t('showDiagnostics')} aria-expanded={showDiagnostics} onClick={() => setShowDiagnostics(!showDiagnostics)}><Info size={17} aria-hidden="true" /></button>
           <button ref={settingsTrigger} className="icon-button" aria-label={t('settings')} title={t('settings')} aria-haspopup="dialog" onClick={() => { if (!confirmation && !logsExpanded) setSettingsOpen(true); }}><Settings size={17} aria-hidden="true" /></button>
         </div>
@@ -553,16 +568,17 @@ function AppContent() {
             <button title={t('refreshHint')} className="inventory-refresh" disabled={preparingAction || !ready || refreshing || mutating} onClick={() => { if (session.current && !busy.current && !refreshBusy.current) void refresh(session.current).then(refreshed => { if (refreshed) setLogRestartVersion(value => value + 1); }); }}><RefreshCw size={14} className={refreshing ? 'spin' : ''} aria-hidden="true" />{t(refreshing ? 'refreshing' : 'refresh')}</button>
           </div>
           <div className="inventory-body">
-          <BulkSelection visible={visible} checked={checked} disabled={mutating || refreshing || connecting || !snapshot || snapshot.stale} actionsDisabled={preparingAction || observation.restoring || mutating || refreshing || mutationBlocked || !environment?.mutationAllowed || !snapshot || snapshot.stale} selectAllRef={bulkSelectAll} regionRef={bulkRegion} onToggleAll={() => changeSelection(() => checked.length === visible.length ? new Set() : new Set(visible.map(container => container.handle)))} onClear={() => changeSelection(() => new Set())} onAction={requestBulkAction} />
+          <BulkSelection visible={visible} checked={checked} disabled={mutating || refreshing || connecting || !snapshot || snapshot.stale} actionsDisabled={compose.busy || preparingAction || observation.restoring || mutating || refreshing || mutationBlocked || !environment?.mutationAllowed || !snapshot || snapshot.stale} selectAllRef={bulkSelectAll} regionRef={bulkRegion} onToggleAll={() => changeSelection(() => checked.length === visible.length ? new Set() : new Set(visible.map(container => container.handle)))} onClear={() => changeSelection(() => new Set())} onAction={requestBulkAction} />
           {snapshot?.stale && <div className="stale-notice" role="status"><AlertTriangle size={14} aria-hidden="true" /><span>{t('stale')}</span></div>}
           {listError && <div className="inline-error" role="alert"><p>{t('listFailure')}</p>{connectionInvalidatingErrors.has(listError.code) && <p>{t('validateAgain')}</p>}<ErrorDetails error={listError} /></div>}
+          {compose.registryError && <div className="inline-error" role="alert"><p>{ct('registryFailed')}</p><ErrorDetails error={compose.registryError} /><button onClick={() => void compose.reload()}>{ct('retry')}</button></div>}
           {stats.error && <p className="stats-notice" role="status">{t('statsFailure')}</p>}
           <ContainerTable groups={groups} selectedTarget={selectedTarget} checkedHandles={checkedHandles}
             checkboxDisabled={mutating || refreshing || !!snapshot?.stale} sampleFor={stats.sampleFor}
             onProjectView={openProject} inventoryRef={inventory} onSelect={container => selectContainer(container.fullId)} onShowConnections={showConnections}
             onToggle={container => changeSelection(previous => { const next = new Set(previous); if (next.has(container.handle)) next.delete(container.handle); else next.add(container.handle); return next; })}
             busy={preparingAction || refreshing || mutating} />
-          {!visible.length && <div className="inventory-placeholder"><BrandMark size={48} /><p>{t(connecting || (refreshing && !snapshot) ? 'checkingContainers' : !ready ? 'connectForList' : !snapshot ? 'reloadList' : snapshot.containers.length === 0 ? 'emptyEngine' : 'noResults')}</p>{snapshot && snapshot.containers.length > 0 && <button className="text-button" disabled={mutating || preparingAction} onClick={() => updateSearch('', 'all')}>{t('resetFilters')}</button>}</div>}
+          {!groups.length && <div className="inventory-placeholder"><BrandMark size={48} /><p>{t(connecting || (refreshing && !snapshot) ? 'checkingContainers' : !ready ? 'connectForList' : !snapshot ? 'reloadList' : snapshot.containers.length === 0 ? 'emptyEngine' : 'noResults')}</p>{snapshot && snapshot.containers.length > 0 && <button className="text-button" disabled={mutating || preparingAction} onClick={() => updateSearch('', 'all')}>{t('resetFilters')}</button>}</div>}
           </div>
         </aside>
         <button type="button" role="separator" className="pane-resizer" aria-label={t('resizeLogs')} title={t('resizeLogsHint')} aria-controls="inventory-pane detail-pane" {...pane.separatorProps}><span aria-hidden="true" /></button>
@@ -573,14 +589,19 @@ function AppContent() {
               {feedback.completed.result.kind === 'single' ? <OperationResult disclosure={false} operation={feedback.completed.result.operation} copy={copy} /> : <BulkResult disclosure={false} operation={feedback.completed.result.operation} />}
               {!feedback.completed.refreshed && <p className="operation-warning">{t('operationRefreshFailed')}</p>}
             </div>}
-            {selected && snapshot ? <ContainerSummary container={selected} snapshot={snapshot} mutationBlocked={mutationBlocked || preparingAction || observation.restoring} mutationAllowed={!!environment?.mutationAllowed} resourceSample={stats.sampleFor(selected)} /> : <div className="panel-heading"><h2>{projectView ? `${ot('project')} · ${observedProject ?? ot('noProject')}` : t('connectTitle')}</h2></div>}
+            {selected && snapshot ? <ContainerSummary container={selected} snapshot={snapshot} mutationBlocked={compose.busy || mutationBlocked || preparingAction || observation.restoring} mutationAllowed={!!environment?.mutationAllowed} resourceSample={stats.sampleFor(selected)} /> : <div className="panel-heading"><h2>{projectView ? `${ot('project')} · ${observedProject ?? ot('noProject')}` : t('connectTitle')}</h2></div>}
+            {compose.available && projectView && observedProject && <ComposeProjectControls project={registeredProject} name={observedProject} count={projectContainers.length} disabled={compose.busy || preparingAction || mutating || mutationBlocked || !ready || !environment?.mutationAllowed || !!snapshot?.stale} editDisabled={compose.busy || preparingAction || mutating} onPrepare={action => { if (registeredProject) void compose.prepare(registeredProject, action); }} onEdit={() => compose.openEditor(registeredProject, observedProject)} />}
             {targetHidden && <p className="selection-hidden-notice" role="status">{t('selectionHidden')}</p>}
           </div>
-          {connecting ? <div className="startup-panel"><div className="startup-icon"><LoaderCircle className="spin" size={30} aria-hidden="true" /></div><h3>{t('checkingLocal')}</h3><p>{t('checkingCli')}</p></div> : !ready ? <div className="startup-panel"><div className="startup-icon"><Cable size={32} aria-hidden="true" /></div><span className="eyebrow">{t('localEnvironment')}</span><h3>{t(connectionTitle)}</h3><p>{t(connectionHelp)}</p>{connectionError && <div role="alert"><ErrorDetails error={connectionError} /></div>}{!!environment?.diagnostics.length && <details className="technical-details"><summary>{t('originalDiagnostics')}</summary>{environment.diagnostics.map((message, index) => <p key={index}>{message}</p>)}</details>}<button className="primary-button" onClick={() => void connect()}><RefreshCw size={14} aria-hidden="true" />{t('reconnect')}</button></div> : projectView && snapshot ? <div className={`project-detail${projectTab === 'logs' ? ' project-log-detail' : ''}`}><div className="detail-tabs project-tabs" role="tablist" aria-label={ot('project')}>{(['logs', 'history'] as const).map(tab => <button key={tab} role="tab" id={`project-${tab}-tab`} aria-controls={`project-${tab}-panel`} tabIndex={projectTab === tab ? 0 : -1} aria-selected={projectTab === tab} onKeyDown={event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const next = event.key === 'Home' ? 'logs' : event.key === 'End' ? 'history' : tab === 'logs' ? 'history' : 'logs'; setProjectTab(next); document.getElementById(`project-${next}-tab`)?.focus(); } }} onClick={() => setProjectTab(tab)}>{ot(tab)}</button>)}</div><div id="project-history-panel" className="detail-tab-panel" role="tabpanel" aria-labelledby="project-history-tab" hidden={projectTab !== 'history'}><ObservationHistory onRetry={reconnectRequired ? undefined : () => void observation.retryEvents()} retrying={observation.retryingEvents} observation={observation.view} scope={project} containers={projectContainers} /></div><div id="project-logs-panel" className="detail-tab-panel project-log-panel" role="tabpanel" aria-labelledby="project-logs-tab" hidden={projectTab !== 'logs'}>{observedProject ? <ProjectLogs {...projectCopyProps} viewCache={logViewCache} key={`${snapshot.sessionId}/${observedProject}`} sessionId={snapshot.sessionId} project={observedProject} containers={projectContainers} visible={projectTab === 'logs'} initialPage={projectLogs.page} configure={projectLogs.configure} retry={projectLogs.retry} retrying={projectLogs.retrying} error={projectLogs.error} onError={onLogError} /> : <p className="observation-hint">{ot('allProjectsHint')}</p>}</div></div> : selected && snapshot ? <ContainerDetail logViewCache={standaloneLogViewCache} activeTab={activeTab} onTabChange={setActiveTab} historyEnabled={true} logContent={nativeObservation && observedProject ? <ProjectLogs {...projectCopyProps} viewCache={logViewCache} key={`${snapshot.sessionId}/${observedProject}/${selected.fullId}`} sessionId={snapshot.sessionId} project={observedProject} containers={projectContainers} fullId={selected.fullId} initialPage={projectLogs.page} configure={projectLogs.configure} retry={projectLogs.retry} retrying={projectLogs.retrying} error={projectLogs.error} visible={activeTab === 'logs'} onError={onLogError} /> : undefined} insights={activeTab === 'history' ? <ObservationHistory onRetry={reconnectRequired ? undefined : () => void observation.retryEvents()} retrying={observation.retryingEvents} observation={observation.view} scope={project} containers={projectContainers} fullId={selected.fullId} /> : activeTab !== 'logs' ? <>{activeTab === 'connectivity' && <ContainerInformation container={selected} snapshot={snapshot} copy={copy} resourceSample={stats.sampleFor(selected)} />}<ContainerInsights tab={activeTab} {...details} disabled={!detailsEnabled || !!snapshot.stale} copy={copy} /></> : undefined} operationFeedback={<OperationFeedback model={feedback} detailsId="latest-operation-details" onOpenDetails={openOperationDetails} />} container={selected} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} mutationBlocked={mutationBlocked || preparingAction || observation.restoring} mutationAllowed={!!environment?.mutationAllowed} liveStatus={liveStatus} loadLogs={loadLogs} clearLogs={clearDisplayedLogs} requestAction={requestAction} copy={copy} copyFeedback={copyFeedback} copyFeedbackTone={copyFeedbackTone} copyFeedbackId={clipboardMessage?.id} copyFeedbackHighlighted={clipboardMessage?.highlighted} copyFeedbackHighlightUntil={clipboardMessage?.highlightUntil} logsExpanded={logsExpanded} onLogsExpandedChange={setLogsExpanded} /> : <div className="startup-panel"><div className="startup-icon"><BrandMark size={56} /></div><h3>{t(refreshing ? 'loadingContainers' : snapshot?.containers.length === 0 ? 'noContainers' : 'selectContainer')}</h3><p>{t(snapshot?.containers.length === 0 ? 'startServices' : 'selectHelp')}</p></div>}
+          {connecting ? <div className="startup-panel"><div className="startup-icon"><LoaderCircle className="spin" size={30} aria-hidden="true" /></div><h3>{t('checkingLocal')}</h3><p>{t('checkingCli')}</p></div> : !ready ? <div className="startup-panel"><div className="startup-icon"><Cable size={32} aria-hidden="true" /></div><span className="eyebrow">{t('localEnvironment')}</span><h3>{t(connectionTitle)}</h3><p>{t(connectionHelp)}</p>{connectionError && <div role="alert"><ErrorDetails error={connectionError} /></div>}{!!environment?.diagnostics.length && <details className="technical-details"><summary>{t('originalDiagnostics')}</summary>{environment.diagnostics.map((message, index) => <p key={index}>{message}</p>)}</details>}<button className="primary-button" onClick={() => void connect()}><RefreshCw size={14} aria-hidden="true" />{t('reconnect')}</button></div> : projectView && snapshot ? <div className={`project-detail${projectTab === 'logs' ? ' project-log-detail' : ''}`}><div className="detail-tabs project-tabs" role="tablist" aria-label={ot('project')}>{(['logs', 'history'] as const).map(tab => <button key={tab} role="tab" id={`project-${tab}-tab`} aria-controls={`project-${tab}-panel`} tabIndex={projectTab === tab ? 0 : -1} aria-selected={projectTab === tab} onKeyDown={event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const next = event.key === 'Home' ? 'logs' : event.key === 'End' ? 'history' : tab === 'logs' ? 'history' : 'logs'; setProjectTab(next); document.getElementById(`project-${next}-tab`)?.focus(); } }} onClick={() => setProjectTab(tab)}>{ot(tab)}</button>)}</div><div id="project-history-panel" className="detail-tab-panel" role="tabpanel" aria-labelledby="project-history-tab" hidden={projectTab !== 'history'}><ObservationHistory onRetry={reconnectRequired ? undefined : () => void observation.retryEvents()} retrying={observation.retryingEvents} observation={observation.view} scope={project} containers={projectContainers} /></div><div id="project-logs-panel" className="detail-tab-panel project-log-panel" role="tabpanel" aria-labelledby="project-logs-tab" hidden={projectTab !== 'logs'}>{observedProject ? <ProjectLogs {...projectCopyProps} viewCache={logViewCache} key={`${snapshot.sessionId}/${observedProject}`} sessionId={snapshot.sessionId} project={observedProject} containers={projectContainers} visible={projectTab === 'logs'} initialPage={projectLogs.page} configure={projectLogs.configure} retry={projectLogs.retry} retrying={projectLogs.retrying} error={projectLogs.error} onError={onLogError} /> : <p className="observation-hint">{ot('allProjectsHint')}</p>}</div></div> : selected && snapshot ? <ContainerDetail logViewCache={standaloneLogViewCache} activeTab={activeTab} onTabChange={setActiveTab} historyEnabled={true} logContent={nativeObservation && observedProject ? <ProjectLogs {...projectCopyProps} viewCache={logViewCache} key={`${snapshot.sessionId}/${observedProject}/${selected.fullId}`} sessionId={snapshot.sessionId} project={observedProject} containers={projectContainers} fullId={selected.fullId} initialPage={projectLogs.page} configure={projectLogs.configure} retry={projectLogs.retry} retrying={projectLogs.retrying} error={projectLogs.error} visible={activeTab === 'logs'} onError={onLogError} /> : undefined} insights={activeTab === 'history' ? <ObservationHistory onRetry={reconnectRequired ? undefined : () => void observation.retryEvents()} retrying={observation.retryingEvents} observation={observation.view} scope={project} containers={projectContainers} fullId={selected.fullId} /> : activeTab !== 'logs' ? <>{activeTab === 'connectivity' && <ContainerInformation container={selected} snapshot={snapshot} copy={copy} resourceSample={stats.sampleFor(selected)} />}<ContainerInsights tab={activeTab} {...details} disabled={!detailsEnabled || !!snapshot.stale} copy={copy} /></> : undefined} operationFeedback={<OperationFeedback model={feedback} detailsId="latest-operation-details" onOpenDetails={openOperationDetails} />} container={selected} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} mutationBlocked={compose.busy || mutationBlocked || preparingAction || observation.restoring} mutationAllowed={!!environment?.mutationAllowed} liveStatus={liveStatus} loadLogs={loadLogs} clearLogs={clearDisplayedLogs} requestAction={requestAction} copy={copy} copyFeedback={copyFeedback} copyFeedbackTone={copyFeedbackTone} copyFeedbackId={clipboardMessage?.id} copyFeedbackHighlighted={clipboardMessage?.highlighted} copyFeedbackHighlightUntil={clipboardMessage?.highlightUntil} logsExpanded={logsExpanded} onLogsExpandedChange={setLogsExpanded} /> : <div className="startup-panel"><div className="startup-icon"><BrandMark size={56} /></div><h3>{t(refreshing ? 'loadingContainers' : snapshot?.containers.length === 0 ? 'noContainers' : 'selectContainer')}</h3><p>{t(snapshot?.containers.length === 0 ? 'startServices' : 'selectHelp')}</p></div>}
         </section>
       </main>
-      <footer className="app-footer"><span><span className="footer-dot" />{t('footer')}</span><OperationFeedback model={feedback} detailsId="latest-operation-details" recentButtonRef={recentOperationTrigger} onOpenDetails={openOperationDetails} announce={!logsExpanded} /><CopyFeedback className="clipboard-feedback" message={copyFeedback} tone={copyFeedbackTone} notificationId={clipboardMessage?.id} highlighted={clipboardMessage?.highlighted} highlightUntil={clipboardMessage?.highlightUntil} /></footer>
+      <footer className="app-footer"><span><span className="footer-dot" />{t('footer')}</span>{compose.operation && <button className="compose-statusbar" data-active={compose.busy || undefined} aria-label={ct('recent')} title={ct('progress')} onClick={compose.openProgress}>{compose.busy ? <LoaderCircle size={13} className="spin" aria-hidden="true" /> : <Terminal size={13} aria-hidden="true" />}<span>{compose.feedbackOperation?.projectName} · {ct(compose.feedbackOperation?.sessionId !== environment?.sessionId ? 'previousSession' : compose.feedbackOperation?.outcome ?? (compose.feedbackOperation?.phase === 'reconciling' ? 'reconciling' : 'running'))}</span></button>}<OperationFeedback model={feedback} detailsId="latest-operation-details" recentButtonRef={recentOperationTrigger} onOpenDetails={openOperationDetails} announce={!logsExpanded} /><CopyFeedback className="clipboard-feedback" message={copyFeedback} tone={copyFeedbackTone} notificationId={clipboardMessage?.id} highlighted={clipboardMessage?.highlighted} highlightUntil={clipboardMessage?.highlightUntil} /></footer>
     </div>
+    {compose.modal?.kind === 'editor' && <ComposeEditorDialog key={compose.modal.project?.id ?? 'new'} project={compose.modal.project} initialName={compose.modal.name} engine={connectionTarget(environment)} sessionId={!connecting && !reconnectRequired ? environment?.sessionId ?? null : null} onClose={compose.close} onRegistryChanged={() => void compose.reload()} onSaved={project => { compose.saved(project); openProject(project.name); }} onForget={compose.modal.project ? () => { if (compose.modal?.kind === 'editor' && compose.modal.project) compose.openForget(compose.modal.project); } : undefined} onError={(error, sessionId) => composeError.current(error, sessionId)} />}
+    {compose.modal?.kind === 'prepare' && <ComposePrepareDialog project={compose.modal.project} action={compose.modal.action} preparation={compose.preparation} engine={compose.engine} loading={compose.preparing} starting={compose.starting} error={compose.actionError} onClose={compose.close} onRetry={() => { if (compose.modal?.kind === 'prepare') void compose.prepare(compose.modal.project, compose.modal.action); }} onStart={() => void compose.start()} />}
+    {compose.modal?.kind === 'progress' && compose.operation && <ComposeProgressDialog operation={compose.operation} recentOperations={compose.recentOperations} onSelectOperation={compose.selectOperation} text={compose.text} truncated={compose.truncated} readError={compose.readError} previousSession={compose.previousSession} services={compose.services} containers={snapshot?.containers ?? []} cancelling={compose.cancelling} refreshFailed={compose.refreshFailed} onClose={compose.close} onCancel={() => void compose.cancel()} onRetry={compose.retryRead} />}
+    {compose.modal?.kind === 'forget' && <ComposeForgetDialog project={compose.modal.project} busy={compose.removing} error={compose.actionError} onClose={compose.close} onConfirm={() => { if (compose.modal?.kind !== 'forget') return; const target = compose.modal.project; void compose.remove(target).then(removed => { if (removed && selectionRef.current?.kind === 'project' && selectionRef.current.name === target.name && !currentSnapshot.current?.containers.some(item => projectName(item) === target.name)) selectTarget(null); }); }} />}
     {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} returnFocus={settingsTrigger.current ?? undefined} />}
     {confirmation && <ConfirmDialog confirmation={confirmation} blocked={reconnectRequired} reconnectFocus={reconnectTrigger} onCancel={closeConfirmation} onConfirm={() => { if (confirmation.containers) void mutateBulk(confirmation.containers, confirmation.action, confirmation.sessionId, confirmation.generation).finally(releaseObservationHold); else void mutate(confirmation.container, confirmation.action, confirmation.sessionId, confirmation.generation).finally(releaseObservationHold); }} />}
   </div>;

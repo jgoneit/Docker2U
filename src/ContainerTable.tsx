@@ -5,7 +5,8 @@ import type { Container } from './api';
 import { Health, State } from './components';
 import { useI18n } from './i18n';
 import { appMessages } from './messages/app';
-import type { groupContainers } from './projects';
+import type { ProjectTreeGroup } from './projects';
+import { composeMessages } from './messages/compose';
 import type { ResourceSample } from './useContainerStats';
 import './containerTable.css';
 
@@ -23,7 +24,7 @@ const messages = {
 
 export type NavigationTarget = { kind: 'project'; name: string } | { kind: 'container'; fullId: string } | null;
 export interface ContainerTableProps {
-  groups: ReturnType<typeof groupContainers>;
+  groups: ProjectTreeGroup[];
   selectedTarget: NavigationTarget;
   checkedHandles: ReadonlySet<string>;
   checkboxDisabled: boolean;
@@ -43,6 +44,7 @@ const containerKey = (fullId: string) => `container:${fullId}`;
 export function ContainerTable({ groups, selectedTarget, checkedHandles, checkboxDisabled, sampleFor,
   inventoryRef, onSelect, onShowConnections, onProjectView, onToggle, busy }: ContainerTableProps) {
   const t = useI18n(messages);
+  const ct = useI18n(composeMessages);
   const app = useI18n(appMessages);
   const id = useId();
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -120,6 +122,7 @@ export function ContainerTable({ groups, selectedTarget, checkedHandles, checkbo
             {expanded ? <FolderOpen size={16} aria-hidden="true" /> : <FolderClosed size={16} aria-hidden="true" />}
             <span className="project-tree-name" title={name}>{name}</span>
             <span className="container-project-count" aria-label={t('count', { count: group.containers.length })}>{group.containers.length}</span>
+            {group.registration && <span className="project-registration-state" title={group.issue?.message ?? group.registration.composeFile} data-error={!!group.issue || undefined}>{group.issue ? ct('failed') : (group.totalContainers ?? group.containers.length) === 0 ? ct('notCreated') : ct('registered')}</span>}
             {selectedChild && <span id={selectedChildId} className="project-selected-child" role="img" aria-label={t('selectedChild', { name: selectedChild.name })} title={t('selectedChild', { name: selectedChild.name })} />}
           </div>
           {expanded && <div role="group" className="project-tree-children">{group.containers.map(container => {

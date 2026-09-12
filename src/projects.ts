@@ -1,4 +1,5 @@
-import type { Container } from './api';
+import type { Container, CoreError } from './api';
+import type { ComposeProject } from './composeApi';
 
 export type ProjectFilter = { kind: 'all' } | { kind: 'none' } | { kind: 'project'; name: string };
 export type ContainerFilter = 'all' | 'running' | 'stopped' | 'attention';
@@ -36,4 +37,24 @@ export function parseProjectFilter(value: string): ProjectFilter {
     if (Array.isArray(parsed) && parsed.length === 2 && parsed[0] === 'project' && typeof parsed[1] === 'string') return { kind: 'project', name: parsed[1] };
   } catch { /* A removed option resets to the full inventory. */ }
   return allProjects;
+}
+
+export interface ProjectTreeGroup { name: string | null; containers: Container[]; registration?: ComposeProject; issue?: CoreError; totalContainers?: number }
+/** Registration is independent of Engine inventory; only real containers are selectable for bulk actions. */
+export function projectTreeGroups(containers: Container[], registrations: ComposeProject[], query: string, filter: ContainerFilter, issues: ReadonlyMap<string, CoreError> = new Map()): ProjectTreeGroup[] {
+  const groups = new Map<string | null, ProjectTreeGroup>();
+  for (const group of groupContainers(containers)) {
+    const visible = group.containers.filter(container => matchesContainer(container, query, filter));
+    if (visible.length) groups.set(group.name, { ...group, containers: visible, totalContainers: group.containers.length });
+  }
+  for (const registration of registrations) {
+    const existing = groups.get(registration.name);
+    const all = containers.filter(container => projectName(container) === registration.name);
+    const issue = issues.get(registration.name);
+    if (existing) { existing.registration = registration; existing.issue = issue; continue; }
+    const searchMatches = [registration.name, registration.workingDirectory].join(' ').toLowerCase().includes(query.trim().toLowerCase());
+    const filterMatches = filter === 'all' || (filter === 'stopped' && all.length === 0) || (filter === 'attention' && !!issue);
+    if (searchMatches && filterMatches) groups.set(registration.name, { name: registration.name, containers: [], registration, issue, totalContainers: all.length });
+  }
+  return [...groups.values()].sort((a, b) => a.name === null ? 1 : b.name === null ? -1 : compare(a.name, b.name));
 }
