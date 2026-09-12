@@ -2,7 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { createPortal } from 'react-dom';
 import { ChevronDown, Copy, Maximize2, Minimize2, Pause, Play, Search, X } from 'lucide-react';
 import { coreError, type Container, type CoreError } from './api';
-import { ErrorDetails } from './components';
+import { ErrorDetails, type CopyText } from './components';
+import { CopyFeedback, type CopyFeedbackTone } from './CopyFeedback';
 import { observationApi, projectLogApi, type ProjectLogPage, type ProjectLogRow } from './observationApi';
 import { useI18n } from './i18n';
 import { observationMessages } from './messages/observation';
@@ -118,6 +119,9 @@ interface ProjectLogsProps {
   sessionId: string; project: string; containers: Container[]; initialPage: ProjectLogPage | null; fullId?: string;
   configure: (handles: string[] | null) => Promise<void>; error: CoreError | null; visible?: boolean;
   viewCache?: ProjectLogViewCache;
+  copy: CopyText;
+  copyFeedback?: string; copyFeedbackTone?: CopyFeedbackTone; copyFeedbackId?: number;
+  copyFeedbackHighlighted?: boolean; copyFeedbackHighlightUntil?: number;
   onError: (original: unknown, failure: CoreError, sessionId: string) => void;
 }
 export function ProjectLogs(props: ProjectLogsProps) {
@@ -127,7 +131,7 @@ export function ProjectLogs(props: ProjectLogsProps) {
   const scopeKey = JSON.stringify([props.project, props.fullId ?? null]);
   return <ProjectLogView key={`${cache.version}/${scopeKey}`} {...props} cache={cache} cacheVersion={cache.version} scopeKey={scopeKey} />;
 }
-function ProjectLogView({ sessionId, project, containers, initialPage, fullId, configure, error: collectionError, visible = true, onError, cache, cacheVersion, scopeKey }: ProjectLogsProps & { cache: ProjectLogViewCache; cacheVersion: number; scopeKey: string }) {
+function ProjectLogView({ sessionId, project, containers, initialPage, fullId, configure, error: collectionError, visible = true, onError, cache, cacheVersion, scopeKey, copy, copyFeedback, copyFeedbackTone, copyFeedbackId, copyFeedbackHighlighted, copyFeedbackHighlightUntil }: ProjectLogsProps & { cache: ProjectLogViewCache; cacheVersion: number; scopeKey: string }) {
   const t = useI18n(observationMessages);
   const saved = useState(() => cache.read(scopeKey))[0];
   const [page, setPage] = useState<ProjectLogPage | null>(saved ? saved.page : (fullId ? null : initialWindow(initialPage)));
@@ -142,7 +146,6 @@ function ProjectLogView({ sessionId, project, containers, initialPage, fullId, c
   const [applying, setApplying] = useState(false);
   const [selectionError, setSelectionError] = useState<CoreError | null>(null);
   const selectionRequest = useRef(0);
-  const [copyStatus, setCopyStatus] = useState<'copied' | 'copyFailed' | null>(null);
   const savedScroll = useRef(saved?.savedScroll ?? 0);
   const restoredScroll = useRef<{ node: HTMLDivElement; top: number } | null>(null);
   const viewportGeometry = useRef<{ node: HTMLDivElement; height: number } | null>(null);
@@ -309,7 +312,7 @@ function ProjectLogView({ sessionId, project, containers, initialPage, fullId, c
     : hasFilters ? 'noMatchingLogs' : 'noLogs';
   const sourceCounts = new Map<string, number>();
   for (const source of selectedSources) sourceCounts.set(source.status, (sourceCounts.get(source.status) ?? 0) + 1);
-  const content = <section className={`project-logs${expanded ? ' project-logs-expanded' : ''}`} aria-label={t('logs')} onKeyDown={event => {
+  const content = <section className={`project-logs${expanded ? ' project-logs-expanded' : ''}`} data-log-scope={fullId ? 'container' : 'project'} aria-label={t('logs')} onKeyDown={event => {
     if (event.key === 'Escape' && selecting) { event.preventDefault(); event.stopPropagation(); closeSources(); }
   }}>
     <div className="project-log-toolbar">
@@ -317,18 +320,16 @@ function ProjectLogView({ sessionId, project, containers, initialPage, fullId, c
       <label className="project-keyword"><Search size={14} aria-hidden="true" /><input type="search" aria-label={t('keyword')} placeholder={t('keywordHint')} value={keyword} onChange={event => { setKeyword(event.target.value); resetFilter(); }} /></label>
       <button onClick={togglePaused} aria-pressed={paused}>{paused ? <Play size={14} aria-hidden="true" /> : <Pause size={14} aria-hidden="true" />}{t(paused ? 'resume' : 'pause')}</button>
       <button onClick={() => { resetFilter(); frozenSequence.current = null; setPaused(false); retryQuery(); }}>{t('latest')}</button>
-      <button disabled={!page?.rows.length} aria-label={t('copy')} title={t('copy')} onClick={() => void navigator.clipboard.writeText(logRowsText(page?.rows ?? [])).then(() => setCopyStatus('copied'), () => setCopyStatus('copyFailed'))}><Copy size={14} aria-hidden="true" /></button>
+      <button disabled={!page?.rows.length} aria-label={t('copy')} title={t('copy')} onClick={() => void copy(logRowsText(page?.rows ?? []), 'logs')}><Copy size={14} aria-hidden="true" /></button>
       <button ref={expanded ? expandedClose : expandButton} aria-label={t(expanded ? 'collapse' : 'expand')} onClick={toggleExpanded}>{expanded ? <Minimize2 size={14} aria-hidden="true" /> : <Maximize2 size={14} aria-hidden="true" />}</button>
       {!fullId && <button ref={sourceButton} onClick={selectSources}>{t('changeSources')}</button>}
     </div>
-    {copyStatus && <p className="observation-hint" role="status">{t(copyStatus)}</p>}
     {paused && <p className="observation-hint" role="status">{t('pausedHint')}</p>}
     {delayed && <div className="project-log-delay" role="status"><span>{t(page?.rows.length ? 'queryDelayedWithData' : 'queryDelayed')}</span><button onClick={retryQuery}>{t('retryQuery')}</button></div>}
     {(failure || visibleSources.some(source => source.error)) && <div role="alert">{failure && <ErrorDetails error={failure} />}{sources.filter(source => source.error && (!fullId || source.fullId === fullId)).map(source => <div key={source.sourceId}><span>{source.containerName}</span><ErrorDetails error={source.error!} /></div>)}<button onClick={() => void projectLogApi.retry(sessionId).then(() => { if (mounted.current) retryQuery(); }).catch(original => { if (!mounted.current) return; const next = coreError(original); setError(next); onError(original, next, sessionId); })}>{t('retry')}</button></div>}
     {selecting && <fieldset ref={sourcePicker} className="project-source-selection" aria-busy={applying}><legend>{t('selectSources')}</legend><div className="project-source-heading"><p>{t('selectionHint')}</p><button className="icon-button" aria-label={t('closeSources')} onClick={closeSources}><X size={16} aria-hidden="true" /></button></div><p>{t('selectionCount', { selected: selectedIds.size, total: sources.filter(source => source.status !== 'removed').length })}</p><div className="project-source-options">{sources.filter(source => source.status !== 'removed').map(source => <label key={source.fullId}><input type="checkbox" checked={selectedIds.has(source.fullId)} disabled={applying || (!selectedIds.has(source.fullId) && selectedIds.size >= 64)} onChange={event => setSelectedIds(previous => { const next = new Set(previous); if (event.target.checked) next.add(source.fullId); else next.delete(source.fullId); return next; })} />{source.serviceName ?? '—'} · {source.containerName}</label>)}</div>{selectionError && <div role="alert"><ErrorDetails error={selectionError} /></div>}<div className="project-source-actions"><button onClick={closeSources}>{t('cancel')}</button><button disabled={applying} onClick={() => void applySources()}>{t(applying ? 'applying' : 'apply')}</button></div></fieldset>}
     <details className="project-log-sources"><summary><span>{t('selectionCount', { selected: selectedSources.length, total: visibleSources.filter(source => source.status !== 'removed').length })}</span><span className="project-source-counts">{[...sourceCounts].map(([status, count]) => <span key={status} data-status={status}>{t(status as typeof selectedSources[number]['status'])} {count}</span>)}</span><span>{t('sourceDetails')}</span><ChevronDown size={12} aria-hidden="true" /></summary><div>{sources.filter(source => source.selected && (!fullId || source.fullId === fullId)).map(source => <span key={source.sourceId} data-status={source.status} title={source.error?.message}>{source.containerName} · {t(source.status)}</span>)}</div></details>
     <div className="project-log-meta"><span>{t('count', { count: page?.totalRows ?? 0 })}</span><span>{t('logCollectionHint')}</span>{!!page?.coverageGaps && <span className="observation-warning">{t('gap')} · {page.coverageGaps}</span>}{page?.anchorLost && <span className="observation-warning">{t('anchorLost')}</span>}{page?.retainedFrom && <span>{t('coverage')} (UTC): {page.retainedFrom.slice(0, 19).replace('T', ' ')} – {page.retainedTo?.slice(0, 19).replace('T', ' ') ?? '—'}</span>}{!!page?.droppedRows && <span className="observation-warning">{t('trimmed', { count: page.droppedRows })}</span>}</div>
-    <div className="project-log-header" aria-hidden="true"><span>{t('utcTime')}</span><span>{t('service')}</span><span>{t('container')}</span><span>{t('message')}</span></div>
     <div ref={viewport} className="project-log-viewport" tabIndex={0} role="log" aria-label={t('logs')} aria-live="off" onScroll={event => {
       const node = event.currentTarget;
       // Resize can clamp scrollTop before ResizeObserver is delivered.
@@ -353,5 +354,5 @@ function ProjectLogView({ sessionId, project, containers, initialPage, fullId, c
   return createPortal(<div className="project-log-modal" role="dialog" aria-modal="true" aria-label={t('logs')} onKeyDown={event => {
     if (event.key === 'Escape') { event.preventDefault(); toggleExpanded(); }
     if (event.key === 'Tab') { const elements = event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [tabindex="0"], summary'); const first = elements[0]; const last = elements[elements.length - 1]; if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); } }
-  }}>{content}</div>, document.body);
+  }}>{content}<CopyFeedback className="project-log-copy-feedback" message={copyFeedback ?? ''} tone={copyFeedbackTone} notificationId={copyFeedbackId} highlighted={copyFeedbackHighlighted} highlightUntil={copyFeedbackHighlightUntil} /></div>, document.body);
 }
