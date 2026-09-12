@@ -114,6 +114,39 @@ test('container logs reuse the active project subscription and expose only that 
   await expectVisibleLogs(page);
 });
 
+test('project and container logs retain console typography and shared copy feedback in the real viewport', async ({ page }, info) => {
+  const en = info.project.metadata.language === 'en';
+  const copied = en ? 'Displayed logs copied' : '표시된 로그 복사됨';
+  await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { (window as unknown as { copiedConsole: string }).copiedConsole = text; } } }));
+  expect(await page.locator('.project-log-spacer').evaluate(node => node.getBoundingClientRect().height / 26)).toBeGreaterThanOrEqual(3_000);
+  for (const scope of ['project', 'container']) {
+    if (scope === 'container') await page.locator('.container-row').first().click();
+    await expectVisibleLogs(page);
+    const viewport = page.locator('.project-log-viewport');
+    await expect(viewport).toHaveCSS('font-size', '12px');
+    await expect(viewport).toHaveCSS('font-family', /monospace/);
+    const colors = await viewport.evaluate(node => ({ body: getComputedStyle(node).backgroundColor, inset: getComputedStyle(document.querySelector('.app-footer')!).backgroundColor }));
+    expect(colors.body).toBe(colors.inset);
+    expect(colors.body).not.toBe('rgba(0, 0, 0, 0)');
+    expect(await page.locator('.project-log-row').first().evaluate(node => node.getBoundingClientRect().height)).toBe(26);
+    const source = page.locator('.project-log-row > span:nth-child(2)').last();
+    if (scope === 'container') await expect(source).toBeHidden();
+    else await expect(source).toBeVisible();
+    await page.getByRole('button', { name: en ? 'Copy displayed range' : '현재 표시 구간 복사', exact: true }).click();
+    await expect(page.locator('.app-footer .clipboard-feedback')).toHaveText(copied);
+    await expect(page.locator('.app-footer .copy-feedback-glow')).toHaveCSS('animation-duration', '2s');
+    expect(await page.evaluate(() => (window as unknown as { copiedConsole: string }).copiedConsole)).toContain('\tapi\t');
+    await page.getByRole('button', { name: en ? 'Expand logs' : '로그 확대', exact: true }).click();
+    await expectVisibleLogs(page);
+    await expect(page.locator('.project-log-copy-feedback')).toHaveText(copied);
+    await expect(page.locator('.project-log-copy-feedback')).toBeInViewport();
+    await expect(page.locator('.project-log-copy-feedback .copy-feedback-glow')).toHaveCount(1);
+    await expect(page.locator('.project-log-copy-feedback .copy-feedback-glow')).toHaveCount(0, { timeout: 3_000 });
+    await expect(page.locator('.project-log-copy-feedback')).toHaveText(copied);
+    await page.keyboard.press('Escape');
+  }
+});
+
 
 test('historical log row and fractional scroll survive pause, expansion, window and split resizing', async ({ page }, info) => {
   const en = info.project.metadata.language === 'en';
