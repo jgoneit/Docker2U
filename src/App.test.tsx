@@ -9,7 +9,7 @@ import type { Action, BulkMutationResult, Container, ContainerList, Environment,
 
 vi.mock('./api', async importOriginal => ({
   ...await importOriginal<typeof import('./api')>(),
-  api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), startLogStream: vi.fn(), readLogStream: vi.fn(), stopLogStream: vi.fn(), getContainerStats: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() },
+  api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), startLogStream: vi.fn(), readLogStream: vi.fn(), stopLogStream: vi.fn(), getContainerStats: vi.fn(), getContainerDetails: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() },
 }));
 const mock = vi.mocked(api);
 const actionName = (action: string) => ({ Start: '시작', Stop: '중지', Restart: '재시작' } as Record<string, string>)[action] ?? action;
@@ -64,6 +64,7 @@ async function confirmBulkWithKeyboard(user: ReturnType<typeof userEvent.setup>,
 }
 beforeEach(() => {
   vi.resetAllMocks();
+  mock.getContainerDetails.mockReturnValue(new Promise(() => {}));
   installSnapshotStreams(mock);
   localStorage.setItem('docker2u.preferences.v1', JSON.stringify({ theme: 'dark', language: 'ko' }));
   let generation = 0;
@@ -485,7 +486,7 @@ describe('confirmed bulk focus recovery', () => {
     expect(mock.mutateContainers).toHaveBeenCalledTimes(1);
     expect(mock.getEnvironment).toHaveBeenCalledTimes(1);
   });
-  it.each(['diagnostics', 'summary'] as const)('preserves focus the user moves to %s while the bulk operation is pending', async destination => {
+  it.each(['diagnostics', 'connections tab'] as const)('preserves focus the user moves to %s while the bulk operation is pending', async destination => {
     const user = userEvent.setup();
     const mutation = deferred<BulkMutationResult>();
     const finalRefresh = deferred<ContainerList>();
@@ -502,7 +503,7 @@ describe('confirmed bulk focus recovery', () => {
       await act(async () => mutation.resolve(batch('stop')));
     } else {
       await act(async () => mutation.resolve(batch('stop')));
-      chosen = screen.getByText('컨테이너 정보');
+      chosen = screen.getByRole('tab', { name: '접속 정보' });
       chosen.focus();
       expect(chosen).toHaveFocus();
     }
@@ -544,8 +545,8 @@ describe('environment and inventory', () => {
     expect(mock.listContainers).toHaveBeenCalledWith('session-1');
     expect(screen.getByRole('heading', { name: 'Docker2U' })).toBeVisible();
     expect(within(screen.getByRole('region', { name: '컨테이너 상세' })).getByText('정상')).toBeVisible();
-    expect(screen.getByText(/목록 갱신 시각/)).not.toBeVisible();
-    fireEvent.click(screen.getByText('컨테이너 정보'));
+    expect(screen.queryByText(/목록 갱신 시각/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: '접속 정보' }));
     expect(screen.getByText(/목록 갱신 시각/)).toBeVisible();
     expect(within(screen.getByRole('tree', { name: '컨테이너 목록' })).queryByRole('button', { name: '중지' })).not.toBeInTheDocument();
   });

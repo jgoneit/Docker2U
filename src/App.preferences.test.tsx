@@ -8,7 +8,7 @@ import { PREFERENCES_KEY } from './preferences';
 
 vi.mock('./api', async importOriginal => ({
   ...await importOriginal<typeof import('./api')>(),
-  api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), startLogStream: vi.fn(), readLogStream: vi.fn(), stopLogStream: vi.fn(), getContainerStats: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() },
+  api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), startLogStream: vi.fn(), readLogStream: vi.fn(), stopLogStream: vi.fn(), getContainerStats: vi.fn(), getContainerDetails: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() },
 }));
 const mock = vi.mocked(api);
 const container: Container = { handle: 'handle-1', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), composeProject: null, composeService: null, name: 'backend', image: 'local/api:1', state: 'running', health: 'healthy', ports: [], createdAt: '2026-09-06T00:00:00Z' };
@@ -43,6 +43,7 @@ function scrollUp(content: HTMLElement) {
 }
 beforeEach(() => {
   vi.resetAllMocks();
+  mock.getContainerDetails.mockReturnValue(new Promise(() => {}));
   window.localStorage.clear();
   window.localStorage.setItem(PREFERENCES_KEY, JSON.stringify({ theme: 'dark', language: 'ko' }));
   mock.getEnvironment.mockResolvedValue(environment);
@@ -55,6 +56,34 @@ beforeEach(() => {
 });
 
 describe('appearance and language preserve the active Docker session', () => {
+  it('keeps container information and the selected connection tab across preferences while details are still loading', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
+    render(<App />);
+    await screen.findByText(/LAST_LINE/);
+    expect(screen.queryByRole('region', { name: '컨테이너 정보' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('checkbox', { name: 'backend 작업 대상으로 선택' }));
+    await user.click(screen.getByRole('tab', { name: '접속 정보' }));
+    const information = screen.getByRole('region', { name: '컨테이너 정보' });
+    expect(information).toHaveTextContent(container.image);
+    expect(information).toHaveTextContent(container.fullId);
+    expect(screen.getByText('상세 정보를 조회하고 있습니다.')).toBeVisible();
+    await user.click(within(information).getByRole('button', { name: '전체 ID 복사' }));
+    expect(screen.getByRole('contentinfo').querySelector('.clipboard-feedback')).toHaveTextContent('전체 ID 복사됨');
+    const before = callCounts();
+    await toEnglishAndLight(user);
+    expect(screen.getByRole('region', { name: 'Container information' })).toBe(information);
+    expect(screen.getByRole('tab', { name: 'Connections' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('treeitem', { name: 'backend details' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('checkbox', { name: 'Select backend for an action' })).toBeChecked();
+    expect(screen.getByRole('contentinfo').querySelector('.clipboard-feedback')).toHaveTextContent('Full ID copied');
+    expect(mock.getContainerDetails).toHaveBeenCalledOnce();
+    expect(callCounts()).toEqual(before);
+    await user.click(screen.getByRole('tab', { name: 'Logs' }));
+    expect(screen.queryByRole('region', { name: 'Container information' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Recent log content').textContent).toBe(logs.text);
+  });
+
   it('preserves search, selection, checkboxes, raw logs and scroll without making API calls', async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -62,8 +91,7 @@ describe('appearance and language preserve the active Docker session', () => {
     await screen.findByText(/LAST_LINE/);
     await user.type(screen.getByRole('textbox', { name: '컨테이너 검색' }), 'backend');
     await user.click(screen.getByRole('checkbox', { name: 'backend 작업 대상으로 선택' }));
-    const information = screen.getByText('컨테이너 정보').closest('details');
-    await user.click(screen.getByText('컨테이너 정보'));
+    expect(screen.queryByText('컨테이너 정보')).not.toBeInTheDocument();
     const copyButton = screen.getByRole('button', { name: '표시된 로그 복사' });
     output.scrollTop = 145;
     fireEvent.scroll(output);
@@ -77,8 +105,7 @@ describe('appearance and language preserve the active Docker session', () => {
     expect(screen.getByLabelText('Recent log content')).toBe(output);
     expect(output.textContent).toBe(logs.text);
     expect(output.scrollTop).toBe(145);
-    expect(screen.getByText('Container information').closest('details')).toBe(information);
-    expect(information).toHaveAttribute('open');
+    expect(screen.queryByText('Container information')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Copy displayed logs' })).toBe(copyButton);
     expect(copyButton).toBeVisible();
     expect(callCounts()).toEqual(before);
@@ -285,7 +312,7 @@ describe('clipboard feedback follows the latest copy attempt', () => {
     const feedback = screen.getByRole('contentinfo').querySelector<HTMLElement>('.clipboard-feedback')!;
     await user.click(screen.getByRole('button', { name: '표시된 로그 복사' }));
     expect(feedback).toBeEmptyDOMElement();
-    await user.click(screen.getByText('컨테이너 정보'));
+    await user.click(screen.getByRole('tab', { name: '접속 정보' }));
     await user.click(screen.getByRole('button', { name: '전체 ID 복사' }));
     const latestMessage = newer === 'success' ? '전체 ID 복사됨' : '클립보드에 복사하지 못했습니다.';
     await within(feedback).findByText(latestMessage);

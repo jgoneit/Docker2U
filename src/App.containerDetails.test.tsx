@@ -123,7 +123,7 @@ it('keeps a failed final state check persistent and independent of clipboard fee
   await click(screen.getByRole('button', { name: '시작' }));
   await clock(6000);
   expect(notification()).toHaveTextContent('목록 확인 실패');
-  await click(screen.getByText('컨테이너 정보'));
+  await click(screen.getByRole('tab', { name: '접속 정보' }));
   await click(screen.getByRole('button', { name: '전체 ID 복사' }));
   expect(notification()).toHaveTextContent('목록 확인 실패');
   expect(screen.getByRole('contentinfo').querySelector('.clipboard-feedback')).toHaveTextContent('복사됨');

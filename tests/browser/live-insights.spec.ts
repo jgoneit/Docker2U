@@ -7,6 +7,7 @@ const words = {
   ko: {
     project: '프로젝트', refresh: '새로고침', none: '프로젝트 없음', settings: '설정', details: '상세',
     selectAll: '보이는 컨테이너 전체 선택', searchContainers: '컨테이너 검색',
+    logs: '로그', connections: '접속 정보', diagnostics: '상태 진단', history: '이력',
     resources: '자원 사용량', pause: '일시정지', resume: '재개', resize: '탐색 영역 너비 조절',
     search: '로그 검색', openSearch: '로그 검색 열기', closeSearch: '로그 검색 닫기', next: '다음 일치',
     clear: '로그 화면 비우기', copy: '표시된 로그 복사', load: '로그 조회', latest: '최신 로그로',
@@ -14,6 +15,7 @@ const words = {
   en: {
     project: 'project', refresh: 'Refresh', none: 'No project', settings: 'Settings', details: 'details',
     selectAll: 'Select all visible containers', searchContainers: 'Search containers',
+    logs: 'Logs', connections: 'Connections', diagnostics: 'Diagnostics', history: 'History',
     resources: 'Resource usage', pause: 'Pause', resume: 'Resume', resize: 'Resize navigation pane',
     search: 'Search logs', openSearch: 'Open log search', closeSearch: 'Close log search', next: 'Next match',
     clear: 'Clear displayed logs', copy: 'Copy displayed logs', load: 'Load logs', latest: 'Latest logs',
@@ -106,15 +108,16 @@ test('shows consistent current resources with readable controls in each theme an
   const detailed = page.getByRole('region', { name: t.resources, exact: true });
   await expect(selectedRow.locator('.container-cpu-value')).toHaveText('125.50%');
   await expect(selectedRow.locator('.container-memory-value')).toContainText('64MiB');
-  const information = page.locator('.summary-information');
-  await expect(information).not.toHaveAttribute('open', '');
-  await information.locator('summary').click();
+  const information = page.locator('.container-information');
+  await expect(information).toHaveCount(0);
+  await page.getByRole('tab', { name: t.connections, exact: true }).click();
   await expect(detailed).toContainText('125.50%');
   await expect(detailed).toContainText('64MiB / 2GiB');
   await expect(information.locator('.resource-metadata time')).toHaveAttribute('datetime', /\d{4}-\d{2}-\d{2}T/);
   await detailed.scrollIntoViewIfNeeded();
   await expect(detailed).toBeInViewport();
-  await information.locator('summary').click();
+  await page.getByRole('tab', { name: t.logs, exact: true }).click();
+  await expect(information).toHaveCount(0);
   await expect(page.getByRole('treeitem', { name: `orders ${t.project}`, exact: true }).locator('.project-tree-name')).toBeInViewport();
   await page.getByRole('button', { name: t.pause, exact: true }).scrollIntoViewIfNeeded();
   await expect(page.getByRole('button', { name: t.pause, exact: true })).toBeInViewport();
@@ -169,6 +172,55 @@ test('shows consistent current resources with readable controls in each theme an
   }
   await info.attach('live-insights-layout', { body: JSON.stringify({ layout, readability }), contentType: 'application/json' });
   await info.attach('live-insights-screen', { body: await page.screenshot(), contentType: 'image/png' });
+});
+
+test('container metadata lives in Connections while header height and target survive tabs and preferences', async ({ page }, info) => {
+  const lang = language(info), t = words[lang];
+  await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { (window as unknown as { copiedContainerId: string }).copiedContainerId = text; } } }));
+  await openLive(page);
+  const header = page.locator('.container-summary');
+  const height = await header.evaluate(node => node.getBoundingClientRect().height);
+  await expect(header.getByRole('heading', { name: backend, exact: true })).toBeVisible();
+  await expect(header.locator('details')).toHaveCount(0);
+  await expect(header).not.toContainText('a'.repeat(64));
+  const metadata = page.locator('.container-information');
+  await expect(metadata).toHaveCount(0);
+  await page.locator('.container-checkbox').first().check();
+  for (const name of [t.diagnostics, t.history, t.connections]) {
+    await page.getByRole('tab', { name, exact: true }).click();
+    expect(await header.evaluate(node => node.getBoundingClientRect().height)).toBe(height);
+    if (name !== t.connections) await expect(metadata).toHaveCount(0);
+  }
+  await expect(metadata.getByRole('heading', { name: lang === 'ko' ? '컨테이너 정보' : 'Container information', exact: true })).toBeVisible();
+  await expect(metadata.locator('.summary-facts')).toContainText('a'.repeat(64));
+  await expect(metadata.locator('.summary-facts')).toContainText('orders');
+  await expect(metadata.locator('.summary-facts')).toContainText('api');
+  const metadataBox = await metadata.boundingBox(), networksBox = await page.locator('.container-insights').boundingBox();
+  expect(metadataBox!.y + metadataBox!.height).toBeLessThanOrEqual(networksBox!.y);
+  const copy = metadata.getByRole('button', { name: lang === 'ko' ? '전체 ID 복사' : 'Copy full ID', exact: true });
+  await copy.click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { copiedContainerId: string }).copiedContainerId)).toBe('a'.repeat(64));
+  await expect(page.locator('.app-footer .clipboard-feedback')).toHaveText(lang === 'ko' ? '전체 ID 복사됨' : 'Full ID copied');
+  await expect(page.locator('.app-footer .copy-feedback-glow')).toHaveCount(1);
+  const before = await calls(page);
+  await page.getByRole('button', { name: t.settings, exact: true }).click();
+  const nextLanguage = lang === 'ko' ? 'en' : 'ko', nextWords = words[nextLanguage];
+  const nextTheme = info.project.metadata.theme === 'light' ? 'dark' : 'light';
+  await page.locator(`input[name="theme-preference"][value="${nextTheme}"]`).check();
+  await page.locator('#language-preference').selectOption(nextLanguage);
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('tab', { name: nextWords.connections, exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('treeitem', { name: `${backend} ${nextWords.details}`, exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.container-checkbox').first()).toBeChecked();
+  await expect(metadata.getByRole('heading', { name: nextLanguage === 'ko' ? '컨테이너 정보' : 'Container information', exact: true })).toBeVisible();
+  expect(await header.evaluate(node => node.getBoundingClientRect().height)).toBe(height);
+  expect(await metadata.evaluate(node => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
+  const after = await calls(page);
+  for (const name of ['getContainerDetails', 'getEnvironment', 'listContainers', 'mutateContainer', 'mutateContainers']) expect(after[name]).toBe(before[name]);
+  await page.getByRole('tab', { name: nextWords.logs, exact: true }).click();
+  await expect(metadata).toHaveCount(0);
+  expect(await header.evaluate(node => node.getBoundingClientRect().height)).toBe(height);
 });
 
 test('pause and search freeze the view while live reads continue and resume catches up', async ({ page }, info) => {

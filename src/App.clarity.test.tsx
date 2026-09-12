@@ -6,7 +6,7 @@ import App from './App';
 import { api } from './api';
 import type { Container, ContainerList, Environment, RecentLogs } from './api';
 
-vi.mock('./api', async importOriginal => ({ ...await importOriginal<typeof import('./api')>(), api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), startLogStream: vi.fn(), readLogStream: vi.fn(), stopLogStream: vi.fn(), getContainerStats: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() } }));
+vi.mock('./api', async importOriginal => ({ ...await importOriginal<typeof import('./api')>(), api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), startLogStream: vi.fn(), readLogStream: vi.fn(), stopLogStream: vi.fn(), getContainerStats: vi.fn(), getContainerDetails: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() } }));
 const mock = vi.mocked(api);
 const environment: Environment = { status: 'ready', sessionId: 'session-1', contextName: 'local', endpoint: 'unix:///local.sock', dockerPath: '/local/docker', dockerConfigPath: '/local/config', clientVersion: '29', serverVersion: '29', apiVersion: '1.54', engineId: 'engine-1', osType: 'linux', architecture: 'arm64', mutationAllowed: true, error: null, diagnostics: [] };
 const backend: Container = { handle: 'backend', fullId: 'a'.repeat(12) + '0123456789abcdef'.repeat(3) + 'ffab', shortId: 'a'.repeat(12), name: 'backend', image: 'local/api:1', state: 'running', health: 'healthy', ports: ['127.0.0.1:8080->8080/tcp'], composeProject: null, composeService: null, createdAt: '2026-09-06T00:00:00Z' };
@@ -18,6 +18,7 @@ async function connected() { await screen.findByText('raw logs'); }
 function expectConnection(text: string) { expect(within(screen.getByRole('region', { name: '연결 환경' })).getByRole('status')).toHaveTextContent(text); }
 beforeEach(() => {
   vi.resetAllMocks();
+  mock.getContainerDetails.mockReturnValue(new Promise(() => {}));
   installSnapshotStreams(mock);
   localStorage.setItem('docker2u.preferences.v1', JSON.stringify({ theme: 'dark', language: 'ko' }));
   let generation = 0;
@@ -204,9 +205,9 @@ describe('connection and visible selection clarity', () => {
       vi.setSystemTime(new Date('2026-09-06T01:02:03Z'));
       await act(async () => pending.resolve(log('session-1', 'backend-1')));
       expect(document.querySelector('.log-fetched-at time')).toHaveAttribute('datetime', '2026-09-06T01:02:03.000Z');
-      expect(screen.getByText(/목록 갱신 시각/)).not.toBeVisible();
-    fireEvent.click(screen.getByText('컨테이너 정보'));
-    expect(screen.getByText(/목록 갱신 시각/)).toBeVisible();
+      expect(screen.queryByText(/목록 갱신 시각/)).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('tab', { name: '접속 정보' }));
+      expect(screen.getByText(/목록 갱신 시각/)).toBeVisible();
     } finally { vi.useRealTimers(); }
   });
 

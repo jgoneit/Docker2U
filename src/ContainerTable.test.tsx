@@ -1,12 +1,12 @@
 import { createRef, useRef } from 'react';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { api as dockerApi } from './api';
 import type { Container, ContainerList, ContainerStats } from './api';
 import { ContainerTable } from './ContainerTable';
 import type { ContainerTableProps } from './ContainerTable';
-import { ContainerSummary } from './components';
+import { ContainerInformation, ContainerSummary } from './components';
 import { PreferencesProvider } from './preferences';
 import type { Language } from './preferences';
 import { groupContainers } from './projects';
@@ -208,8 +208,9 @@ describe('container table', () => {
         <ContainerTable groups={groupContainers(snapshot.containers)} selectedTarget={{ kind: 'container', fullId: api.fullId }} checkedHandles={new Set()}
           checkboxDisabled={false} sampleFor={stats.sampleFor} inventoryRef={inventoryRef}
           onSelect={() => {}} onToggle={() => {}} busy={false} />
-        <ContainerSummary container={api} snapshot={snapshot} copy={async () => {}} mutationBlocked={false}
+        <ContainerSummary container={api} snapshot={snapshot} mutationBlocked={false}
           mutationAllowed resourceSample={stats.sampleFor(api)} />
+        <ContainerInformation container={api} snapshot={snapshot} copy={async () => {}} resourceSample={stats.sampleFor(api)} />
       </>;
     }
     vi.useFakeTimers();
@@ -221,7 +222,6 @@ describe('container table', () => {
       expect(row('api').querySelector('.container-memory-value')).toHaveTextContent('—');
       expect(screen.queryByText('오래된 값')).not.toBeInTheDocument();
       expect(screen.queryByText('자원 이전 값')).not.toBeInTheDocument();
-      fireEvent.click(screen.getByText('컨테이너 정보'));
       const detail = screen.getByRole('region', { name: '자원 사용량' });
       expect(within(detail).getAllByText('—')).toHaveLength(2);
       expect(screen.getByText('수집된 값 없음')).toBeVisible();

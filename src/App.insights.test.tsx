@@ -1,10 +1,11 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, it, vi } from 'vitest';
 import App from './App';
-import { api, type Container } from './api';
+import { api, type Container, type ContainerDetails } from './api';
 import { installSnapshotStreams } from './test/snapshotStreams';
-vi.mock('./api', async original => ({ ...await original<typeof import('./api')>(), api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), startLogStream: vi.fn(), readLogStream: vi.fn(), stopLogStream: vi.fn(), getContainerStats: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() } }));
+import { containerDetailsFixture } from './test/containerDetailsFixture';
+vi.mock('./api', async original => ({ ...await original<typeof import('./api')>(), api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), startLogStream: vi.fn(), readLogStream: vi.fn(), stopLogStream: vi.fn(), getContainerStats: vi.fn(), getContainerDetails: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() } }));
 const mock = vi.mocked(api);
 const row = (name: string, project: string | null, service: string | null, state = 'running'): Container => ({ handle: name, fullId: name.padEnd(64, 'a'), shortId: name.padEnd(12, 'a'), name, image: 'fixture', state, health: null, ports: [], composeProject: project, composeService: service, createdAt: '' });
 const rows = [row('zulu', 'beta', 'worker'), row('redis', 'alpha', 'redis', 'exited'), row('api', 'alpha', 'backend'), row('single', null, null)];
@@ -15,6 +16,7 @@ beforeEach(() => {
   mock.listContainers.mockResolvedValue({ sessionId: 'one', generation: 1, containers: rows, refreshedAt: '2026-09-07T00:00:00Z', stale: false });
   mock.getRecentLogs.mockImplementation(async (sessionId, handle) => ({ sessionId, handle, generation: 1, text: 'ready', byteCount: 5, truncated: false, command: 'fixture', stderr: '' }));
   mock.getContainerStats.mockImplementation(async (sessionId, generation, handles) => ({ sessionId, generation, sampledAt: '2026-09-07T01:02:03Z', error: null, items: handles.map(handle => ({ handle, fullId: rows.find(item => item.handle === handle)!.fullId, available: true, cpuPercent: handle === 'api' ? 0 : 125.5, memoryUsage: '64MiB / 2GiB', memoryPercent: 3.125 })) }));
+  mock.getContainerDetails.mockImplementation(async (sessionId, generation, handle) => containerDetailsFixture(rows.find(item => item.handle === handle)!, { sessionId, generation, containers: rows, refreshedAt: '', stale: false }));
 });
 it('separates project navigation, filtered inventory and checked actions', async () => {
   const user = userEvent.setup(); render(<App />); await screen.findByRole('treeitem', { name: 'api 상세' });
@@ -42,20 +44,40 @@ it('uses the same CPU and memory sample in list and detail, including 0 and valu
   await waitFor(() => expect(zuluRow.getByText('125.50%', { exact: false })).toBeVisible());
   expect(zuluRow.getByText('64MiB', { exact: false })).toBeVisible();
   await user.click(zulu);
-  const information = screen.getByText('컨테이너 정보').closest('details')!;
-  expect(information).not.toHaveAttribute('open');
-  expect(within(information).getByText('125.50%')).not.toBeVisible();
-  await user.click(within(information).getByText('컨테이너 정보'));
+  expect(screen.queryByRole('region', { name: '컨테이너 정보' })).not.toBeInTheDocument();
+  await user.click(screen.getByRole('tab', { name: '접속 정보' }));
+  const information = screen.getByRole('region', { name: '컨테이너 정보' });
   const detail = within(information).getByRole('region', { name: '자원 사용량' });
   expect(detail).toHaveTextContent(zuluRow.getByText('125.50%', { exact: false }).textContent!);
   expect(detail).toHaveTextContent('64MiB / 2GiB');
   await user.click(screen.getByRole('treeitem', { name: 'api 상세' }));
-  expect(detail).toHaveTextContent('0.00%');
+  expect(screen.queryByRole('region', { name: '컨테이너 정보' })).not.toBeInTheDocument();
+  await user.click(screen.getByRole('tab', { name: '접속 정보' }));
+  expect(within(screen.getByRole('region', { name: '컨테이너 정보' })).getByRole('region', { name: '자원 사용량' })).toHaveTextContent('0.00%');
   expect(within(screen.getByRole('treeitem', { name: 'api 상세' }).closest('.container-list-item')!).getByText('0.00%', { exact: false })).toBeVisible();
   const stoppedRow = screen.getByRole('treeitem', { name: 'redis 상세' }).closest('.container-list-item')!;
   expect(stoppedRow.querySelector('.container-cpu-value')).toHaveTextContent('—');
   expect(stoppedRow.querySelector('.container-memory-value')).toHaveTextContent('—');
   expect(mock.getContainerStats).toHaveBeenCalledExactlyOnceWith('one', 1, ['api', 'zulu', 'single']);
+});
+it('keeps list information and full ID copying available while connection details are loading or fail', async () => {
+  let reject!: (reason: unknown) => void;
+  mock.getContainerDetails.mockReturnValueOnce(new Promise<ContainerDetails>((_resolve, fail) => { reject = fail; }));
+  const user = userEvent.setup();
+  const clipboard = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined);
+  render(<App />); await screen.findByRole('treeitem', { name: 'api 상세' });
+  await user.click(screen.getByRole('tab', { name: '접속 정보' }));
+  const information = screen.getByRole('region', { name: '컨테이너 정보' });
+  expect(screen.getByText('상세 정보를 조회하고 있습니다.')).toBeVisible();
+  expect(within(information).getByText(rows[2]!.fullId)).toBeVisible();
+  expect(within(information).getByText('fixture')).toBeVisible();
+  expect(within(information).getByText('alpha')).toBeVisible();
+  expect(within(information).getByText('backend')).toBeVisible();
+  await act(async () => reject({ code: 'TimedOut', message: 'Details timed out' }));
+  expect(await screen.findByText('상세 정보를 조회하지 못했습니다.')).toBeVisible();
+  expect(screen.getByRole('region', { name: '컨테이너 정보' })).toBe(information);
+  await user.click(within(information).getByRole('button', { name: '전체 ID 복사' }));
+  expect(clipboard).toHaveBeenCalledExactlyOnceWith(rows[2]!.fullId);
 });
 it('resizes navigation with the keyboard without replacing the selected row, sample or live stream', async () => {
   let sequence = 0;

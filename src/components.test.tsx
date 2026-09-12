@@ -5,7 +5,7 @@ import { fireEvent, render as renderUI, screen, within } from '@testing-library/
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { Container, ContainerList } from './api';
-import { ConfirmDialog, ContainerDetail, ContainerSummary, OperationResult } from './components';
+import { ConfirmDialog, ContainerDetail, ContainerInformation, ContainerSummary, OperationResult } from './components';
 import type { Confirmation } from './components';
 import type { ResourceSample } from './useContainerStats';
 
@@ -21,59 +21,57 @@ const snapshot: ContainerList = {
 const resourceSample: ResourceSample = { handle: container.handle, fullId: container.fullId, available: true,
   cpuPercent: 125.5, memoryUsage: '64MiB / 2GiB', memoryPercent: 3.125, sampledAt: '2026-09-05T04:20:05Z', stale: false };
 
-describe('compact container summary', () => {
-  it.each(['ko', 'en'] as const)('keeps status visible and resource values inside one information disclosure in %s', async language => {
+describe('container summary and information', () => {
+  it.each(['ko', 'en'] as const)('keeps the header compact and exposes copyable facts in a separate information region in %s', async language => {
     const user = userEvent.setup();
     const copy = vi.fn(async () => {});
-    renderUI(<PreferencesProvider initialPreferences={{ theme: 'light', language }}><ContainerSummary container={{ ...container, composeProject: 'orders', composeService: 'api' }} snapshot={snapshot}
-      copy={copy} mutationBlocked={false} mutationAllowed resourceSample={resourceSample} /></PreferencesProvider>);
-    expect(screen.getByRole('heading', { name: 'backend' })).toBeVisible();
-    expect(screen.getByText(language === 'ko' ? '실행 중' : 'Running')).toBeVisible();
-    expect(screen.getByText(language === 'ko' ? '정상' : 'Healthy')).toBeVisible();
-    expect(screen.getByText('125.50%')).not.toBeVisible();
-    expect(screen.getByText('64MiB / 2GiB')).not.toBeVisible();
-    const disclosure = document.querySelector('.container-summary details')!;
-    expect(document.querySelectorAll('.container-summary details')).toHaveLength(1);
-    expect(disclosure).not.toHaveAttribute('open');
-    for (const text of [container.image, container.fullId, 'orders', 'api']) expect(screen.getByText(text)).not.toBeVisible();
-    expect(screen.getByText(/Docker Engine/)).not.toBeVisible();
-    expect(screen.getByText(language === 'ko' ? '목록 갱신 시각' : 'List refreshed at')).not.toBeVisible();
-    expect(screen.getByText(language === 'ko' ? /관측 시각/ : /Observed at/)).not.toBeVisible();
-    await user.click(screen.getByText(language === 'ko' ? '컨테이너 정보' : 'Container information'));
-    expect(disclosure).toHaveAttribute('open');
-    expect(screen.getByText('125.50%')).toBeVisible();
-    expect(screen.getByText('64MiB / 2GiB')).toBeVisible();
-    for (const text of [container.image, container.fullId, 'orders', 'api']) expect(screen.getByText(text)).toBeVisible();
-    expect(screen.getByText(/Docker Engine/)).toBeVisible();
-    await user.click(screen.getByRole('button', { name: language === 'ko' ? '전체 ID 복사' : 'Copy full ID' }));
+    const target = { ...container, composeProject: 'orders', composeService: 'api' };
+    renderUI(<PreferencesProvider initialPreferences={{ theme: 'light', language }}>
+      <ContainerSummary container={target} snapshot={snapshot} mutationBlocked={false} mutationAllowed resourceSample={resourceSample} />
+      <ContainerInformation container={target} snapshot={snapshot} copy={copy} resourceSample={resourceSample} />
+    </PreferencesProvider>);
+    const summary = document.querySelector('.container-summary') as HTMLElement;
+    expect(within(summary).getByRole('heading', { name: 'backend' })).toBeVisible();
+    expect(within(summary).getByText(language === 'ko' ? '실행 중' : 'Running')).toBeVisible();
+    expect(within(summary).getByText(language === 'ko' ? '정상' : 'Healthy')).toBeVisible();
+    expect(summary.querySelector('details')).toBeNull();
+    expect(within(summary).queryByRole('button')).not.toBeInTheDocument();
+    for (const text of [container.image, container.fullId, '125.50%', '64MiB / 2GiB']) expect(within(summary).queryByText(text)).not.toBeInTheDocument();
+    const information = within(screen.getByRole('region', { name: language === 'ko' ? '컨테이너 정보' : 'Container information' }));
+    for (const text of [container.image, container.fullId, 'orders', 'api', '125.50%', '64MiB / 2GiB']) expect(information.getByText(text)).toBeVisible();
+    expect(information.getByText(/Docker Engine/)).toBeVisible();
+    expect(information.getByText(language === 'ko' ? '목록 갱신 시각' : 'List refreshed at')).toBeVisible();
+    expect(information.getByText(language === 'ko' ? /관측 시각/ : /Observed at/)).toBeVisible();
+    await user.click(information.getByRole('button', { name: language === 'ko' ? '전체 ID 복사' : 'Copy full ID' }));
     expect(copy).toHaveBeenCalledExactlyOnceWith(container.fullId, 'fullId');
   });
-  it('keeps stale resources, unhealthy status and blocked-operation warnings outside closed metadata', () => {
+  it('keeps stale resources, unhealthy status and blocked-operation warnings in the header', () => {
     render(<ContainerSummary container={{ ...container, health: 'unhealthy' }} snapshot={{ ...snapshot, stale: true }}
-      copy={async () => {}} mutationBlocked mutationAllowed resourceSample={{ ...resourceSample, stale: true }} />);
-    const disclosure = document.querySelector('.container-summary details')!;
-    expect(disclosure).not.toHaveAttribute('open');
+      mutationBlocked mutationAllowed resourceSample={{ ...resourceSample, stale: true }} />);
     for (const text of ['비정상', '이전 정보', '자원 이전 값', '추가 복구 작업이 차단되었습니다. 재연결로 환경을 다시 검증하세요.', '최신 상태를 확인할 수 없어 복구 작업을 잠시 사용할 수 없습니다. 새로고침을 실행하세요.']) {
-      const warning = screen.getByText(text); expect(warning).toBeVisible(); expect(disclosure).not.toContainElement(warning);
+      expect(screen.getByText(text)).toBeVisible();
     }
   });
   it('puts absent healthcheck information in metadata without hiding real state', () => {
-    render(<ContainerSummary container={{ ...container, health: null }} snapshot={snapshot} copy={async () => {}} mutationBlocked={false} mutationAllowed />);
-    expect(screen.getByText('실행 중')).toBeVisible();
-    expect(screen.getByText('상태 검사 기록 없음')).not.toBeVisible();
-    expect(screen.getByText('수집된 값 없음')).not.toBeVisible();
+    const target = { ...container, health: null };
+    render(<><ContainerSummary container={target} snapshot={snapshot} mutationBlocked={false} mutationAllowed />
+      <ContainerInformation container={target} snapshot={snapshot} copy={async () => {}} /></>);
+    const summary = document.querySelector('.container-summary') as HTMLElement;
+    expect(within(summary).getByText('실행 중')).toBeVisible();
+    expect(within(summary).queryByText('상태 검사 기록 없음')).not.toBeInTheDocument();
+    const information = within(screen.getByRole('region', { name: '컨테이너 정보' }));
+    expect(information.getByText('상태 검사 기록 없음')).toBeVisible();
+    expect(information.getByText('수집된 값 없음')).toBeVisible();
   });
-  it('keeps metadata open across refreshed handles and updated resource samples', async () => {
+  it('updates information across refreshed handles and updated resource samples', async () => {
     const user = userEvent.setup();
-    function SummaryHarness() {
+    function InformationHarness() {
       const [generation, setGeneration] = useState(1);
-      return <><button onClick={() => setGeneration(2)}>Refresh sample</button><ContainerSummary container={{ ...container, handle: `handle-${generation}` }} snapshot={{ ...snapshot, generation }}
-        copy={async () => {}} mutationBlocked={false} mutationAllowed resourceSample={{ ...resourceSample, cpuPercent: generation === 1 ? 125.5 : 0 }} /></>;
+      return <><button onClick={() => setGeneration(2)}>Refresh sample</button><ContainerInformation container={{ ...container, handle: `handle-${generation}` }} snapshot={{ ...snapshot, generation }}
+        copy={async () => {}} resourceSample={{ ...resourceSample, cpuPercent: generation === 1 ? 125.5 : 0 }} /></>;
     }
-    render(<SummaryHarness />);
-    await user.click(screen.getByText('컨테이너 정보'));
+    render(<InformationHarness />);
     await user.click(screen.getByRole('button', { name: 'Refresh sample' }));
-    expect(document.querySelector('.summary-information')).toHaveAttribute('open');
     expect(screen.getByText(container.fullId)).toBeVisible();
     expect(screen.getByText('0.00%')).toBeVisible();
   });
@@ -217,7 +215,7 @@ describe('compact operation details', () => {
     function SelectionHarness() {
       const [selected, setSelected] = useState(container);
       return <><button onClick={() => setSelected({ ...container, handle: 'new-handle', name: 'another-container' })}>Simulate selection change</button>
-        <ContainerSummary container={selected} snapshot={snapshot} copy={async () => {}} mutationBlocked={false} mutationAllowed />
+        <ContainerSummary container={selected} snapshot={snapshot} mutationBlocked={false} mutationAllowed />
         <ContainerDetail container={selected} snapshot={snapshot} logs={null} logsError={null}
           loadingLogs={false} refreshing={false} mutating={false} mutationBlocked={false} mutationAllowed
           loadLogs={vi.fn()} clearLogs={vi.fn()} copy={vi.fn(async () => {})} requestAction={vi.fn()} />

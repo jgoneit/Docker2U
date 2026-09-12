@@ -150,29 +150,34 @@ export function Diagnostics({ environment, frontendSession, close, copy }: { env
     {(environment || frontendSession) && <><button onClick={() => void copy(diagnosticsText(environment, frontendSession), 'diagnostics')}><Copy size={14} aria-hidden="true" />{t('diagnosticsCopy')}</button><p className="muted small">{t('copyAllowlist')}</p></>}
   </section>;
 }
-export function ContainerSummary({ container, snapshot, copy, mutationBlocked, mutationAllowed, resourceSample, onShowConnections }: {
-  container: Container; snapshot: ContainerList; copy: CopyText; mutationBlocked: boolean; mutationAllowed: boolean; resourceSample?: ResourceSample; onShowConnections?: () => void;
+export function ContainerSummary({ container, snapshot, mutationBlocked, mutationAllowed, resourceSample }: {
+  container: Container; snapshot: ContainerList; mutationBlocked: boolean; mutationAllowed: boolean; resourceSample?: ResourceSample;
 }) {
   const t = useI18n(componentMessages);
-  const { language } = usePreferences();
   return <div className="container-summary">
     <div className="summary-overview"><div className="summary-identity"><h3 title={container.name}>{container.name}</h3><div className="summary-status"><State value={container.state} />{container.health && container.health !== 'none' && <span role="group" aria-label={t('health')} title={t('health')}><Health value={container.health} /></span>}{snapshot.stale && <span className="stale-tag">{t('stale')}</span>}{resourceSample?.stale && <span className="resource-stale" role="status">{t('resourceStale')}</span>}</div></div></div>
-    <details className="summary-information"><summary>{t('containerInfo')}</summary>
-      <ResourceUsage sample={resourceSample} />
-      <dl className="summary-facts">
-        <div><dt>{t('image')}</dt><dd>{container.image}</dd></div>
-        <div><dt>{t('containerId')}</dt><dd><code>{container.fullId}</code><button className="icon-button" aria-label={t('copyFullId')} onClick={() => void copy(container.fullId, 'fullId')}><Copy size={13} aria-hidden="true" /></button></dd></div>
-        <div><dt>{t('ports')}</dt><dd>{onShowConnections ? <button className="text-button" onClick={onShowConnections}>{t('viewConnectivity')}</button> : container.ports.length ? container.ports.join(' · ') : t('noPorts')}</dd></div>
-        <div><dt>{t('project')}</dt><dd>{container.composeProject || t('noProject')}</dd></div>
-        <div><dt>{t('service')}</dt><dd>{container.composeService || '—'}</dd></div>
-        {(!container.health || container.health === 'none') && <div><dt>{t('health')}</dt><dd><Health value={container.health} /></dd></div>}
-        <div><dt>{t('updated')}</dt><dd><time dateTime={snapshot.refreshedAt}>{formatTime(snapshot.refreshedAt, language)}</time></dd></div>
-      </dl>
-      <ResourceMetadata sample={resourceSample} />
-    </details>
     {mutationBlocked && mutationAllowed && <div className="operation-warning" role="alert">{t('blocked')}</div>}
     {snapshot.stale && <p className="operation-warning">{t('staleActions')}</p>}
   </div>;
+}
+export function ContainerInformation({ container, snapshot, copy, resourceSample }: {
+  container: Container; snapshot: ContainerList; copy: CopyText; resourceSample?: ResourceSample;
+}) {
+  const t = useI18n(componentMessages);
+  const { language } = usePreferences();
+  return <section className="container-information" aria-label={t('containerInfo')}>
+    <h3>{t('containerInfo')}</h3>
+    <ResourceUsage sample={resourceSample} />
+    <dl className="summary-facts">
+      <div><dt>{t('image')}</dt><dd>{container.image}</dd></div>
+      <div><dt>{t('containerId')}</dt><dd><code>{container.fullId}</code><button className="icon-button" aria-label={t('copyFullId')} onClick={() => void copy(container.fullId, 'fullId')}><Copy size={13} aria-hidden="true" /></button></dd></div>
+      <div><dt>{t('project')}</dt><dd>{container.composeProject || t('noProject')}</dd></div>
+      <div><dt>{t('service')}</dt><dd>{container.composeService || '—'}</dd></div>
+      {(!container.health || container.health === 'none') && <div><dt>{t('health')}</dt><dd><Health value={container.health} /></dd></div>}
+      <div><dt>{t('updated')}</dt><dd><time dateTime={snapshot.refreshedAt}>{formatTime(snapshot.refreshedAt, language)}</time></dd></div>
+    </dl>
+    <ResourceMetadata sample={resourceSample} />
+  </section>;
 }
 export function ContainerDetail({ container, snapshot, logs, logsError, loadingLogs, logRequestPending = false, refreshing, mutating, mutationBlocked, mutationAllowed, loadLogs, clearLogs, requestAction, copy, copyFeedback, copyFeedbackTone, copyFeedbackId, copyFeedbackHighlighted, copyFeedbackHighlightUntil, logsExpanded, onLogsExpandedChange, liveStatus, activeTab = 'logs', onTabChange, insights, operationFeedback, logContent, historyEnabled = false, logViewCache }: {
   container: Container; snapshot: ContainerList; logs: LogSnapshot | null; logsError: CoreError | null;

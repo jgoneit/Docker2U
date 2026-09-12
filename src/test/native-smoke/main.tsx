@@ -316,18 +316,16 @@ async function projectStatsProbe() {
   await waitFor(() => apiRow.querySelector('.container-cpu-value')?.textContent === '125.50%', 'observation sample displayed in the project tree');
   assert(apiRow.querySelector('.container-memory-value')?.textContent === '64.0 MiB', 'Tree memory sample missing');
   apiRow.click();
-  await waitFor(() => apiRow.getAttribute('aria-selected') === 'true' && document.querySelector('.summary-information'), 'Compose container selected');
-  const information = document.querySelector<HTMLDetailsElement>('.summary-information')!;
-  const informationToggle = information.querySelector('summary');
-  assert(informationToggle, 'Container information disclosure missing');
-  if (!information.open) informationToggle.click();
-  await waitFor(() => information.open && information.querySelector('.resource-summary')?.textContent?.includes('125.50%'), 'real resource sample in container details');
+  await waitFor(() => apiRow.getAttribute('aria-selected') === 'true', 'Compose container selected');
+  click('접속 정보');
+  await waitFor(() => document.querySelector('.container-information .resource-summary')?.textContent?.includes('125.50%'), 'real resource sample in connectivity information');
+  const information = document.querySelector<HTMLElement>('.container-information')!;
   assert(information.querySelector('.resource-summary')?.textContent?.includes('64.0 MiB / 2.0 GiB'), 'Fixture memory sample missing');
   assert(information.querySelector('.resource-summary')!.getBoundingClientRect().height > 0, 'Resource sample is not displayed');
   assert(information.querySelector('.summary-facts')?.textContent?.includes('api'), 'Compose service metadata missing');
   assert(information.querySelector('.summary-facts')!.getBoundingClientRect().height > 0, 'Compose metadata is not displayed');
-  informationToggle.click();
-  await waitFor(() => !information.open, 'container information closed');
+  click('로그');
+  await waitFor(() => !document.querySelector('.container-information'), 'container information stays in connectivity');
   record('Compose grouping and real stats visible', { projectRows: 2, observedSources: 3, cpuPercent: sample.cpuPercent,
     memoryUsageBytes: sample.memoryUsageBytes, memoryLimitBytes: sample.memoryLimitBytes, sessionId: observation.sessionId,
     observationSequence: observation.sequence, sampledAt: sample.sampledAt, fullIds: fixtureIds });

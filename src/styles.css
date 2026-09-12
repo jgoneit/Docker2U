@@ -438,10 +438,6 @@ button.action-restart:hover:not(:disabled) { background: var(--restart-action-ho
 .container-detail .log-error:not(.log-stream-error) { min-height: 80px; }
 .container-table-scroll { scroll-padding-block: 40px 6px; }
 .container-table .container-row { scroll-margin-block: 40px 6px; }
-.container-summary { position: relative; }
-.container-summary .summary-overview { padding-right: 150px; }
-.container-summary .summary-information { margin-top: 0; }
-.container-summary .summary-information > summary { position: absolute; top: 7px; right: 18px; }
 
 .selection-hidden-notice { padding: 8px 18px; color: var(--text-muted); font-size: 12px; border-bottom: 1px solid var(--border-subtle); }
 .selection-hidden-notice button { margin-left: 6px; }
