@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-preview-compose-project"
+description = "Enables the preview_compose_project command without any pre-configured scope."
+commands.allow = ["preview_compose_project"]
+
+[[permission]]
+identifier = "deny-preview-compose-project"
+description = "Denies the preview_compose_project command without any pre-configured scope."
+commands.deny = ["preview_compose_project"]

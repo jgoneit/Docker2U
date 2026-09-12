@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-compose-projects"
+description = "Enables the list_compose_projects command without any pre-configured scope."
+commands.allow = ["list_compose_projects"]
+
+[[permission]]
+identifier = "deny-list-compose-projects"
+description = "Denies the list_compose_projects command without any pre-configured scope."
+commands.deny = ["list_compose_projects"]

@@ -265,6 +265,7 @@ impl Core {
                     continue;
                 }
                 let verified = core.verify(&target);
+                let invalidated = verified.as_ref().is_err_and(connection_invalidated);
                 let process = {
                     let mut state = core.state.lock().unwrap();
                     if !state.log_stream.as_ref().is_some_and(|stream| {
@@ -290,6 +291,9 @@ impl Core {
                     })
                 };
                 if let Some(process) = process {
+                    if invalidated {
+                        core.cancel_compose_session(&id);
+                    }
                     process.stop();
                     return;
                 }

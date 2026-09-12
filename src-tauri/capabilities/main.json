@@ -24,6 +24,16 @@
     "allow-configure-project-logs",
     "allow-query-project-logs",
     "allow-retry-project-logs",
-    "allow-stop-project-logs"
+    "allow-stop-project-logs",
+    "allow-pick-compose-path",
+    "allow-list-compose-projects",
+    "allow-preview-compose-project",
+    "allow-save-compose-project",
+    "allow-remove-compose-project",
+    "allow-prepare-compose-operation",
+    "allow-start-compose-operation",
+    "allow-list-compose-operations",
+    "allow-read-compose-operation",
+    "allow-cancel-compose-operation"
   ]
 }

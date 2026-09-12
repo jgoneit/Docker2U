@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-read-compose-operation"
+description = "Enables the read_compose_operation command without any pre-configured scope."
+commands.allow = ["read_compose_operation"]
+
+[[permission]]
+identifier = "deny-read-compose-operation"
+description = "Denies the read_compose_operation command without any pre-configured scope."
+commands.deny = ["read_compose_operation"]

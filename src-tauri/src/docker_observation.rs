@@ -307,6 +307,10 @@ pub(super) struct ObservationService {
 }
 
 impl ObservationService {
+    pub(super) fn request_inventory_refresh(&self) {
+        self.store.lock().unwrap().refresh_requested += 1;
+        self.wake.notify_all();
+    }
     pub(super) fn invalidate(&self, error: &ApiError) {
         {
             let mut store = self.store.lock().unwrap();
@@ -1112,6 +1116,7 @@ impl Core {
         }
     }
     pub(super) fn invalidate_session_observations(&self, id: &str, error: &ApiError) {
+        self.cancel_compose_session(id);
         let service = self
             .observation
             .lock()

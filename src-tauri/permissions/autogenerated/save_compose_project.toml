@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-save-compose-project"
+description = "Enables the save_compose_project command without any pre-configured scope."
+commands.allow = ["save_compose_project"]
+
+[[permission]]
+identifier = "deny-save-compose-project"
+description = "Denies the save_compose_project command without any pre-configured scope."
+commands.deny = ["save_compose_project"]
