@@ -211,3 +211,59 @@ it('keeps a paused scroll position when a hidden tab reports zero scroll offset'
   hidden = false; rerender(view(true));
   expect(viewport.scrollTop).toBe(1234);
 });
+
+
+describe('project log empty states', () => {
+  const view = (initial: ProjectLogPage | null, fullId?: string) =>
+    <PreferencesProvider><ProjectLogs sessionId="one" project="demo" containers={[container]} initialPage={initial} fullId={fullId} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>;
+
+  it('shows initial loading separately from a quiet connected source', async () => {
+    const { rerender } = render(view(null));
+    expect(screen.getByRole('status')).toHaveTextContent('기존 로그를 불러오고 있습니다');
+    expect(projectLogApi.query).not.toHaveBeenCalled();
+    vi.mocked(projectLogApi.query).mockResolvedValue(page(0));
+    rerender(view(page(0)));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('아직 수신한 로그가 없습니다'));
+    expect(screen.getByText(/컨테이너별 최근 최대 300행/)).toBeVisible();
+  });
+
+  it.each([
+    ['starting', true, null, '기존 로그를 불러오고 있습니다'],
+    ['idle', false, null, '로그 수집 대상을 선택하세요'],
+    ['error', true, { code: 'ReadFailed', message: 'stream unavailable' }, '로그를 가져오지 못했습니다'],
+  ] as const)('distinguishes %s from an empty successful collection', async (status, selected, error, message) => {
+    const initial = { ...page(0), sources: [{ ...page(0).sources[0]!, status, selected, error }] };
+    vi.mocked(projectLogApi.query).mockResolvedValue(initial);
+    render(view(initial));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(message));
+    expect(screen.queryByText(/아직 수신한 로그가 없습니다/)).not.toBeInTheDocument();
+  });
+
+  it('clears an empty keyword filter without restarting collection', async () => {
+    vi.mocked(projectLogApi.query).mockImplementation(async (_session, _project, query) => query?.keyword ? page(0) : page());
+    render(view(page()));
+    fireEvent.change(screen.getByRole('searchbox', { name: '로그 키워드 검색' }), { target: { value: 'missing' } });
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('현재 필터에 맞는 로그가 없습니다'));
+    fireEvent.click(screen.getByRole('button', { name: '필터 초기화' }));
+    await waitFor(() => expect(screen.getByText('line 0')).toBeVisible());
+    expect(screen.getByRole('searchbox')).toHaveValue('');
+    expect(projectLogApi.stop).not.toHaveBeenCalled();
+    expect(projectLogApi.configure).not.toHaveBeenCalled();
+  });
+
+  it('uses only the selected container when showing errors and source counts', async () => {
+    const initial: ProjectLogPage = { ...page(0), sources: [...page(0).sources, { ...page(0).sources[0]!, fullId: 'b', sourceId: 'b', status: 'error', error: { code: 'ReadFailed', message: 'other source failed' } }] };
+    vi.mocked(projectLogApi.query).mockResolvedValue(initial);
+    render(view(initial, 'a'));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('아직 수신한 로그가 없습니다'));
+    expect(screen.getByText(/선택한 1개 \/ 전체 1개/)).toBeVisible();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('shows the dates of historical log coverage instead of only time of day', () => {
+    const initial = { ...page(), retainedFrom: '2026-09-02T09:07:06.986616542Z', retainedTo: '2026-09-08T13:00:54.829851593Z' };
+    vi.mocked(projectLogApi.query).mockResolvedValue(initial);
+    render(view(initial));
+    expect(screen.getByText('보관 구간 (UTC): 2026-09-02 09:07:06 – 2026-09-08 13:00:54')).toBeVisible();
+  });
+});
