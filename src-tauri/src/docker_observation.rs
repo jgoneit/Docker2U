@@ -636,6 +636,7 @@ impl ObservationService {
                     || state.diagnosing
                     || state.stats_running
                     || state.details_running
+                    || state.stream_starting
             };
             let mut store = self.store.lock().unwrap();
             store.prune(chrono::Utc::now());

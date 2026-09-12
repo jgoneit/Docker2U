@@ -20,6 +20,7 @@ export interface LiveLogInput {
   replaceVersion?: number;
 }
 interface Stream { sessionId: string; streamId: string; fullId: string }
+interface StartRetry { sessionId: string; fullId: string; generation: number; revision: number; identity: string }
 interface Frame { sessionId: string; streamId: string; sequence: number; text: string; truncated: boolean; terminal: boolean; error: CoreError | null }
 export interface LogTransport {
   getRecentLogs(sessionId: string, handle: string): Promise<RecentLogs>;
@@ -40,6 +41,8 @@ export class LiveLogController {
   private wanted = false;
   private cleared = false;
   private restartAfterRead = false;
+  private startRetry: StartRetry | null = null;
+  private startRetries = 0;
   private busy = false;
   private reading = false;
   private queuedRead: { stream: Stream; revision: number; identity: string } | null = null;
@@ -107,6 +110,7 @@ export class LiveLogController {
   private valid(revision: number, identity: string) { return !this.destroyed && revision === this.revision && identity === this.identity; }
   private cancel() {
     ++this.revision; this.restartAfterRead = false; this.queuedRead = null;
+    this.startRetry = null; this.startRetries = 0;
     this.acknowledgedSequence = -1;
     clearTimeout(this.timer); this.timer = undefined;
     const stream = this.stream; this.stream = null;
@@ -131,15 +135,26 @@ export class LiveLogController {
     if (current) this.emit({ logsError: failure, loadingLogs: false, liveStatus: 'error' });
   }
   private drain() {
-    if (!this.wanted || this.busy || this.stopping.size || !this.canStart()) return;
+    if (this.busy || this.stopping.size || !this.canStart()) return;
     const container = this.input.container!; const snapshot = this.input.snapshot!;
+    const retry = this.startRetry;
+    if (!this.wanted && retry && this.valid(retry.revision, retry.identity)
+      && snapshot.sessionId === retry.sessionId && container.fullId === retry.fullId
+      && Number.isSafeInteger(snapshot.generation) && snapshot.generation > retry.generation
+      && liveStates.has(container.state)) {
+      this.startRetry = null; ++this.startRetries; this.wanted = true;
+    }
+    if (!this.wanted) return;
     const revision = this.revision; const identity = this.identity;
     this.wanted = false; this.busy = true;
     this.emit({ loadingLogs: true, logRequestPending: true, logsError: null, liveStatus: liveStates.has(container.state) ? 'connecting' : 'idle' });
     void (async () => {
+      let streamStarting = false;
       try {
         if (liveStates.has(container.state)) {
+          streamStarting = true;
           const stream = await this.transport.startLogStream(snapshot.sessionId, snapshot.generation, container.handle);
+          streamStarting = false;
           if (!this.valid(revision, identity)) { this.stop(stream); return; }
           if (stream.sessionId !== snapshot.sessionId || stream.fullId !== container.fullId || !stream.streamId) {
             this.stop(stream); throw frontendError('staleLogs');
@@ -158,7 +173,16 @@ export class LiveLogController {
           this.emit({ logs: { ...logs, text: bounded.text, byteCount: bounded.byteCount, truncated: logs.truncated || bounded.droppedBytes > 0,
             fetchedAt: new Date().toISOString(), droppedBytes: bounded.droppedBytes }, loadingLogs: false, liveStatus: 'ended' });
         }
-      } catch (error) { this.fail(error, snapshot.sessionId, revision, identity); }
+      } catch (error) {
+        this.fail(error, snapshot.sessionId, revision, identity);
+        const failure = coreError(error);
+        if (streamStarting && (failure.code === 'Busy' || failure.code === 'StaleHandle')
+          && this.valid(revision, identity) && this.startRetries < 2) {
+          this.startRetry = { sessionId: snapshot.sessionId, fullId: container.fullId, generation: snapshot.generation, revision, identity };
+        }
+      }
+      // The fresh list may arrive before the rejection. Check again after releasing
+      // the pending-start gate, and otherwise wait for a later update (no retry timer).
       finally { this.busy = false; this.emit({ logRequestPending: false }); this.drain(); }
     })();
   }

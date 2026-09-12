@@ -1155,7 +1155,8 @@ impl Core {
             if state.refreshing
                 || state.diagnosing
                 || state.mutating
-                || (wait_readers && (state.stats_running || state.details_running))
+                || (wait_readers
+                    && (state.stats_running || state.details_running || state.stream_starting))
             {
                 return Err(ApiError::new("Busy", "An operation is still in progress"));
             }
