@@ -918,3 +918,85 @@ Native Smoke 빌드·launch·report·stop, 프로덕션 빌드, 설치 기록은
 실제 컨테이너 제어와 인위적 출력 발생은 수행하지 않았다. 새 출력의 연속 수신은
 격리 fixture에서, 기존 실제 로그의 조회·비우기와 설치 배치는 실제 앱에서 각각
 확인했다. 이 결과는 notarization이나 명령 입력용 터미널 구현의 근거가 아니다.
+
+## PR #9 리뷰 후 로그 복구·보관·해석 보정 — 2026-09-12
+
+PR #9의 현재 작업본을 기준으로 다음 일곱 항목을 보정했다. 기존 작업본과
+공개 IPC 명령·입력·응답 타입 및 저장 형식을 유지했으며, 실제 컨테이너 제어는
+이 변경의 검증에 사용하지 않았다.
+
+1. **최초 수집 실패 후 화면 복구:** `수집 재개`의 성공 응답을 collection hook의 page와 오류 상태에 반영한다. 최초 configure가 실패하여 `initialPage`가 없더라도 이후 표시 조회가 시작된다. 설정·재개 응답은 세션·프로젝트·요청 순서를 검증하고 수락 여부를 반환하며, 중복 재개는 같은 요청으로 합친다. 같은 세션의 설정·재개·중단 순서는 유지하고, 새 세션은 이전 미완료 요청을 기다리지 않는다. 검색·서비스 필터·일시정지·스크롤 기준 행·비운 로그의 경계는 보존한다.
+2. **관찰 endpoint 오류의 재연결 안내:** `UnsupportedObservationEndpoint`를 프런트엔드 연결 무효화 오류에 포함했다. 관찰 이벤트·로그 설정·표시 조회에서 이 오류가 발생하면 즉시 연결 재확인 필요 상태와 작업 차단을 적용하며, 단순 Refresh가 이를 해제하지 않는다.
+3. **안정된 연결 후 재시도 예산 복원:** 스트림 헤더 수신 뒤 연결이 30초 이상 유지되면 다음 일시 오류에서 제한된 재시도 예산을 복원한다. 출력이 없는 정상 연결도 인정한다. 헤더 직후 끊기는 반복 실패는 예산을 초기화하지 않으며, 연결 검증 오류·영구 오류에는 자동 재시도를 적용하지 않는다. 30초는 무출력 timeout이 아니다.
+4. **미완성 제어 시퀀스 이후 로그 보존:** ANSI·OSC가 닫히지 않아도 줄바꿈에서 제어 시퀀스를 종료해 다음 Docker 시각과 로그 행이 사라지지 않게 했다. 제어 시퀀스가 64 KiB를 넘으면 잘림을 표시하고 해당 행의 나머지는 숨긴 뒤 다음 행부터 처리한다. 분할 청크·multiplex 프레임·TTY 및 출력 종류별 상태 분리를 검사한다.
+5. **정상 EOF 이후 허위 공백 제거:** 보관된 reader handle의 존재와 실제 수집 중 상태를 분리했다. 정상 EOF가 끝난 뒤 프로젝트 이동·중단·선택 해제·삭제·실행 변경·명시적 재개가 일어나도 완료된 handle만으로 로그 공백을 추가하지 않는다.
+6. **연속 단절의 공백 중복 집계 방지:** 로그와 이벤트에서 재시도·연결 시도·최종 실패·명시적 재개로 이어지는 같은 단절은 공백 한 건으로 기록한다. 연결이 복구된 뒤 새 단절이 생기면 추가 집계한다. 세션 무효화나 소스 정리에서도 이미 열린 공백을 다시 세지 않으며, 자원 표본 지연은 별도 사건으로 남긴다.
+7. **마지막 행 제거 후 보관 설명 유지:** 프로젝트 마지막 로그 행이 제거돼도 삭제 행 수와 누적 공백을 즉시 잃지 않도록 별도 메타데이터에 보관한다. 활성 프로젝트와 보관 행이 있는 프로젝트를 보호하고, 빈 비활성 프로젝트는 최대 128개·빈 비활성 상태부터 30분으로 제한한다. 조회는 만료 시각을 연장하지 않는다. 초과 항목은 오래된 순서와 프로젝트 이름의 결정적 순서로 제거한다. 이 메타데이터 한도는 기존 로그 byte 상한과 별도다.
+
+CI 변경은 `Frontend checks` job의 실행 제한을 **15분에서 25분으로 늘리는 것**에
+한정했다. 검사 제거·skip 또는 재시도 추가로 통과 조건을 완화하지 않았다.
+Rust의 가상 시간 검사를 위해 `tokio/test-util`은 dev-dependency로만 추가했다.
+
+### 완료한 회귀 검사
+
+| 검사 | 결과 | 근거 로그 |
+| --- | --- | --- |
+| 프런트엔드 전체 | 40개 파일, **660/660개 통과**, 61.34초 | `.cache/pr9-frontend-regression.log` |
+| Rust 전체 | **160개 통과, 6개 ignored**, 30.33초 | `.cache/pr9-rust-regression.log` |
+| 브라우저 전체 | **342/342개 통과**, 6.6분 | `.cache/pr9-browser-regression.log` |
+| Native Smoke Python fixture·증거 검증기 | **34개 통과**, 2.377초 | `.cache/pr9-native-fixture-regression.log` |
+| 프런트엔드 빌드 | TypeScript 타입 검사·Vite 빌드·프로덕션 fixture 격리 검사 통과 | `.cache/pr9-frontend-build.log` |
+| 프로덕션 네이티브 빌드 | unsigned `.app` 번들 생성 통과 | `.cache/pr9-native-production-build.log` |
+
+프런트엔드 집중 검사 5개 파일 **171개 통과** 기록은
+`.cache/pr9-frontend-recovery-focused.log`에 있다. 최초 configure 오류 후 재개,
+오류가 포함되거나 잘못된 범위의 응답 거부, 캐시된 화면 상태 보존, 중복 재개와
+소스 적용 순서, 다른 프로젝트·비활성 세션의 늦은 응답 무시, 이전 configure가
+미완료인 상태에서 새 세션 시작을 검사했다. endpoint 오류는 이벤트·설정·조회
+경로 및 Refresh 이후 차단 유지·Reconnect 해제를 확인했다.
+
+새 브라우저 회귀의 최초 실행은 접힌 오류 상세 본문을 바로 보인다고 가정하여
+실패했다. 테스트가 오류 summary를 펼친 후 본문을 확인하도록 수정했고, 해당
+초기 실패→재개→실제 viewport 표시 사례는 9개 설정에서 통과했다. 이 보정은
+제품 오류 표시 동작을 바꾸지 않았다. 집중 결과는
+`.cache/pr9-recovery-browser-focused-fixed.log`에 보관했다.
+
+Native Smoke의 초기 설정 중 자동 목록 갱신과 Reconnect가 겹쳐 발생한 `Busy`
+경합은 별도 테스트 harness에서 기존 observation hold를 사용하는 방식으로
+격리했다. 제품의 Busy 검사나 자동 목록 갱신 정책을 해제하지 않았다. 응답 오류
+복구 probe는 실제 configure와 retry Rust IPC를 실행하되, 한 configure 성공
+응답에만 테스트 오류를 주입하도록 설계했다. fault는 호출 시작 시 캡처·해제하며,
+초기 fixture 로그의 launch binding을 확보한 뒤 실행한다. 이 probe가 제공할 수
+있는 근거는 **실제 IPC를 사용한 프런트엔드 응답 오류 복구**이고, Core reader
+생성 실패 자체를 재현한 증거와 구분한다.
+
+구현 전에 Seal Basic Task `docker2u-pr9-review-fixes-20260912`를 생성하고
+`pnpm test`, `pnpm build`, `pnpm rust:fmt`, `pnpm rust:test` 네 가지 필수 검사를
+선택했다. 이 절을 기록한 시점에는 해당 Task의 정확한 Run 검증과 Completion은
+아직 수행하지 않았다. 위 회귀 검사·unsigned 빌드 결과를 Seal Completion이나
+현재 후보의 네이티브 화면·설치 앱 검증 결과로 간주하지 않는다. 현재 후보의
+Native Smoke 화면, 설치 교체 및 Seal 결과는 후속 증거로 별도 기록한다.
+
+### 이번 후보의 Native Smoke와 설치 앱 확인
+
+- Native Smoke 바이너리 SHA-256은 `12eac3a3afcd4626bc348b37879872794bcaa94f89c271cad5c916beb3e30100`이다. 최종 Run **`d2u-smoke-9191ad5a02`**에서 Computer Use로 `project-recovery`, `observation-baseline`, `observation-restore`를 실행했다. 실제 configure 성공 응답에 한 번 주입한 오류 이후 명시적 재개 1회로 오류가 해제되고 실제 viewport의 로그 4행이 표시됐다.
+- 화면 일시정지 후 휴지통으로 기존 4행을 비워 0행·일시정지 해제·수집 중 2개를 확인했다. 활성 창을 최소화한 뒤 합성 출력을 켰고, **복원 전에 출력을 멈췄다**. WebView가 기록한 숨김 구간은 **54.833초**다. 이 구간의 로그 표본 **160개**, 자원 표본 **63개**, 이벤트 **167개**와 inventory generation **2 → 26**을 확인했다. 복원 후 새 로그 총 334행 중 실제 viewport의 **19행**이 보였다. 화면·AX·JSON은 `.cache/pr9-native/final*`에 있다.
+- `.cache/pr9-native-smoke-final-report.log`에서 위 UI report와 정확한 launch/binary binding의 검증이 `accepted: true`, `observationCoverageComplete: true`였다. 과거 전체 장애 주입 probe 묶음의 재실행을 뜻하는 `requiredCoverageComplete`는 false이며, 이번 변경 관련 3개 probe만 실행했다. 모든 Python fixture 검사는 위 표와 같이 별도로 실행했다.
+- 앞선 두 실행에서는 창을 활성화하지 않은 최소화 조작으로 WebView의 10초 이상 숨김 구간이 기록되지 않아 restore probe가 실패했다. 이를 통과로 처리하지 않았으며 `.cache/pr9-native/restore-attempt-no-hidden.*`, `second-no-hidden.*`에 보존했다. Finder에서 앱을 활성화하고 최소화·복원한 최종 실행에서는 실제 hidden/visible 전환과 표본 검사가 통과했다. 최초 설정 Busy 실패도 `failed-setup.*`에 남겼다.
+- 앞선 동일 바이너리의 격리 실행에서 통합 8행과 개별 4행의 실제 화면도 확인했다. 출력이 멈춘 소스는 수집 중 상태를 유지했다. 조용한 연결의 30초 재시도 예산 복원 자체는 Rust 가상 시계·HTTP fixture 검사로 검증했으며, 화면에서 시간 경계를 측정한 것으로 주장하지 않는다.
+- 기존 `/Applications/Docker2U.app`을 정상 종료하고 아래 경로에 백업했다. 기존 설치와 백업, 빌드와 서명 전 준비본, ad-hoc 서명한 준비본과 새 설치본의 모든 파일 SHA-256 및 심볼릭 링크를 비교했다. 새 설치본의 strict 서명 검사도 통과했다.
+- 새 설치 앱 **PID 69461**, 실제 실행 경로 `/Applications/Docker2U.app/Contents/MacOS/docker2u`, `desktop-linux`와 컨테이너 4개를 확인했다. 프로젝트 이름으로 통합 **428행**, PostgreSQL 개별 **128행**이 실제 콘솔 영역에 표시됐다. 개별 Clear 이후 **0행·수집 중 1개·새 로그 대기 안내·하단바 피드백**을 확인했고, 프로젝트 통합 428행은 유지됐다.
+- 조용한 memcached는 0행·수집 중·새 출력 대기를 유지했다. 설치 앱 최소화·복원 후에도 통합 428행과 수집 중 4개가 보이고 목록 확인 시각과 자원 값이 갱신됐다. 증거는 `.cache/pr9-installed/`, 설치 해시·프로세스 기록은 `.cache/pr9-installation.json`에 있다. 설치 앱은 한국어·기존 테마·필터와 일시정지 없는 프로젝트 통합 로그에 두었다.
+
+| 설치 식별 | 값 |
+| --- | --- |
+| 이전 설치 SHA-256 | `cb018be58b1fbd8d33f5fc9b8db54c0e45102fa392f77914e2fa47a43117ff2d` |
+| 빌드 원본 SHA-256 | `3e9803ba5ebd692f0a2db57e009974028f91dde33f01b9044c21351a1c5b76ea` |
+| ad-hoc 서명 후 설치 SHA-256 | `b1ba1002f13d1b82d62e63b87340ba046f70fbeaedd2b0f00afe2ef792087e09` |
+| 롤백 백업 | `/Users/jgoneit/project/Docker2U/.local-apps/backups/20260912-201153-pr9-review-fixes/Docker2U.app` |
+
+실제 컨테이너의 Start·Stop·Restart·명령 실행이나 인위적 출력은 수행하지
+않았다. 실제 앱에서는 기존 로그 조회와 Clear 이후 수집 상태를, 격리 fixture에서는
+Clear 이후 새 출력 수신을 확인했다. notarization·Gatekeeper 배포 신뢰와 전체
+Native Smoke 장애 묶음 재실행은 이번 결과로 입증하지 않는다. 최종 문서까지
+포함한 후보의 Seal Run·Completion 결과는 별도 CLI 기록으로 보존한다.
