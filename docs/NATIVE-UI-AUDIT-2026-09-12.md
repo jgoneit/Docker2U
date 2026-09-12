@@ -794,3 +794,53 @@ Clear 후 갱신, 최소화 표본·복원을 검증했다. 생성 실패와 준
 이번 후속 변경에서는 Rust 전체 검사와 합성 Native Smoke를 다시 실행하지
 않았다. 앞선 탐색 트리 검증과 이번 실제 설치 앱 검증을 구분하며, notarization
 또는 명령 입력용 컨테이너 터미널의 구현·검증을 의미하지 않는다.
+
+## 진단 표시·접속 선택상자·이력 아코디언 — 2026-09-12
+
+실행 중 컨테이너에서도 종료 코드·종료 시각과 OOM false 항목을 항상 표시해,
+정상 상태가 문제처럼 보였다. 프로젝트 이력에서는 컨테이너 행을 선택해도
+자원 차트가 전체 목록 맨 아래에 나타나 선택 대상과 상세의 관계가 불분명했다.
+
+- 종료 코드·종료 시각과 코드 137 설명은 `exited/dead` 상태에서만 표시한다. 종료 상태의 누락값은 정보 없음으로 구분한다.
+- OOM은 Engine이 `true`를 보고한 경우에만 표시한다. false/null은 항목을 추가하지 않으며, 실제 OOM 기록과 상태 검사 실패 기록의 종료 시각·출력은 보존한다.
+- 내부 주소 포트 선택은 기존 `setting-select-control`의 배경·10px 모서리·화살표·포커스를 재사용한다. 네이티브 select를 유지하고 높이는 34px로 맞췄다.
+- 프로젝트 이력의 자원 차트는 선택한 행 바로 다음에 아코디언으로 열린다. 다른 항목을 열면 이전 차트가 접히며 같은 항목을 다시 누르면 닫힌다.
+- 버튼과 상세 region을 고유 ID로 연결한다. 최신 handle 갱신은 펼침 상태를 유지하고 동일 이름의 새 전체 ID에는 이전 차트를 연결하지 않는다. 개별 컨테이너 이력의 직접 차트와 기존 이벤트 범위는 유지한다.
+
+구현 전 Seal Basic Task `docker2u-diagnostics-history-polish-20260912`를
+생성했으며 프런트엔드 테스트·빌드를 필수 검사로 선택했다. 공개 IPC·Rust·저장
+형식은 변경하지 않았다.
+
+### 검증 결과
+
+- 진단·접속 집중 검사 `ContainerInsights.test.tsx`, `App.insights.test.tsx`: **38개 통과**.
+- 이력 및 기존 관찰 집중 검사 `observation.test.tsx`: **46개 통과**. 최초 추가 테스트 2개는 접근성 이름의 공백을 가정해 실패했고, 실제 이름과 상위 이력 region을 구분하도록 테스트를 수정한 후 통과했다. 제품 동작 변경으로 덮지 않았다.
+- 새 브라우저 회귀 **27개 통과**: 9개 테마·언어·창 크기에서 실제 차트 SVG 전체가 viewport에 보이고 선택 행과 다음 행 사이에 배치되는지, Enter/Space 접기·펼치기, 개별 차트, 진단 표시, 선택상자의 키보드 접근과 테마·언어 변경 후 값 유지를 검사했다.
+- 전체 브라우저 회귀 `pnpm test:browser`: **306개 통과** (5.2분), `.cache/diagnostics-history-browser-full.log`에 보관했다.
+- headless Chromium의 팝업 방향키 시도는 선택값이 변하지 않아 검증 근거로 삼지 않았다. 실제 HTML select의 선택값 변경은 브라우저에서, 실제 팝업 방향키 조작은 아래 설치 앱에서 따로 검증했다.
+- `pnpm native:build --ci -- --locked` 통과. 기존 설치 앱을 백업한 뒤 새 프로덕션 번들을 ad-hoc 서명·strict 검증하고 교체했다.
+- 실제 설치 프로세스 **PID 12366**, `desktop-linux`, 컨테이너 4개를 확인했다. 실행 중 memcached 진단에는 상태·시작 시각·재시작 횟수가 표시되고 종료 시각·코드·OOM false 항목은 없었다.
+- Computer Use로 내부 포트 팝업을 열고 **↓ → Enter**로 `11211/TCP`를 선택했다. 별칭 및 IPv4 후보에 `:11211`이 붙었으며, 라이트 테마 전환 후에도 값이 유지됐다. **↑ → Enter**로 주소만 복사로 복원하고 원래 시스템 테마·한국어를 유지했다.
+- 실제 프로젝트 이력에서 첫 번째 memcached 행 바로 아래 CPU·메모리 차트가 보였다. 두 번째 행을 열자 첫 차트가 접혔고 두 번째 행 바로 아래로 이동했다. 재선택 시 접힘도 확인했다. 검증 후 앱은 첫 행이 열린 프로젝트 이력 화면에 두었다.
+
+| 설치 확인 | 값 |
+| --- | --- |
+| 이전 바이너리 SHA-256 | `63a77d3556c302f6fa22896164971372a66e021f0bfeed216223e9368bb90fce` |
+| 새 설치 바이너리 SHA-256 | `86c932f247d3750d8c1b12ce225f028b3960494505dc848aaf9ca0a8eadbc534` |
+| 백업 | `/Users/jgoneit/project/Docker2U/.local-apps/backups/20260912-181819-diagnostics-history/Docker2U.app` |
+| 파일·심볼릭 링크 및 서명 | 기존 설치 ↔ 백업, 새 빌드 ↔ 준비본 일치; 설치 바이너리 해시·strict 서명 검증 통과 |
+
+검사 로그: `.cache/diagnostics-history-focused-history.log`(최초 실패),
+`.cache/diagnostics-history-focused-history-final.log`,
+`.cache/diagnostics-history-browser-focused.log`,
+`.cache/diagnostics-port-keyboard.log`,
+`.cache/diagnostics-history-production-build.log`.
+설치 기록: `.cache/diagnostics-history-installation.json`.
+화면 증거: `.cache/diagnostics-history-installed/`의 `history-before.png`,
+`diagnostics-running.png`, `connectivity-select.png`,
+`connectivity-keyboard-selected.png`, `connectivity-light.png`,
+`history-first-expanded.png`, `history-second-expanded.png`.
+
+실제 컨테이너의 종료·OOM 발생을 유도하지 않았다. 해당 분기는 fixture 검사로
+검증했으며 Rust 전체 검사·합성 Native Smoke는 이번 UI 후속 변경에서 재실행하지
+않았다. 설치 앱 확인은 notarization 또는 실제 접속 성공의 근거가 아니다.
