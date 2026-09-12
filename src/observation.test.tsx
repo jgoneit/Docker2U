@@ -69,7 +69,7 @@ describe('combined logs', () => {
   });
   it('sends literal keyword filters and freezes the view without stopping collection', async () => {
     const configure = vi.fn();
-    render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={page()} configure={configure} error={null} onError={vi.fn()} /></PreferencesProvider>);
+    render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={page()} retry={vi.fn().mockResolvedValue(true)} configure={configure} error={null} onError={vi.fn()} /></PreferencesProvider>);
     await waitFor(() => expect(projectLogApi.query).toHaveBeenCalled());
     fireEvent.change(screen.getByRole('searchbox', { name: '로그 키워드 검색' }), { target: { value: 'Error[DB]' } });
     await waitFor(() => expect(projectLogApi.query).toHaveBeenLastCalledWith('one', 'demo', expect.objectContaining({ keyword: 'Error[DB]', sourceIds: [] })));
@@ -81,8 +81,8 @@ describe('combined logs', () => {
     const sources = Array.from({ length: 65 }, (_, i) => ({ ...page().sources[0]!, sourceId: `id${i}`, fullId: `id${i}`, containerName: `web-${i}`, selected: false }));
     const initial = { ...page(0), sources, needsSelection: true };
     vi.mocked(projectLogApi.query).mockResolvedValue(initial);
-    const configure = vi.fn().mockResolvedValue(undefined);
-    render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={sources.map(source => ({ ...container, fullId: source.fullId, handle: `h-${source.fullId}` }))} initialPage={initial} configure={configure} error={null} onError={vi.fn()} /></PreferencesProvider>);
+    const configure = vi.fn().mockResolvedValue(true);
+    render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={sources.map(source => ({ ...container, fullId: source.fullId, handle: `h-${source.fullId}` }))} initialPage={initial} retry={vi.fn().mockResolvedValue(true)} configure={configure} error={null} onError={vi.fn()} /></PreferencesProvider>);
     const checks = within(screen.getByRole('group', { name: '로그 수집 대상 선택' })).getAllByRole('checkbox');
     for (const checkbox of checks.slice(0, 64)) fireEvent.click(checkbox);
     expect(checks[64]).toBeDisabled(); expect(configure).not.toHaveBeenCalled();
@@ -93,7 +93,7 @@ describe('combined logs', () => {
   it('renders only the loaded window for a 100,000-row log buffer', async () => {
     const large = { ...page(160), totalRows: 100_000, offset: 99_840 };
     vi.mocked(projectLogApi.query).mockResolvedValue(large);
-    const { container: root } = render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={large} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
+    const { container: root } = render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={large} retry={vi.fn().mockResolvedValue(true)} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
     expect(root.querySelectorAll('.project-log-row')).toHaveLength(160);
     expect(root.querySelector('.project-log-spacer')).toHaveStyle({ height: '2600000px' });
   });
@@ -103,7 +103,7 @@ it('uses the latest-page offset and copies only its displayed window', async () 
   const latest = { ...page(40), totalRows: 5000, offset: 4960 };
   vi.mocked(projectLogApi.query).mockResolvedValue(latest);
   const clipboard = vi.fn().mockResolvedValue(undefined);
-  const { container: root } = render(<PreferencesProvider><ProjectLogs copy={clipboard} sessionId="one" project="demo" containers={[container]} initialPage={latest} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
+  const { container: root } = render(<PreferencesProvider><ProjectLogs copy={clipboard} sessionId="one" project="demo" containers={[container]} initialPage={latest} retry={vi.fn().mockResolvedValue(true)} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
   expect(latest.offset + latest.rows.length).toBe(latest.totalRows);
   expect(root.querySelector('.project-log-window')).toHaveStyle({ top: `${4960 * 26}px` });
   fireEvent.click(screen.getByRole('button', { name: '현재 표시 구간 복사' }));
@@ -162,7 +162,7 @@ it('keeps the expanded history across handle refresh but does not attach it to a
 });
 
 it('keeps the frozen scroll position when expanding and closing a paused log view', async () => {
-  render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={page()} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
+  render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={page()} retry={vi.fn().mockResolvedValue(true)} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
   await waitFor(() => expect(projectLogApi.query).toHaveBeenCalled());
   const viewport = screen.getByRole('log', { name: '통합 로그' }); viewport.scrollTop = 1234;
   fireEvent.click(screen.getByRole('button', { name: '화면 일시정지' }));
@@ -176,7 +176,7 @@ it('anchors a historical row when a late log shifts its sorted index', async () 
   const previous = { ...page(40), totalRows: 200, offset: 100 };
   const shifted = { ...previous, offset: 101, totalRows: 201 };
   vi.mocked(projectLogApi.query).mockResolvedValueOnce(previous).mockResolvedValue(shifted);
-  render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={previous} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
+  render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={previous} retry={vi.fn().mockResolvedValue(true)} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
   await waitFor(() => expect(projectLogApi.query).toHaveBeenCalledOnce());
   const viewport = screen.getByRole('log', { name: '통합 로그' });
   Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 260 });
@@ -224,7 +224,7 @@ it('loads a larger window and keeps the latest row visible when the log viewport
   try {
     const latest = { ...page(160), totalRows: 5000, offset: 4840, maxSequence: 5000 };
     vi.mocked(projectLogApi.query).mockResolvedValue(latest);
-    const { unmount } = render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={latest} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
+    const { unmount } = render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={latest} retry={vi.fn().mockResolvedValue(true)} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
     const viewport = screen.getByRole('log', { name: '통합 로그' });
     Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 130 });
     await act(async () => resize!([], observer));
@@ -242,7 +242,7 @@ it('loads a larger window and keeps the latest row visible when the log viewport
 
 it('keeps a paused scroll position when a hidden tab reports zero scroll offset', async () => {
   const initial = page();
-  const view = (visible: boolean) => <PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={initial} configure={vi.fn()} error={null} visible={visible} onError={vi.fn()} /></PreferencesProvider>;
+  const view = (visible: boolean) => <PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={initial} retry={vi.fn().mockResolvedValue(true)} configure={vi.fn()} error={null} visible={visible} onError={vi.fn()} /></PreferencesProvider>;
   const { rerender } = render(view(true));
   await waitFor(() => expect(projectLogApi.query).toHaveBeenCalled());
   const viewport = screen.getByRole('log', { name: '통합 로그' });
@@ -257,7 +257,7 @@ it('keeps a paused scroll position when a hidden tab reports zero scroll offset'
 
 describe('project log empty states', () => {
   const view = (initial: ProjectLogPage | null, fullId?: string) =>
-    <PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={initial} fullId={fullId} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>;
+    <PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={initial} fullId={fullId} retry={vi.fn().mockResolvedValue(true)} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>;
 
   it('shows initial loading separately from a quiet connected source', async () => {
     const { rerender } = render(view(null));
@@ -327,7 +327,7 @@ describe('project log view continuity', () => {
   it('keeps a restored missing-service filter empty instead of querying all rows into view', async () => {
     const cache = createProjectLogViewCache(); cache.sessionId = 'one';
     cache.save(JSON.stringify(['demo', null]), { page: null, keyword: '', services: ['removed-service'], paused: false, frozenSequence: null, savedScroll: 0, anchorInset: 0, following: true, offset: null, anchor: null, delayed: false });
-    render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} viewCache={cache} sessionId="one" project="demo" containers={[container]} initialPage={page()} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
+    render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} viewCache={cache} sessionId="one" project="demo" containers={[container]} initialPage={page()} retry={vi.fn().mockResolvedValue(true)} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
     await waitFor(() => expect(projectLogApi.query).toHaveBeenCalled());
     expect(screen.queryByText('line 0')).not.toBeInTheDocument();
     expect(screen.getByText('현재 필터에 맞는 로그가 없습니다.')).toBeVisible();
@@ -338,7 +338,7 @@ describe('project log view continuity', () => {
   it('bounds cached long log pages while retaining settings and requerying an evicted view', async () => {
     const cache = createProjectLogViewCache();
     vi.mocked(projectLogApi.query).mockImplementation(async (_session, project, query) => ({ ...page(2), project, rows: page(2).rows.map(row => ({ ...row, fullId: query.sourceIds[0] ?? 'a', text: 'x'.repeat(64 * 1024) })) }));
-    const view = (fullId: string) => <PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} viewCache={cache} sessionId="one" project="demo" containers={[container]} initialPage={page()} fullId={fullId} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>;
+    const view = (fullId: string) => <PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} viewCache={cache} sessionId="one" project="demo" containers={[container]} initialPage={page()} fullId={fullId} retry={vi.fn().mockResolvedValue(true)} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>;
     const { rerender } = render(view('container-0'));
     await act(async () => {});
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'keep this filter' } });
@@ -367,7 +367,7 @@ describe('project log view continuity', () => {
     const retained = { ...page(40), totalRows: 200, offset: 100, maxSequence: 250,
       sources: [...page().sources, { ...page().sources[0]!, fullId: 'b', sourceId: 'b', serviceName: 'worker', containerName: 'worker-1' }] };
     vi.mocked(projectLogApi.query).mockResolvedValue(retained);
-    const view = (fullId?: string, initialPage: ProjectLogPage | null = retained) => <PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} viewCache={cache} sessionId="one" project="demo" containers={[container]} initialPage={initialPage} fullId={fullId} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>;
+    const view = (fullId?: string, initialPage: ProjectLogPage | null = retained) => <PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} viewCache={cache} sessionId="one" project="demo" containers={[container]} initialPage={initialPage} fullId={fullId} retry={vi.fn().mockResolvedValue(true)} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>;
     let mounted = render(view());
     await waitFor(() => expect(projectLogApi.query).toHaveBeenCalledOnce());
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'Error[DB]' } });
@@ -402,7 +402,7 @@ describe('project log view continuity', () => {
   it('invalidates cached views on session changes and ignores the previous session response', async () => {
     const cache = createProjectLogViewCache(), oldRead = deferred<ProjectLogPage>();
     vi.mocked(projectLogApi.query).mockReturnValue(oldRead.promise);
-    const view = (sessionId: string, initialPage: ProjectLogPage | null) => <PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} viewCache={cache} sessionId={sessionId} project="demo" containers={[container]} initialPage={initialPage} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>;
+    const view = (sessionId: string, initialPage: ProjectLogPage | null) => <PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} viewCache={cache} sessionId={sessionId} project="demo" containers={[container]} initialPage={initialPage} retry={vi.fn().mockResolvedValue(true)} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>;
     const { rerender } = render(view('one', page()));
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'old filter' } });
     fireEvent.click(screen.getByRole('button', { name: '화면 일시정지' }));
@@ -424,7 +424,7 @@ describe('project log view continuity', () => {
     vi.useFakeTimers();
     const starting = { ...page(0), sources: page().sources.map(source => ({ ...source, status: 'starting' as const })) };
     vi.mocked(projectLogApi.query).mockResolvedValueOnce(page()).mockResolvedValueOnce(starting).mockResolvedValue(page(0));
-    const view = (initial: ProjectLogPage) => <PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={initial} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>;
+    const view = (initial: ProjectLogPage) => <PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={initial} retry={vi.fn().mockResolvedValue(true)} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>;
     const { rerender } = render(view(page()));
     await act(async () => {});
     rerender(view(starting));
@@ -442,7 +442,7 @@ describe('project log query deadlines', () => {
     vi.useFakeTimers();
     const pending = deferred<ProjectLogPage>();
     vi.mocked(projectLogApi.query).mockReturnValue(pending.promise);
-    render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={page(0)} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
+    render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={page(0)} retry={vi.fn().mockResolvedValue(true)} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
     await act(async () => vi.advanceTimersByTimeAsync(10_000));
     expect(screen.getByRole('status')).toHaveTextContent('로그 조회 응답이 지연되고 있습니다');
     expect(screen.queryByText(/아직 수신한 로그가 없습니다/)).not.toBeInTheDocument();
@@ -453,7 +453,7 @@ describe('project log query deadlines', () => {
     vi.useFakeTimers();
     const oldRead = deferred<ProjectLogPage>(), newRead = deferred<ProjectLogPage>();
     vi.mocked(projectLogApi.query).mockReturnValueOnce(oldRead.promise).mockReturnValueOnce(newRead.promise);
-    render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={page()} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
+    render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={page()} retry={vi.fn().mockResolvedValue(true)} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
     await act(async () => vi.advanceTimersByTimeAsync(9_999));
     expect(screen.queryByRole('button', { name: '로그 다시 조회' })).not.toBeInTheDocument();
     await act(async () => vi.advanceTimersByTimeAsync(1));
@@ -474,7 +474,7 @@ describe('project log query deadlines', () => {
   it('queues changed filters behind an active query instead of issuing duplicate reads', async () => {
     const oldRead = deferred<ProjectLogPage>(), nextRead = deferred<ProjectLogPage>();
     vi.mocked(projectLogApi.query).mockReturnValueOnce(oldRead.promise).mockReturnValueOnce(nextRead.promise);
-    render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={page()} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
+    render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={page()} retry={vi.fn().mockResolvedValue(true)} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'latest filter' } });
     act(() => document.dispatchEvent(new Event('visibilitychange')));
     expect(projectLogApi.query).toHaveBeenCalledOnce();
@@ -489,7 +489,7 @@ describe('project log query deadlines', () => {
   it('does not report a quiet stream as a delayed query', async () => {
     vi.useFakeTimers();
     vi.mocked(projectLogApi.query).mockResolvedValue(page(0));
-    render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={page(0)} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
+    render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={page(0)} retry={vi.fn().mockResolvedValue(true)} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
     await act(async () => vi.advanceTimersByTimeAsync(30_000));
     expect(vi.mocked(projectLogApi.query).mock.calls.length).toBeGreaterThan(10);
     expect(screen.queryByRole('button', { name: '로그 다시 조회' })).not.toBeInTheDocument();
@@ -499,7 +499,7 @@ describe('project log query deadlines', () => {
 
 describe('project log source choices', () => {
   it('keeps per-source status collapsed until the summary is opened', async () => {
-    render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={page()} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
+    render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={page()} retry={vi.fn().mockResolvedValue(true)} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
     expect(screen.getByText('선택한 1개 / 전체 1개')).toBeVisible();
     expect(screen.getByText('web-1 · 수집 중')).not.toBeVisible();
     fireEvent.click(screen.getByText('대상별 상태'));
@@ -507,8 +507,8 @@ describe('project log source choices', () => {
   });
 
   it.each(['취소', '수집 대상 선택 닫기', 'Escape'])('discards pending source edits on %s', async action => {
-    const configure = vi.fn().mockResolvedValue(undefined);
-    render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={page()} configure={configure} error={null} onError={vi.fn()} /></PreferencesProvider>);
+    const configure = vi.fn().mockResolvedValue(true);
+    render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={page()} retry={vi.fn().mockResolvedValue(true)} configure={configure} error={null} onError={vi.fn()} /></PreferencesProvider>);
     fireEvent.click(screen.getByRole('button', { name: '수집 대상' }));
     fireEvent.click(within(screen.getByRole('group', { name: '로그 수집 대상 선택' })).getByRole('checkbox'));
     if (action === 'Escape') fireEvent.keyDown(screen.getByRole('group', { name: '로그 수집 대상 선택' }), { key: 'Escape' });
@@ -521,12 +521,12 @@ describe('project log source choices', () => {
   });
 
   it('preserves pending source choices when apply fails and uses current handles on retry', async () => {
-    const pending = deferred<void>();
-    const configure = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValue(undefined);
+    const pending = deferred<boolean>();
+    const configure = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValue(true);
     const other = { ...container, fullId: 'b', handle: 'hb', name: 'worker-1', composeService: 'worker' };
     const initial = { ...page(), sources: [...page().sources, { ...page().sources[0]!, fullId: 'b', sourceId: 'b', serviceName: 'worker', containerName: 'worker-1', selected: false }] };
     vi.mocked(projectLogApi.query).mockResolvedValue(initial);
-    const view = (containers: Container[]) => <PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={containers} initialPage={initial} configure={configure} error={null} onError={vi.fn()} /></PreferencesProvider>;
+    const view = (containers: Container[]) => <PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={containers} initialPage={initial} retry={vi.fn().mockResolvedValue(true)} configure={configure} error={null} onError={vi.fn()} /></PreferencesProvider>;
     const { rerender } = render(view([container, other]));
     fireEvent.click(screen.getByRole('button', { name: '수집 대상' }));
     const group = screen.getByRole('group', { name: '로그 수집 대상 선택' });
@@ -548,7 +548,7 @@ describe('project log source choices', () => {
   it('allows a required source picker to close without configuring an arbitrary subset', async () => {
     const initial = { ...page(0), needsSelection: true, sources: page().sources.map(source => ({ ...source, selected: false })) };
     vi.mocked(projectLogApi.query).mockResolvedValue(initial);
-    render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={initial} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
+    render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={initial} retry={vi.fn().mockResolvedValue(true)} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
     fireEvent.keyDown(screen.getByRole('group', { name: '로그 수집 대상 선택' }), { key: 'Escape' });
     await act(async () => {});
     expect(screen.queryByRole('group', { name: '로그 수집 대상 선택' })).not.toBeInTheDocument();
@@ -564,7 +564,7 @@ describe('project log collection configuration', () => {
     const onError = vi.fn();
     const { result, rerender } = renderHook(({ onError }) => useProjectLogCollection('one', 'demo', true, onError), { initialProps: { onError } });
     await act(async () => automatic.resolve({ ...page(), revision: 10 }));
-    let first!: Promise<void>, second!: Promise<void>;
+    let first!: Promise<boolean>, second!: Promise<boolean>;
     await act(async () => { first = result.current.configure(['old']); });
     act(() => { second = result.current.configure(['new']); });
     expect(projectLogApi.configure).toHaveBeenCalledTimes(2);
@@ -583,7 +583,7 @@ describe('project log collection configuration', () => {
     vi.mocked(projectLogApi.configure).mockReturnValueOnce(automatic.promise).mockResolvedValue({ ...page(), revision: 30 });
     const { result } = renderHook(() => useProjectLogCollection('one', 'demo', true, vi.fn()));
     await act(async () => {});
-    let older!: Promise<void>, newer!: Promise<void>;
+    let older!: Promise<boolean>, newer!: Promise<boolean>;
     act(() => { older = result.current.configure(['old']); newer = result.current.configure(['new']); });
     expect(projectLogApi.configure).toHaveBeenCalledOnce();
     await act(async () => { automatic.resolve(page()); await Promise.all([older, newer]); });
@@ -602,7 +602,7 @@ describe('project log collection configuration', () => {
     vi.mocked(projectLogApi.stop).mockImplementation(async () => { order.push('stop'); });
     const { result, rerender } = renderHook(({ project }) => useProjectLogCollection('one', project, true, vi.fn()), { initialProps: { project: 'demo' } });
     await act(async () => {});
-    let apply!: Promise<void>;
+    let apply!: Promise<boolean>;
     await act(async () => { apply = result.current.configure(['ha']); });
     rerender({ project: 'next' });
     await act(async () => {});

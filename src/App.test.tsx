@@ -1071,7 +1071,7 @@ describe('CLI connection session replacement', () => {
     expect(start).toBeDisabled();
     expect(mock.mutateContainers).not.toHaveBeenCalled();
   });
-  it.each(['EnvironmentChanged', 'Disconnected', 'SocketMissing', 'PermissionDenied', 'Configuration', 'EndpointMismatch', 'RemoteEndpoint'])('keeps %s failures blocked after Refresh recovers until explicit Reconnect', async code => {
+  it.each(['EnvironmentChanged', 'Disconnected', 'SocketMissing', 'PermissionDenied', 'Configuration', 'EndpointMismatch', 'RemoteEndpoint', 'UnsupportedObservationEndpoint'])('keeps %s failures blocked after Refresh recovers until explicit Reconnect', async code => {
     const user = userEvent.setup();
     render(<App />);
     await connected();

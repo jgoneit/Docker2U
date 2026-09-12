@@ -9,53 +9,78 @@ import { useI18n } from './i18n';
 import { observationMessages } from './messages/observation';
 import './observation.css';
 
+interface CollectionQueue {
+  sessionId: string | null;
+  work: Promise<unknown>;
+  request: number;
+  retry: { project: string; request: number; promise: Promise<boolean> } | null;
+}
+function collectionQueue(sessionId: string | null): CollectionQueue {
+  return { sessionId, work: Promise.resolve(), request: 0, retry: null };
+}
 /** Subscription lifetime follows project scope, never the visible detail tab. */
 export function useProjectLogCollection(sessionId: string | null, project: string | null, enabled: boolean,
   onError: (original: unknown, error: CoreError, sessionId: string) => void) {
   const [page, setPage] = useState<ProjectLogPage | null>(null);
   const [error, setError] = useState<CoreError | null>(null);
+  const [retryState, setRetryState] = useState<{ queue: CollectionQueue; project: string; request: number } | null>(null);
   const errorScope = useRef({ sessionId, project });
-  const current = useRef({ sessionId, project, onError }); current.current = { sessionId, project, onError };
-  const work = useRef<Promise<unknown>>(Promise.resolve());
-  const requestSequence = useRef(0);
-  const configureFor = useCallback(async (input: typeof current.current, handles: string[] | null, request: number) => {
-    if (!input.sessionId || !input.project) return;
-    const isCurrent = () => requestSequence.current === request && current.current.sessionId === input.sessionId && current.current.project === input.project;
-    try {
-      const result = await projectLogApi.configure(input.sessionId, input.project, handles);
-      if (!isCurrent()) return;
-      if (result.sessionId !== input.sessionId || result.project !== input.project) throw { code: 'InvalidProjectLogsResponse', message: 'Project log sources do not match the selected project.' };
-      if (result.error) throw result.error;
-      setPage(result); setError(null);
-    } catch (original) {
-      if (!isCurrent()) return;
-      const failure = coreError(original); errorScope.current = input; setError(failure); input.onError(original, failure, input.sessionId);
-      throw original;
-    }
-  }, []);
-  const configure = useCallback((handles: string[] | null = null) => {
-    const input = current.current, request = ++requestSequence.current;
-    const operation = work.current.catch(() => {}).then(() => {
-      if (request !== requestSequence.current || current.current.sessionId !== input.sessionId || current.current.project !== input.project) return;
-      return configureFor(input, handles, request);
+  const current = useRef({ sessionId, project, enabled, onError }); current.current = { sessionId, project, enabled, onError };
+  const queue = useRef(collectionQueue(sessionId));
+  // A hung old-session IPC must not hold a reconnected session behind it.
+  // Same-session operations remain ordered; cleanup captures its own queue.
+  if (queue.current.sessionId !== sessionId) queue.current = collectionQueue(sessionId);
+  const enqueue = useCallback((kind: 'configure' | 'retry', handles: string[] | null = null): Promise<boolean> => {
+    const input = current.current, target = queue.current;
+    if (!input.enabled || !input.sessionId || !input.project || !observationApi.available()) return Promise.resolve(false);
+    if (kind === 'retry' && target.retry?.project === input.project && target.retry.request === target.request) return target.retry.promise;
+    const request = ++target.request;
+    const isCurrent = () => queue.current === target && target.request === request && current.current.enabled
+      && current.current.sessionId === input.sessionId && current.current.project === input.project;
+    setRetryState(kind === 'retry' ? { queue: target, project: input.project, request } : null);
+    const operation = target.work.catch(() => {}).then(async () => {
+      if (!isCurrent()) return false;
+      try {
+        const result = kind === 'retry' ? await projectLogApi.retry(input.sessionId!) : await projectLogApi.configure(input.sessionId!, input.project!, handles);
+        if (!isCurrent()) return false;
+        if (result.sessionId !== input.sessionId || result.project !== input.project) throw { code: 'InvalidProjectLogsResponse', message: 'Project log sources do not match the selected project.' };
+        if (result.error) throw result.error;
+        setPage(result); setError(null);
+        return true;
+      } catch (original) {
+        if (!isCurrent()) return false;
+        const failure = coreError(original); errorScope.current = input; setError(failure);
+        current.current.onError(original, failure, input.sessionId!);
+        throw original;
+      }
+    }).finally(() => {
+      if (target.retry?.request === request) target.retry = null;
+      setRetryState(previous => previous?.queue === target && previous.request === request ? null : previous);
     });
-    work.current = operation.catch(() => {});
+    if (kind === 'retry') target.retry = { project: input.project, request, promise: operation };
+    target.work = operation.catch(() => {});
     return operation;
-  }, [configureFor]);
+  }, []);
+  const configure = useCallback((handles: string[] | null = null) => enqueue('configure', handles), [enqueue]);
+  const retry = useCallback(() => enqueue('retry'), [enqueue]);
   useEffect(() => {
     if (!enabled || !sessionId || !observationApi.available()) return;
     setPage(null); setError(null);
-    const input = current.current;
-    const request = ++requestSequence.current;
+    const target = queue.current;
+    if (project) void configure().catch(() => {});
+    else {
+      ++target.request;
+      target.work = target.work.catch(() => {}).then(() => projectLogApi.stop(sessionId)).catch(() => {});
+    }
     // Serialize project switches so a late old stop cannot terminate a new scope.
-    work.current = work.current.catch(() => {}).then(() => {
-      if (request !== requestSequence.current) return;
-      return project ? configureFor(input, null, request) : projectLogApi.stop(sessionId);
-    }).catch(() => {});
-    return () => { ++requestSequence.current; work.current = work.current.catch(() => {}).then(() => projectLogApi.stop(sessionId)).catch(() => {}); };
-  }, [sessionId, project, enabled, configureFor]);
+    return () => {
+      ++target.request;
+      target.work = target.work.catch(() => {}).then(() => projectLogApi.stop(sessionId)).catch(() => {});
+    };
+  }, [sessionId, project, enabled, configure]);
   return { page: page?.sessionId === sessionId && page.project === project ? page : null,
-    error: errorScope.current.sessionId === sessionId && errorScope.current.project === project ? error : null, configure };
+    error: errorScope.current.sessionId === sessionId && errorScope.current.project === project ? error : null,
+    configure, retry, retrying: enabled && retryState?.queue === queue.current && retryState.project === project && retryState.request === queue.current.request };
 }
 
 const ROW_HEIGHT = 26;
@@ -118,7 +143,7 @@ export function logRowsText(rows: ProjectLogRow[]) {
 }
 interface ProjectLogsProps {
   sessionId: string; project: string; containers: Container[]; initialPage: ProjectLogPage | null; fullId?: string;
-  configure: (handles: string[] | null) => Promise<void>; error: CoreError | null; visible?: boolean;
+  configure: (handles: string[] | null) => Promise<boolean>; retry: () => Promise<boolean>; retrying?: boolean; error: CoreError | null; visible?: boolean;
   viewCache?: ProjectLogViewCache;
   copy: CopyText;
   onClearStarted?: () => () => void;
@@ -133,7 +158,7 @@ export function ProjectLogs(props: ProjectLogsProps) {
   const scopeKey = JSON.stringify([props.project, props.fullId ?? null]);
   return <ProjectLogView key={`${cache.version}/${scopeKey}`} {...props} cache={cache} cacheVersion={cache.version} scopeKey={scopeKey} />;
 }
-function ProjectLogView({ sessionId, project, containers, initialPage, fullId, configure, error: collectionError, visible = true, onError, cache, cacheVersion, scopeKey, copy, onClearStarted, copyFeedback, copyFeedbackTone, copyFeedbackId, copyFeedbackHighlighted, copyFeedbackHighlightUntil }: ProjectLogsProps & { cache: ProjectLogViewCache; cacheVersion: number; scopeKey: string }) {
+function ProjectLogView({ sessionId, project, containers, initialPage, fullId, configure, retry, retrying = false, error: collectionError, visible = true, onError, cache, cacheVersion, scopeKey, copy, onClearStarted, copyFeedback, copyFeedbackTone, copyFeedbackId, copyFeedbackHighlighted, copyFeedbackHighlightUntil }: ProjectLogsProps & { cache: ProjectLogViewCache; cacheVersion: number; scopeKey: string }) {
   const t = useI18n(observationMessages);
   const saved = useState(() => cache.read(scopeKey))[0];
   const [page, setPage] = useState<ProjectLogPage | null>(saved ? saved.page : (fullId ? null : initialWindow(initialPage)));
@@ -323,8 +348,8 @@ function ProjectLogView({ sessionId, project, containers, initialPage, fullId, c
     setApplying(true); setSelectionError(null);
     const handles = containers.filter(container => selectedIds.has(container.fullId)).map(container => container.handle);
     try {
-      await configure(handles);
-      if (!mounted.current || request !== selectionRequest.current) return;
+      const accepted = await configure(handles);
+      if (!accepted || !mounted.current || request !== selectionRequest.current) return;
       setSelecting(false); sourceButton.current?.focus(); retryQuery();
     } catch (original) {
       if (mounted.current && request === selectionRequest.current) setSelectionError(coreError(original));
@@ -359,7 +384,7 @@ function ProjectLogView({ sessionId, project, containers, initialPage, fullId, c
     </div>
     {paused && <p className="observation-hint" role="status">{t('pausedHint')}</p>}
     {delayed && <div className="project-log-delay" role="status"><span>{t(page?.rows.length ? 'queryDelayedWithData' : 'queryDelayed')}</span><button onClick={retryQuery}>{t('retryQuery')}</button></div>}
-    {(failure || visibleSources.some(source => source.error)) && <div role="alert">{failure && <ErrorDetails error={failure} />}{sources.filter(source => source.error && (!fullId || source.fullId === fullId)).map(source => <div key={source.sourceId}><span>{source.containerName}</span><ErrorDetails error={source.error!} /></div>)}<button onClick={() => void projectLogApi.retry(sessionId).then(() => { if (mounted.current) retryQuery(); }).catch(original => { if (!mounted.current) return; const next = coreError(original); setError(next); onError(original, next, sessionId); })}>{t('retry')}</button></div>}
+    {(failure || visibleSources.some(source => source.error)) && <div role="alert">{failure && <ErrorDetails error={failure} />}{sources.filter(source => source.error && (!fullId || source.fullId === fullId)).map(source => <div key={source.sourceId}><span>{source.containerName}</span><ErrorDetails error={source.error!} /></div>)}<button disabled={retrying || applying} aria-busy={retrying} onClick={() => void retry().then(accepted => { if (accepted && mounted.current) { setError(null); pauseTransition.current = false; retryQuery(); } }).catch(() => {})}>{t('retry')}</button></div>}
     {selecting && <fieldset ref={sourcePicker} className="project-source-selection" aria-busy={applying}><legend>{t('selectSources')}</legend><div className="project-source-heading"><p>{t('selectionHint')}</p><button className="icon-button" aria-label={t('closeSources')} onClick={closeSources}><X size={16} aria-hidden="true" /></button></div><p>{t('selectionCount', { selected: selectedIds.size, total: sources.filter(source => source.status !== 'removed').length })}</p><div className="project-source-options">{sources.filter(source => source.status !== 'removed').map(source => <label key={source.fullId}><input type="checkbox" checked={selectedIds.has(source.fullId)} disabled={applying || (!selectedIds.has(source.fullId) && selectedIds.size >= 64)} onChange={event => setSelectedIds(previous => { const next = new Set(previous); if (event.target.checked) next.add(source.fullId); else next.delete(source.fullId); return next; })} />{source.serviceName ?? '—'} · {source.containerName}</label>)}</div>{selectionError && <div role="alert"><ErrorDetails error={selectionError} /></div>}<div className="project-source-actions"><button onClick={closeSources}>{t('cancel')}</button><button disabled={applying} onClick={() => void applySources()}>{t(applying ? 'applying' : 'apply')}</button></div></fieldset>}
     <details className="project-log-sources"><summary><span>{t('selectionCount', { selected: selectedSources.length, total: visibleSources.filter(source => source.status !== 'removed').length })}</span><span className="project-source-counts">{[...sourceCounts].map(([status, count]) => <span key={status} data-status={status}>{t(status as typeof selectedSources[number]['status'])} {count}</span>)}</span><span>{t('sourceDetails')}</span><ChevronDown size={12} aria-hidden="true" /></summary><div>{sources.filter(source => source.selected && (!fullId || source.fullId === fullId)).map(source => <span key={source.sourceId} data-status={source.status} title={source.error?.message}>{source.containerName} · {t(source.status)}</span>)}</div></details>
     <div className="project-log-meta"><span>{t('count', { count: page?.totalRows ?? 0 })}</span><span>{t('logCollectionHint')}</span>{!!page?.coverageGaps && <span className="observation-warning">{t('gap')} · {page.coverageGaps}</span>}{page?.anchorLost && <span className="observation-warning">{t('anchorLost')}</span>}{page?.retainedFrom && <span>{t('coverage')} (UTC): {page.retainedFrom.slice(0, 19).replace('T', ' ')} – {page.retainedTo?.slice(0, 19).replace('T', ' ') ?? '—'}</span>}{!!page?.droppedRows && <span className="observation-warning">{t('trimmed', { count: page.droppedRows })}</span>}</div>

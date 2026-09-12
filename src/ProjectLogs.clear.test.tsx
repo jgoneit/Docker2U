@@ -45,7 +45,7 @@ function mount() {
   const cache = createProjectLogViewCache();
   const view = (sessionId = 'one', fullId?: string) => <PreferencesProvider initialPreferences={{ theme: 'dark', language: 'ko' }}>
     <ProjectLogs sessionId={sessionId} project="demo" containers={containers} initialPage={page(sessionId)} fullId={fullId}
-      viewCache={cache} configure={configure} error={null} onError={onError} copy={vi.fn().mockResolvedValue(undefined)} onClearStarted={begin} />
+      viewCache={cache} retry={vi.fn().mockResolvedValue(true)} configure={configure} error={null} onError={onError} copy={vi.fn().mockResolvedValue(undefined)} onClearStarted={begin} />
   </PreferencesProvider>;
   const rendered = render(view());
   return { ...rendered, cache, show: (sessionId = 'one', fullId?: string) => rendered.rerender(view(sessionId, fullId)) };
