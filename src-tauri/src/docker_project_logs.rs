@@ -274,6 +274,7 @@ struct Source {
     view: ProjectLogSource,
     run: Option<String>,
     token: u64,
+    pending_start: Option<u64>,
     task: Option<StreamTask>,
     overlap: HashMap<DuplicateKey, usize>,
     last_seen: i64,
@@ -290,9 +291,25 @@ pub(super) struct ProjectLogManager {
     needs_selection: bool,
     error: Option<ApiError>,
     archived_gaps: HashMap<String, u64>,
+    #[cfg(test)]
+    start_registration_barrier: Option<Arc<std::sync::Barrier>>,
+}
+
+impl Source {
+    fn owns_start(&self, token: u64) -> bool {
+        self.token == token
+            && self.pending_start == Some(token)
+            && self.view.selected
+            && self.view.status != "removed"
+    }
 }
 
 impl ProjectLogManager {
+    fn needs_reconnect(&self) -> bool {
+        self.error
+            .as_ref()
+            .is_some_and(|error| connection_invalidated(error) || error.code == "NeedsValidation")
+    }
     fn archive_coverage(&mut self) {
         if let Some(project) = &self.project {
             let gaps = self
@@ -585,6 +602,7 @@ impl Core {
                 .values_mut()
                 .filter_map(|source| {
                     source.view.status = "error".into();
+                    source.pending_start = None;
                     source.view.error = Some(error.clone());
                     source.view.coverage_gaps += 1;
                     source.task.take()
@@ -671,7 +689,9 @@ impl Core {
             let mut manager = self.project_logs.lock().unwrap();
             // Pair registration with shutdown/reconnect's session retirement.
             // Never publish a manager using a session cloned before retirement.
-            if self.active(id)?.needs_validation {
+            if self.active(id)?.needs_validation
+                || (manager.session_id == id && manager.needs_reconnect())
+            {
                 return Err(ApiError::new(
                     "NeedsValidation",
                     "Reconnect before collecting logs",
@@ -696,7 +716,17 @@ impl Core {
             }
             manager.project = Some(project.into());
             manager.explicit = explicit;
-            manager.error = None;
+            if manager.error.take().is_some() && !changed {
+                for source in manager.sources.values_mut() {
+                    source.token = 0;
+                    source.pending_start = None;
+                    source.run = None;
+                    source.view.status = "idle".into();
+                    if let Some(task) = source.task.take() {
+                        old.push(task);
+                    }
+                }
+            }
             if changed {
                 old.extend(
                     manager
@@ -717,21 +747,36 @@ impl Core {
         let session = self.active(id)?;
         let (project, tasks) = {
             let mut manager = self.project_logs.lock().unwrap();
-            if self.active(id)?.needs_validation {
+            if self.active(id)?.needs_validation || manager.needs_reconnect() {
                 return Err(ApiError::new(
                     "NeedsValidation",
                     "Reconnect before resuming logs",
+                ));
+            }
+            if manager.session_id != id {
+                return Err(ApiError::new(
+                    "StaleSession",
+                    "Project logs belong to a previous session",
                 ));
             }
             let project = manager
                 .project
                 .clone()
                 .ok_or_else(|| ApiError::new("InvalidSelection", "Select a Compose project"))?;
+            // Retriable collection failures must not suppress the replacement starts.
+            manager.error = None;
             let tasks = manager
                 .sources
                 .values_mut()
                 .filter_map(|source| {
-                    if matches!(source.view.status.as_str(), "error" | "ended" | "retrying") {
+                    if matches!(
+                        source.view.status.as_str(),
+                        "error" | "ended" | "retrying" | "starting"
+                    ) {
+                        // Fence callbacks and registrations from an earlier start
+                        // before dropping the lock to retire its transport.
+                        source.token = 0;
+                        source.pending_start = None;
                         source.run = None;
                         source.view.status = "idle".into();
                         source.task.take()
@@ -789,6 +834,7 @@ impl Core {
             manager.needs_selection = manager.explicit.is_none() && candidates.len() > MAX_SOURCES;
             let mut starts = Vec::new();
             let mut stops = Vec::new();
+            let collection_error = manager.error.clone();
             let present = candidates
                 .iter()
                 .map(|container| container.full_id.clone())
@@ -799,6 +845,7 @@ impl Core {
                     source.view.selected = false;
                     source.run = None;
                     source.token = 0;
+                    source.pending_start = None;
                     if let Some(task) = source.task.take() {
                         source.view.coverage_gaps += 1;
                         stops.push(task);
@@ -832,6 +879,7 @@ impl Core {
                         },
                         run: None,
                         token: 0,
+                        pending_start: None,
                         task: None,
                         overlap: HashMap::new(),
                         last_seen: now_nanos(),
@@ -846,13 +894,30 @@ impl Core {
                     .or_else(|| Some(container.created_at.clone()));
                 if !selected || !readable {
                     source.token = 0;
+                    source.pending_start = None;
                     if let Some(task) = source.task.take() {
                         source.view.coverage_gaps += 1;
                         stops.push(task);
                     }
                     source.view.status = "idle".into();
                     source.run = None;
-                } else if source.run != run || source.view.status == "idle" {
+                } else if let Some(error) = &collection_error {
+                    // Keep inventory identity current while a collection-wide
+                    // error blocks starts; do not leave a phantom reservation.
+                    source.token = 0;
+                    source.pending_start = None;
+                    source.run = None;
+                    source.view.status = "error".into();
+                    source.view.error = Some(error.clone());
+                    if let Some(task) = source.task.take() {
+                        stops.push(task);
+                    }
+                } else if source.run != run
+                    || source.view.status == "idle"
+                    || (source.view.status == "starting"
+                        && source.task.is_none()
+                        && source.pending_start.is_none())
+                {
                     if let Some(task) = source.task.take() {
                         source.view.coverage_gaps += 1;
                         stops.push(task);
@@ -865,6 +930,7 @@ impl Core {
                     let overlap = manager.overlap(&container.full_id);
                     let source = manager.sources.get_mut(&container.full_id).unwrap();
                     source.token = token;
+                    source.pending_start = Some(token);
                     source.overlap = overlap;
                     starts.push((container, token));
                 }
@@ -876,18 +942,36 @@ impl Core {
         if starts.is_empty() {
             return;
         }
+        #[cfg(test)]
+        let registration_barrier = self
+            .project_logs
+            .lock()
+            .unwrap()
+            .start_registration_barrier
+            .take();
+        #[cfg(test)]
+        if let Some(barrier) = registration_barrier {
+            barrier.wait();
+            barrier.wait();
+        }
         let reader = match self.observation_reader(id) {
             Ok(reader) => reader,
             Err(error) => {
                 let mut manager = self.project_logs.lock().unwrap();
-                if manager.session_id == id {
-                    manager.error = Some(error.clone());
-                    for (container, token) in starts {
-                        if let Some(source) = manager
+                if manager.session_id == id
+                    && manager.error.is_none()
+                    && starts.iter().any(|(container, token)| {
+                        manager
                             .sources
-                            .get_mut(&container.full_id)
-                            .filter(|source| source.token == token)
-                        {
+                            .get(&container.full_id)
+                            .is_some_and(|source| source.owns_start(*token))
+                    })
+                {
+                    manager.error = Some(error.clone());
+                    // This manager-wide error prevents every pending start. None
+                    // may retain an abandoned reservation when configuration retries.
+                    for source in manager.sources.values_mut() {
+                        if source.pending_start.take().is_some() {
                             source.view.status = "error".into();
                             source.view.error = Some(error.clone());
                         }
@@ -897,22 +981,6 @@ impl Core {
             }
         };
         for (container, token) in starts {
-            {
-                let manager = self.project_logs.lock().unwrap();
-                if manager.session_id != id
-                    || manager.error.is_some()
-                    || !manager
-                        .sources
-                        .get(&container.full_id)
-                        .is_some_and(|source| {
-                            source.token == token
-                                && source.view.selected
-                                && source.view.status != "removed"
-                        })
-                {
-                    continue;
-                }
-            }
             let weak = Arc::downgrade(&self.project_logs);
             let state = Arc::downgrade(&self.state);
             let observation = Arc::downgrade(&self.observation);
@@ -979,6 +1047,7 @@ impl Core {
                             .values_mut()
                             .filter_map(|source| {
                                 source.view.status = "error".into();
+                                source.pending_start = None;
                                 source.task.take()
                             })
                             .collect::<Vec<_>>()
@@ -986,6 +1055,20 @@ impl Core {
                     drop(tasks);
                 }
             });
+            // spawn_logs does not await or invoke the sink synchronously. Publish
+            // its task under the same lock as the reservation check so a retry
+            // cannot cancel a reservation and then receive its late registration.
+            let mut manager = self.project_logs.lock().unwrap();
+            if manager.session_id != id || manager.error.is_some() {
+                continue;
+            }
+            let Some(source) = manager
+                .sources
+                .get_mut(&container.full_id)
+                .filter(|source| source.owns_start(token))
+            else {
+                continue;
+            };
             let result = reader.spawn_logs(
                 LogRequest {
                     full_id: container.full_id.clone(),
@@ -997,23 +1080,7 @@ impl Core {
                 },
                 sink,
             );
-            let mut manager = self.project_logs.lock().unwrap();
-            if manager.session_id != id || manager.error.is_some() {
-                drop(manager);
-                drop(result);
-                continue;
-            }
-            let Some(source) = manager
-                .sources
-                .get_mut(&container.full_id)
-                .filter(|source| {
-                    source.token == token && source.view.selected && source.view.status != "removed"
-                })
-            else {
-                drop(manager);
-                drop(result);
-                continue;
-            };
+            source.pending_start = None;
             match result {
                 Ok(task) => source.task = Some(task),
                 Err(error) => {
@@ -1221,6 +1288,7 @@ mod tests {
                 view: source("a"),
                 run: None,
                 token: 7,
+                pending_start: None,
                 task: None,
                 overlap,
                 last_seen: now_nanos(),
@@ -1262,6 +1330,7 @@ mod tests {
                 view: source("a"),
                 run: None,
                 token: 7,
+                pending_start: None,
                 task: None,
                 overlap: HashMap::new(),
                 last_seen: now_nanos(),
@@ -1482,6 +1551,7 @@ mod tests {
                         view,
                         run: None,
                         token: 0,
+                        pending_start: None,
                         task: None,
                         overlap: HashMap::new(),
                         last_seen: old.timestamp_nanos_opt().unwrap(),
@@ -1534,6 +1604,7 @@ mod tests {
                 view,
                 run: None,
                 token: 1,
+                pending_start: None,
                 task: None,
                 overlap: HashMap::new(),
                 last_seen: now_nanos(),
@@ -1737,6 +1808,340 @@ mod tests {
         assert_eq!(live.rows.last().unwrap().text, "fresh output");
         core.shutdown();
         server.join().unwrap();
+    }
+
+    struct RecoveryEngine {
+        core: Core,
+        container: Container,
+        directory: PathBuf,
+        stopped: Arc<std::sync::atomic::AtomicBool>,
+        server: Option<std::thread::JoinHandle<()>>,
+        opened: Arc<std::sync::atomic::AtomicUsize>,
+        closed: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl RecoveryEngine {
+        fn new(hold_first_headers: bool, quiet: bool) -> Self {
+            use std::io::{BufRead, BufReader, Read, Write};
+            use std::os::unix::net::UnixListener;
+            use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+            let directory = Path::new("/tmp")
+                .canonicalize()
+                .unwrap()
+                .join(format!("d2u-log-recovery-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&directory).unwrap();
+            let socket = directory.join("engine.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let stopped = Arc::new(AtomicBool::new(false));
+            let stop = stopped.clone();
+            let opened = Arc::new(AtomicUsize::new(0));
+            let opens = opened.clone();
+            let closed = Arc::new(AtomicUsize::new(0));
+            let closes = closed.clone();
+            let server = std::thread::spawn(move || {
+                let mut workers = Vec::new();
+                while !stop.load(Ordering::Acquire) {
+                    let Ok((mut stream, _)) = listener.accept() else {
+                        std::thread::sleep(Duration::from_millis(1));
+                        continue;
+                    };
+                    let opens = opens.clone();
+                    let closes = closes.clone();
+                    workers.push(std::thread::spawn(move || {
+                        stream.set_nonblocking(false).unwrap();
+                        stream.set_read_timeout(Some(Duration::from_secs(8))).unwrap();
+                        stream.set_write_timeout(Some(Duration::from_secs(8))).unwrap();
+                        let mut reader = BufReader::new(stream.try_clone().unwrap());
+                        loop {
+                            let mut first = String::new();
+                            if reader.read_line(&mut first).unwrap_or(0) == 0 { return; }
+                            let path = first.split_whitespace().nth(1).unwrap().to_owned();
+                            loop {
+                                let mut header = String::new();
+                                if reader.read_line(&mut header).unwrap_or(0) == 0 { return; }
+                                if header == "\r\n" { break; }
+                            }
+                            if path.contains("/logs?") {
+                                let number = opens.fetch_add(1, Ordering::SeqCst);
+                                if !hold_first_headers || number > 0 {
+                                    if stream.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n").is_err() { return; }
+                                    if !quiet {
+                                        let body = format!("{} restored output\n", Utc::now().to_rfc3339());
+                                        if write!(stream, "{:X}\r\n{}\r\n", body.len(), body).is_err() { return; }
+                                    }
+                                }
+                                // Neither a waiting startup nor a quiet following
+                                // stream closes itself; the owning Core must cancel it.
+                                let mut byte = [0];
+                                let _ = reader.read(&mut byte);
+                                closes.fetch_add(1, Ordering::SeqCst);
+                                return;
+                            }
+                            let body = if path.ends_with("/version") {
+                                r#"{"Version":"27.5.0","ApiVersion":"1.47","MinAPIVersion":"1.24","Os":"linux","Arch":"aarch64"}"#
+                            } else {
+                                assert!(path.ends_with("/info"));
+                                r#"{"ID":"fixture","OSType":"linux","Architecture":"aarch64","Name":"fixture"}"#
+                            };
+                            if write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", body.len(), body).is_err() { return; }
+                        }
+                    }));
+                }
+                for worker in workers {
+                    worker.join().unwrap();
+                }
+            });
+            let (core, _) = core_with_project();
+            let container = {
+                let mut state = core.state.lock().unwrap();
+                let session = state.session.as_mut().unwrap();
+                session.target.endpoint = format!("unix://{}", socket.display());
+                session.handles.retain(|handle, _| handle == "h0");
+                let container = session.handles.get_mut("h0").unwrap();
+                container.tty = true;
+                container.clone()
+            };
+            Self {
+                core,
+                container,
+                directory,
+                stopped,
+                server: Some(server),
+                opened,
+                closed,
+            }
+        }
+        fn seed(&self, status: &str, error: Option<ApiError>) {
+            let mut manager = self.core.project_logs.lock().unwrap();
+            manager.session_id = "s".into();
+            manager.project = Some("p".into());
+            manager.token = 41;
+            manager.error = error.clone();
+            let mut view = source(&self.container.full_id);
+            view.status = status.into();
+            view.error = error;
+            manager.sources.insert(
+                self.container.full_id.clone(),
+                Source {
+                    view,
+                    run: Some(self.container.created_at.clone()),
+                    token: 41,
+                    pending_start: None,
+                    task: None,
+                    overlap: HashMap::new(),
+                    last_seen: now_nanos(),
+                },
+            );
+        }
+        fn wait_for(&self, predicate: impl Fn(&ProjectLogPage) -> bool) -> ProjectLogPage {
+            let deadline = std::time::Instant::now() + Duration::from_secs(4);
+            loop {
+                let page = self
+                    .core
+                    .query_project_logs("s", &latest_query("p".into()))
+                    .unwrap();
+                if predicate(&page) {
+                    return page;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "recovery fixture timed out"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        fn log_requests(&self) -> usize {
+            self.opened.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+    impl Drop for RecoveryEngine {
+        fn drop(&mut self) {
+            self.core.shutdown();
+            self.stopped
+                .store(true, std::sync::atomic::Ordering::Release);
+            self.server.take().unwrap().join().unwrap();
+            let _ = std::fs::remove_dir_all(&self.directory);
+        }
+    }
+
+    #[test]
+    fn retry_and_reconfigure_clear_recoverable_manager_errors_before_registering_sources() {
+        for reconfigure in [false, true] {
+            let fixture = RecoveryEngine::new(false, false);
+            fixture.seed(
+                "error",
+                Some(ApiError::new(
+                    "ObservationTransport",
+                    "temporary reader failure",
+                )),
+            );
+            if reconfigure {
+                fixture.core.configure_project_logs("s", "p", None).unwrap();
+            } else {
+                fixture.core.retry_project_logs("s").unwrap();
+            }
+            let page = fixture.wait_for(|page| page.total_rows == 1);
+            assert!(page.error.is_none());
+            assert_eq!(page.sources[0].status, "following");
+            assert_eq!(fixture.log_requests(), 1);
+            let manager = fixture.core.project_logs.lock().unwrap();
+            let source = &manager.sources[&fixture.container.full_id];
+            assert!(source.pending_start.is_none());
+            assert!(source.task.is_some());
+        }
+    }
+
+    #[test]
+    fn reconnect_required_errors_cannot_be_cleared_by_retry_or_reconfigure() {
+        for code in ["EnvironmentChanged", "SocketMissing", "NeedsValidation"] {
+            let fixture = RecoveryEngine::new(false, false);
+            fixture.seed("error", Some(ApiError::new(code, "reconnect required")));
+            assert_eq!(
+                fixture.core.retry_project_logs("s").unwrap_err().code,
+                "NeedsValidation"
+            );
+            assert_eq!(
+                fixture
+                    .core
+                    .configure_project_logs("s", "p", None)
+                    .unwrap_err()
+                    .code,
+                "NeedsValidation"
+            );
+            assert_eq!(fixture.log_requests(), 0);
+            assert_eq!(
+                fixture
+                    .core
+                    .project_logs
+                    .lock()
+                    .unwrap()
+                    .error
+                    .as_ref()
+                    .unwrap()
+                    .code,
+                code
+            );
+        }
+        let fixture = RecoveryEngine::new(false, false);
+        fixture.seed("starting", None);
+        fixture
+            .core
+            .state
+            .lock()
+            .unwrap()
+            .session
+            .as_mut()
+            .unwrap()
+            .needs_validation = true;
+        assert_eq!(
+            fixture.core.retry_project_logs("s").unwrap_err().code,
+            "NeedsValidation"
+        );
+        assert_eq!(fixture.log_requests(), 0);
+    }
+
+    #[test]
+    fn inventory_repairs_an_unowned_start_without_restarting_a_following_source() {
+        let fixture = RecoveryEngine::new(false, false);
+        fixture.seed("starting", None);
+        fixture
+            .core
+            .sync_project_log_containers("s", vec![fixture.container.clone()]);
+        fixture.wait_for(|page| page.total_rows == 1);
+        let token =
+            fixture.core.project_logs.lock().unwrap().sources[&fixture.container.full_id].token;
+        for _ in 0..4 {
+            fixture
+                .core
+                .sync_project_log_containers("s", vec![fixture.container.clone()]);
+        }
+        assert_eq!(fixture.log_requests(), 1);
+        assert_eq!(
+            fixture.core.project_logs.lock().unwrap().sources[&fixture.container.full_id].token,
+            token
+        );
+    }
+
+    #[test]
+    fn retry_supersedes_a_reserved_start_and_inventory_does_not_duplicate_it() {
+        let fixture = RecoveryEngine::new(false, false);
+        fixture.seed("idle", None);
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        fixture
+            .core
+            .project_logs
+            .lock()
+            .unwrap()
+            .start_registration_barrier = Some(barrier.clone());
+        let configuring = fixture.core.clone();
+        let first = std::thread::spawn(move || configuring.configure_project_logs("s", "p", None));
+        barrier.wait();
+        let reserved =
+            fixture.core.project_logs.lock().unwrap().sources[&fixture.container.full_id].token;
+        fixture
+            .core
+            .sync_project_log_containers("s", vec![fixture.container.clone()]);
+        assert_eq!(
+            fixture.core.project_logs.lock().unwrap().sources[&fixture.container.full_id]
+                .pending_start,
+            Some(reserved)
+        );
+        assert_eq!(fixture.log_requests(), 0);
+        let retry = fixture.core.retry_project_logs("s");
+        barrier.wait();
+        first.join().unwrap().unwrap();
+        retry.unwrap();
+        fixture.wait_for(|page| page.total_rows == 1);
+        let mut manager = fixture.core.project_logs.lock().unwrap();
+        let current = &manager.sources[&fixture.container.full_id];
+        assert!(current.token > reserved);
+        assert!(current.pending_start.is_none());
+        assert!(current.task.is_some());
+        manager.receive(
+            "s",
+            &fixture.container.full_id,
+            reserved,
+            ReaderMessage::Log(log(&Utc::now().to_rfc3339(), "obsolete start")),
+        );
+        assert!(
+            !manager
+                .ring
+                .rows
+                .values()
+                .any(|row| row.row.text == "obsolete start")
+        );
+        drop(manager);
+        assert_eq!(fixture.log_requests(), 1);
+    }
+
+    #[test]
+    fn explicit_retry_cancels_a_start_waiting_for_headers_and_registers_a_replacement() {
+        let fixture = RecoveryEngine::new(true, false);
+        fixture.core.configure_project_logs("s", "p", None).unwrap();
+        fixture
+            .wait_for(|page| fixture.log_requests() == 1 && page.sources[0].status == "starting");
+        fixture.core.retry_project_logs("s").unwrap();
+        let page = fixture.wait_for(|page| page.total_rows == 1);
+        assert_eq!(page.sources[0].status, "following");
+        assert_eq!(fixture.log_requests(), 2);
+        assert_eq!(fixture.closed.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn explicit_retry_keeps_a_quiet_connected_stream() {
+        let fixture = RecoveryEngine::new(false, true);
+        fixture.core.configure_project_logs("s", "p", None).unwrap();
+        fixture.wait_for(|page| page.sources[0].status == "following");
+        for _ in 0..4 {
+            fixture.core.retry_project_logs("s").unwrap();
+        }
+        assert_eq!(fixture.log_requests(), 1);
+        let page = fixture
+            .core
+            .query_project_logs("s", &latest_query("p".into()))
+            .unwrap();
+        assert_eq!(page.total_rows, 0);
+        assert_eq!(page.sources[0].status, "following");
     }
 
     #[test]

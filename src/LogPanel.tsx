@@ -10,18 +10,45 @@ import type { LogSnapshot } from './logSnapshot';
 import { logMessages } from './messages/logs';
 import { usePreferences } from './preferences';
 import type { LiveLogStatus } from './liveLogController';
+import type { StandaloneLogViewCache } from './standaloneLogViewCache';
 import './liveLogs.css';
 
 const followStates = new Set(['running', 'paused', 'restarting']);
 
-export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, logRequestPending = false, liveStatus, refreshing, mutating, loadLogs, clearLogs, copy, copyFeedback, copyFeedbackTone, copyFeedbackId, copyFeedbackHighlighted, copyFeedbackHighlightUntil, expanded, onExpandedChange, visible = true, operationFeedback }: {
+interface LogPanelProps {
   container: Container; snapshot: ContainerList; logs: LogSnapshot | null; logsError: CoreError | null;
   loadingLogs: boolean; logRequestPending?: boolean; liveStatus?: LiveLogStatus; refreshing: boolean; mutating: boolean; loadLogs: () => void; clearLogs: () => void; copy: CopyText; copyFeedback?: string; copyFeedbackTone?: CopyFeedbackTone; copyFeedbackId?: number; copyFeedbackHighlighted?: boolean; copyFeedbackHighlightUntil?: number;
   expanded: boolean; onExpandedChange: (expanded: boolean) => void;
-  visible?: boolean; operationFeedback?: ReactNode;
-}) {
+  visible?: boolean; operationFeedback?: ReactNode; viewCache?: StandaloneLogViewCache;
+}
+export function LogPanel(props: LogPanelProps) {
+  const cache = props.viewCache;
+  if (cache && cache.sessionId !== props.snapshot.sessionId) { cache.clear(); cache.sessionId = props.snapshot.sessionId; }
+  return <LogPanelView key={cache ? `${cache.version}/${props.snapshot.sessionId}/${props.container.fullId}` : undefined} {...props} cacheVersion={cache?.version} />;
+}
+function LogPanelView({ container, snapshot, logs: incomingLogs, logsError, loadingLogs, logRequestPending = false, liveStatus, refreshing, mutating, loadLogs, clearLogs, copy, copyFeedback, copyFeedbackTone, copyFeedbackId, copyFeedbackHighlighted, copyFeedbackHighlightUntil, expanded, onExpandedChange, visible = true, operationFeedback, viewCache, cacheVersion }: LogPanelProps & { cacheVersion?: number }) {
   const t = useI18n(logMessages);
   const { language } = usePreferences();
+  const saved = useState(() => viewCache?.read(container.fullId))[0];
+  const target = `${snapshot.sessionId}/${container.fullId}`;
+  const lastSuccessfulLogs = useRef<LogSnapshot | null>(saved?.lastLogs ?? null);
+  const clearedInput = useRef<LogSnapshot | null>(null);
+  const known = lastSuccessfulLogs.current;
+  // A pinned follow can deliver its first frame after inventory rotates its handle.
+  const targetHandles = useRef(new Set([container.handle]));
+  targetHandles.current.add(container.handle);
+  const ownsIncoming = !viewCache || !!incomingLogs && incomingLogs.sessionId === snapshot.sessionId
+    && (targetHandles.current.has(incomingLogs.handle) || incomingLogs === known
+      || !!incomingLogs.streamId && incomingLogs.streamId === known?.streamId
+      || incomingLogs.handle === known?.handle && incomingLogs.generation === known?.generation);
+  const unreadable = !snapshot.stale && !readableStates.has(container.state);
+  const received = !unreadable && ownsIncoming && incomingLogs && incomingLogs !== clearedInput.current
+    && (incomingLogs.source !== 'live' || (incomingLogs.sequence ?? -1) >= 0 || liveStatus === 'ended' && !logsError) ? incomingLogs : null;
+  if (viewCache && unreadable) lastSuccessfulLogs.current = null;
+  else if (viewCache && received) lastSuccessfulLogs.current = received;
+  // Navigation clears/restarts the transport before the new target has a frame.
+  // Keep its own last successful display until a real replacement arrives.
+  const logs = viewCache ? received ?? lastSuccessfulLogs.current : incomingLogs;
   const inlinePanel = useRef<HTMLElement>(null);
   const inlineContent = useRef<HTMLPreElement>(null);
   const modalContent = useRef<HTMLPreElement>(null);
@@ -34,36 +61,46 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, lo
   const expandButton = useRef<HTMLButtonElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   const dialog = useRef<HTMLDivElement>(null);
-  const scrollPosition = useRef(0);
+  const scrollPosition = useRef(saved?.scrollTop ?? 0);
   const beforeExpandPosition = useRef(0);
   const modalInitialPosition = useRef(0);
   const wasExpanded = useRef(false);
   const copyAttempt = useRef(0);
   const [showCopyFeedback, setShowCopyFeedback] = useState(false);
-  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(saved?.searchOpen ?? false);
   const [searchFocusVersion, setSearchFocusVersion] = useState(0);
-  const [query, setQuery] = useState('');
-  const [manuallyPaused, setManuallyPaused] = useState(false);
-  const [frozenLogs, setFrozenLogs] = useState<LogSnapshot | null>(null);
-  const frozenTarget = useRef('');
+  const [query, setQuery] = useState(saved?.query ?? '');
+  const [manuallyPaused, setManuallyPaused] = useState(saved?.manuallyPaused ?? false);
+  const [frozenLogs, setFrozenLogs] = useState<LogSnapshot | null>(saved?.frozenLogs ?? null);
+  const frozenTarget = useRef(viewCache ? target : '');
+  const restoringSearchScroll = useRef(!!saved?.searchOpen);
+  const awaitingRestoredSnapshot = useRef(!!saved && (saved.manuallyPaused || saved.searchOpen) && !saved.frozenLogs);
   const awaitingReadableSnapshot = useRef(false);
   const awaitingLiveSnapshot = useRef(false);
-  const followingBottom = useRef(true);
-  const [atBottom, setAtBottom] = useState(true);
+  const followingBottom = useRef(saved?.followingBottom ?? true);
+  const [atBottom, setAtBottom] = useState(saved?.atBottom ?? true);
   const [resumeDropped, setResumeDropped] = useState(false);
+  const [payloadEvicted, setPayloadEvicted] = useState(saved?.payloadEvicted ?? false);
   const [navigationVersion, setNavigationVersion] = useState(0);
   // Inventory generations rotate handles; a reload of the same container keeps the search.
-  const target = `${snapshot.sessionId}/${container.fullId}`;
   const hasLiveControls = logs?.source === 'live' || (liveStatus !== undefined && followStates.has(container.state));
   const previousLiveMode = useRef(hasLiveControls);
   const frozen = hasLiveControls && (manuallyPaused || searchOpen) && frozenTarget.current === target;
   const displayedLogs = !snapshot.stale && !readableStates.has(container.state) ? null : frozen ? frozenLogs : logs;
-  const text = hasLiveControls ? displayedLogs?.text ?? '' : !loadingLogs && !logsError ? logs?.text ?? '' : '';
+  const text = hasLiveControls || viewCache ? displayedLogs?.text ?? '' : !loadingLogs && !logsError ? logs?.text ?? '' : '';
   const displayDropped = !!displayedLogs?.truncated;
   const hasReceipt = displayedLogs && (displayedLogs.source !== 'live' || (displayedLogs.receivedBytes ?? displayedLogs.byteCount) > 0);
   const droppedWhileFrozen = frozen && !!logs && (!!frozenLogs && logs.streamId !== frozenLogs.streamId || (logs.droppedBatches ?? 0) > (frozenLogs?.droppedBatches ?? 0) || (logs.droppedBytes ?? 0) > (frozenLogs?.droppedBytes ?? 0) || (!frozenLogs?.truncated && logs.truncated));
   const canCopy = text.length > 0;
   const { status: searchStatus, total, activeIndex, activeStart, activeLength, move } = useLogSearch({ target, text, query });
+  const stateToSave = useRef({ query, searchOpen, manuallyPaused, frozenLogs, lastLogs: displayedLogs, atBottom, payloadEvicted });
+  stateToSave.current = { query, searchOpen, manuallyPaused, frozenLogs: manuallyPaused || searchOpen ? frozenLogs : null, lastLogs: displayedLogs, atBottom, payloadEvicted };
+  useLayoutEffect(() => {
+    if (viewCache && viewCache.version === cacheVersion && viewCache.sessionId === snapshot.sessionId) viewCache.save(container.fullId, { ...stateToSave.current, scrollTop: scrollPosition.current, followingBottom: followingBottom.current });
+  });
+  useEffect(() => () => {
+    if (viewCache && viewCache.version === cacheVersion && viewCache.sessionId === snapshot.sessionId) viewCache.save(container.fullId, { ...stateToSave.current, scrollTop: scrollPosition.current, followingBottom: followingBottom.current });
+  }, [viewCache, cacheVersion, snapshot.sessionId, container.fullId]);
   useEffect(() => { ++copyAttempt.current; setShowCopyFeedback(false); }, [expanded, target]);
   useLayoutEffect(() => {
     if (!expanded) return;
@@ -71,11 +108,17 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, lo
     if (!(focused instanceof HTMLElement) || !dialog.current?.contains(focused) || focused.matches(':disabled')) closeButton.current?.focus();
   }, [expanded, logs, logsError, loadingLogs]);
   useLayoutEffect(() => {
+    if (viewCache) return;
     setSearchOpen(false); setQuery(''); setManuallyPaused(false); setFrozenLogs(null); setResumeDropped(false);
     awaitingLiveSnapshot.current = false;
     followingBottom.current = true; setAtBottom(true); frozenTarget.current = target; scrollPosition.current = 0;
     if (inlineContent.current) inlineContent.current.scrollTop = 0;
-  }, [target]);
+  }, [target, viewCache]);
+  useLayoutEffect(() => {
+    if (!awaitingRestoredSnapshot.current || !received) return;
+    awaitingRestoredSnapshot.current = false;
+    if (hasLiveControls && (manuallyPaused || searchOpen)) { frozenTarget.current = target; setFrozenLogs(received); }
+  }, [received, hasLiveControls, manuallyPaused, searchOpen, target]);
   useLayoutEffect(() => {
     if (previousLiveMode.current === hasLiveControls) return;
     previousLiveMode.current = hasLiveControls;
@@ -130,7 +173,7 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, lo
   useLayoutEffect(() => {
     const content = expanded ? modalContent.current : inlineContent.current;
     const match = expanded ? modalMatch.current : inlineMatch.current;
-    if ((!visible && !expanded) || !searchOpen || !content || !match) return;
+    if ((!visible && !expanded) || !searchOpen || !content || !match || restoringSearchScroll.current) return;
     const viewport = content.getBoundingClientRect();
     const position = match.getBoundingClientRect();
     content.scrollTop += position.top - viewport.top - (content.clientHeight - position.height) / 2;
@@ -170,6 +213,13 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, lo
     document.addEventListener('keydown', documentKeyDown);
     return () => document.removeEventListener('keydown', documentKeyDown);
   }, [expanded, onExpandedChange, searchOpen, hasLiveControls, manuallyPaused, logs, frozen, droppedWhileFrozen, target]);
+  function reloadLogs() {
+    // Explicit reload keeps the existing one-shot loading/clear behavior. Only
+    // navigation and a new follow's initial buffer restore a cached display.
+    lastSuccessfulLogs.current = null;
+    clearedInput.current = incomingLogs;
+    loadLogs();
+  }
   async function copyLogs(inModal: boolean) {
     if (!canCopy) return;
     const attempt = ++copyAttempt.current;
@@ -189,11 +239,13 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, lo
     onExpandedChange(false);
   }
   function openSearch() {
+    restoringSearchScroll.current = false;
     if (hasLiveControls && !frozen) { setFrozenLogs(logs); frozenTarget.current = target; }
     setSearchOpen(true);
     setSearchFocusVersion(version => version + 1);
   }
   function closeSearch(inModal: boolean) {
+    restoringSearchScroll.current = false;
     if (!manuallyPaused && droppedWhileFrozen) setResumeDropped(true);
     setSearchOpen(false);
     (inModal ? modalSearchToggle.current : inlineSearchToggle.current)?.focus();
@@ -208,6 +260,7 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, lo
     }
   }
   function moveMatch(direction: 1 | -1) {
+    restoringSearchScroll.current = false;
     if (searchStatus === 'ready' && total) {
       move(direction);
       setNavigationVersion(version => version + 1);
@@ -250,7 +303,7 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, lo
       <div className="section-heading log-toolbar-heading"><h3 id={id}><FileText size={16} aria-hidden="true" />{t('title')}</h3><div className="compact-actions log-toolbar">
         <div className="log-toolbar-group">
           {hasLiveControls && <button className="log-pause-toggle" aria-pressed={manuallyPaused} onClick={togglePause} title={t(manuallyPaused ? 'resumeDetails' : 'pauseDetails')}>{manuallyPaused ? <Play size={13} aria-hidden="true" /> : <Pause size={13} aria-hidden="true" />}{t(manuallyPaused ? 'resume' : 'pause')}</button>}
-          <button className="log-tool-icon log-tool-quiet" aria-label={t('fetch')} title={logRequestPending ? t('requestPending') : t('fetch')} aria-describedby={logRequestPending && !loadingLogs ? `${id}-pending` : undefined} disabled={snapshot.stale || logRequestPending || loadingLogs || refreshing || mutating || !readableStates.has(container.state)} onClick={loadLogs}><RefreshCw size={13} className={loadingLogs ? 'spin' : ''} aria-hidden="true" /></button>
+          <button className="log-tool-icon log-tool-quiet" aria-label={t('fetch')} title={logRequestPending ? t('requestPending') : t('fetch')} aria-describedby={logRequestPending && !loadingLogs ? `${id}-pending` : undefined} disabled={snapshot.stale || logRequestPending || loadingLogs || refreshing || mutating || !readableStates.has(container.state)} onClick={reloadLogs}><RefreshCw size={13} className={loadingLogs ? 'spin' : ''} aria-hidden="true" /></button>
         </div>
         <div className="log-toolbar-group">
           <button ref={inModal ? modalSearchToggle : inlineSearchToggle} className="log-tool-icon log-tool-quiet log-search-toggle" aria-label={t(searchOpen ? 'closeSearch' : 'openSearch')} title={`${t('search')} (${mac ? '⌘F' : 'Ctrl+F'})`} aria-keyshortcuts={mac ? 'Meta+F' : 'Control+F'} aria-expanded={searchOpen} aria-controls={inModal ? 'expanded-log-search-row' : 'log-search-row'} onClick={() => searchOpen ? closeSearch(inModal) : openSearch()}><Search size={13} aria-hidden="true" /></button>
@@ -261,20 +314,21 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, lo
           }} aria-label={t(hasLiveControls ? 'latest' : 'bottom')} title={t(hasLiveControls ? 'latest' : 'bottom')}><ArrowDownToLine size={13} aria-hidden="true" /></button>
           {!inModal && <button className="log-tool-icon log-tool-quiet" ref={expandButton} onClick={expand} aria-label={t('expand')} title={t('expand')}><Maximize2 size={13} aria-hidden="true" /></button>}
           <button className="log-tool-icon log-tool-quiet" disabled={!canCopy} onClick={() => void copyLogs(inModal)} aria-label={t('copy')} title={t('copy')}><Copy size={13} aria-hidden="true" /></button>
-          <button className="log-tool-icon log-tool-quiet" disabled={!logs && !logsError && !loadingLogs} onClick={() => {
+          <button className="log-tool-icon log-tool-quiet" disabled={unreadable || !logs && !(ownsIncoming && incomingLogs) && !logsError && !loadingLogs} onClick={() => {
             // Clearing disables this button; keep keyboard focus on an enabled target.
             if (inModal) closeButton.current?.focus();
             else (inlineContent.current ?? expandButton.current)?.focus();
             ++copyAttempt.current;
+            clearedInput.current = incomingLogs; lastSuccessfulLogs.current = null; awaitingRestoredSnapshot.current = false; restoringSearchScroll.current = false;
             setShowCopyFeedback(inModal);
-            setSearchOpen(false); setQuery(''); setFrozenLogs(null); setResumeDropped(false); clearLogs();
+            setSearchOpen(false); setQuery(''); setFrozenLogs(null); setResumeDropped(false); setPayloadEvicted(false); clearLogs();
           }} aria-label={t('clear')} title={t('clear')}><Trash2 size={13} aria-hidden="true" /></button>
         </div>
       </div></div>
       <div className="log-meta">{logRequestPending && !loadingLogs && <span id={`${id}-pending`} role="status">{t('requestPending')}</span>}{hasLiveControls && liveStatus && <span className={`log-stream-status log-stream-${liveStatus}`}>{t(liveStatus === 'following' && frozen ? searchOpen ? 'searchPaused' : 'displayPaused' : liveStatus === 'following' ? 'following' : liveStatus === 'connecting' ? 'connecting' : liveStatus === 'ended' ? 'ended' : liveStatus === 'error' ? 'streamError' : 'idle')}</span>}<span title={t(hasLiveControls ? 'liveLimitDetails' : 'limitDetails')}>{t(hasLiveControls ? 'liveLimits' : 'limits')}</span><span className="log-sensitive" role="img" aria-label={t('sensitive')} title={t('sensitive')}><Info size={13} aria-hidden="true" /></span>{hasReceipt && <span className="log-fetched-at">{t(hasLiveControls ? 'lastReceived' : 'fetchedAt')} <time dateTime={displayedLogs.fetchedAt}>{formatTime(displayedLogs.fetchedAt, language)}</time></span>}</div>
       <div id={inModal ? 'expanded-log-search-row' : 'log-search-row'} className="log-search" role="search" aria-label={t('searchArea')} hidden={!searchOpen}>
         <label htmlFor={searchId}>{t('search')}</label>
-        <div className="log-search-field"><input ref={inModal ? modalSearch : inlineSearch} id={searchId} className="log-search-input" type="search" value={query} autoComplete="off" spellCheck={false} onChange={event => { setQuery(event.target.value); }} onKeyDown={event => {
+        <div className="log-search-field"><input ref={inModal ? modalSearch : inlineSearch} id={searchId} className="log-search-input" type="search" value={query} autoComplete="off" spellCheck={false} onChange={event => { restoringSearchScroll.current = false; setQuery(event.target.value); }} onKeyDown={event => {
           if (event.key === 'Enter') { event.preventDefault(); moveMatch(event.shiftKey ? -1 : 1); }
         }} />{query && <button className="log-search-clear" onClick={() => { (inModal ? modalSearch.current : inlineSearch.current)?.focus(); setQuery(''); }} aria-label={t('clearSearch')} title={t('clearSearch')}><X size={14} aria-hidden="true" /></button>}</div>
         <span className="log-search-count" aria-live="polite" aria-atomic="true">{searchStatus === 'searching' ? t('searching') : searchStatus === 'error' ? t('searchFailed') : total ? t('matchCount', { current: activeIndex + 1, total }) : t('zeroMatches')}</span>
@@ -282,9 +336,10 @@ export function LogPanel({ container, snapshot, logs, logsError, loadingLogs, lo
         <button disabled={searchStatus !== 'ready' || !total} onClick={() => moveMatch(1)} aria-label={t('nextMatch')} title={t('nextMatch')}><ChevronDown size={14} aria-hidden="true" /></button>
       </div>
       {displayDropped && <p className="truncation-notice" role="status">{t('truncated')}</p>}
+      {payloadEvicted && displayedLogs && <p className="truncation-notice" role="status">{t('cacheRangeReplaced')}</p>}
       {(droppedWhileFrozen || resumeDropped) && <p className="truncation-notice" role="status">{t(droppedWhileFrozen ? 'pendingDropped' : 'resumedDropped')}</p>}
       {logsError && <div className={`log-error ${hasLiveControls ? 'log-stream-error' : ''}`} role="alert"><p>{t('failed')}</p><ErrorDetails error={logsError} /></div>}
-      {(!logsError || hasLiveControls) && <pre ref={inModal ? modalContent : inlineContent} tabIndex={0} className={`log-content ${!text ? 'log-placeholder' : ''}`} aria-label={t('content')} aria-busy={loadingLogs} onScroll={event => { if (inModal || (!expanded && visible)) {
+      {(!logsError || hasLiveControls || !!viewCache && !!text) && <pre ref={inModal ? modalContent : inlineContent} tabIndex={0} className={`log-content ${!text ? 'log-placeholder' : ''}`} aria-label={t('content')} aria-busy={loadingLogs} onScroll={event => { if (inModal || (!expanded && visible)) {
         const element = event.currentTarget; scrollPosition.current = element.scrollTop;
         if (hasLiveControls && element.scrollHeight - element.clientHeight - element.scrollTop > 24) {
           // Resizing can clamp a scrolled-up viewport onto its new bottom. A scroll
