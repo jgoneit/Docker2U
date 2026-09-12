@@ -29,7 +29,7 @@ test.beforeEach(async ({ page }, info) => {
   await page.addInitScript(preferences => localStorage.setItem('docker2u.preferences.v1', JSON.stringify(preferences)), { theme: info.project.metadata.theme, language: info.project.metadata.language });
   await page.goto('/src/test/visual.html?toolbar=hidden&scenario=observation');
   await expect(page.locator('.container-row')).toHaveCount(4);
-  await page.locator('select[aria-label]').first().selectOption({ label: 'orders' });
+  await page.getByRole('treeitem', { name: info.project.metadata.language === 'en' ? 'orders project' : 'orders 프로젝트', exact: true }).locator('.project-tree-name').click();
   await expect.poll(() => page.locator('.project-log-row').count()).toBeGreaterThan(0);
 });
 
@@ -56,10 +56,11 @@ test('combined log controls fit, filter literal text, and preserve a frozen view
   await expect.poll(async () => [...new Set(await page.locator('.project-log-row > span:nth-child(2)').allTextContents())]).toEqual(['api']);
   await expectVisibleLogs(page);
   await page.getByRole('button', { name: en ? 'Pause view' : '화면 일시정지', exact: true }).click();
-  const frozen = await page.locator('.project-log-row').allTextContents();
+  // Pausing adds a status hint and can trim an offscreen overscan row.
+  const frozen = await visibleRows(page);
   const frozenHeight = await page.locator('.project-log-spacer').evaluate(node => node.getBoundingClientRect().height);
   await page.waitForTimeout(1200);
-  expect(await page.locator('.project-log-row').allTextContents()).toEqual(frozen);
+  expect(await visibleRows(page)).toEqual(frozen);
   await page.getByRole('button', { name: en ? 'Expand logs' : '로그 확대', exact: true }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
   await expectVisibleLogs(page);
@@ -108,7 +109,7 @@ test('container logs reuse the active project subscription and expose only that 
   await expect.poll(async () => [...new Set(await page.locator('.project-log-row > span:nth-child(2)').allTextContents())]).toEqual(['api']);
   await expectVisibleLogs(page);
   expect(await page.evaluate(() => (window as unknown as { __docker2uObservationCalls: Record<string, number> }).__docker2uObservationCalls.configureLogs)).toBe(before);
-  await page.getByRole('button', { name: en ? 'Back to project' : '프로젝트로 돌아가기', exact: true }).click();
+  await page.getByRole('treeitem', { name: en ? 'orders project' : 'orders 프로젝트', exact: true }).locator('.project-tree-name').click();
   await expect(page.locator('.project-tabs')).toBeVisible();
   await expectVisibleLogs(page);
 });
@@ -144,7 +145,7 @@ test('historical log row and fractional scroll survive pause, expansion, window 
   await expect(page.getByRole('button', { name: en ? 'Pause view' : '화면 일시정지', exact: true })).toHaveAttribute('aria-pressed', 'false');
 });
 
-test('minimum split height keeps toolbar and log rows reachable without growing to the virtual buffer height', async ({ page }, info) => {
+test('minimum navigation width keeps toolbar and log rows reachable without growing to the virtual buffer height', async ({ page }, info) => {
   const en = info.project.metadata.language === 'en';
   const separator = page.getByRole('separator');
   await separator.focus();
@@ -188,4 +189,33 @@ test('paused tail restores its logical position after an expanded viewport clamp
   await expect.poll(() => viewport.evaluate(node => node.scrollTop)).toBe(userTop);
   await page.keyboard.press('Escape');
   await expect.poll(() => viewport.evaluate(node => node.scrollTop)).toBe(userTop);
+});
+
+
+test('tree navigation restores target filters, pause and historical anchors without restarting collection', async ({ page }, info) => {
+  const en = info.project.metadata.language === 'en';
+  const project = page.getByRole('treeitem', { name: en ? 'orders project' : 'orders 프로젝트', exact: true });
+  await page.getByRole('searchbox').fill('request=');
+  const viewport = page.locator('.project-log-viewport');
+  await expect.poll(async () => (await visibleRows(page)).every(row => row?.includes('request='))).toBe(true);
+  await viewport.evaluate(node => { node.scrollTop = 1000 * 26 + 7; });
+  // The keyword excludes ERROR rows, so capture the actual filtered anchor.
+  await expect.poll(() => viewport.evaluate(node => node.scrollTop)).toBe(1000 * 26 + 7);
+  await expect.poll(async () => (await visibleRows(page))[0]).toContain('request=1084');
+  await page.getByRole('button', { name: en ? 'Pause view' : '화면 일시정지', exact: true }).click();
+  const before = (await visibleRows(page))[0];
+  const subscriptions = await page.evaluate(() => (window as unknown as { __docker2uObservationCalls: Record<string, number> }).__docker2uObservationCalls.configureLogs);
+  const first = page.locator('.container-row').first();
+  await first.click();
+  await expect(project).toHaveAttribute('aria-selected', 'false');
+  await expect(first).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('searchbox')).toHaveValue('');
+  await expectVisibleLogs(page);
+  await project.locator('.project-tree-name').click();
+  await expect(first).toHaveAttribute('aria-selected', 'false');
+  await expect(project).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('searchbox')).toHaveValue('request=');
+  await expect(page.getByRole('button', { name: en ? 'Resume view' : '화면 재개', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(async () => (await visibleRows(page))[0]).toBe(before);
+  expect(await page.evaluate(() => (window as unknown as { __docker2uObservationCalls: Record<string, number> }).__docker2uObservationCalls.configureLogs)).toBe(subscriptions);
 });

@@ -188,10 +188,10 @@ it.each(['success', 'error'])('manual Clear supersedes a pending copy %s and its
 it('does not announce internal clears on selection or Reconnect', async () => {
   await mount();
   expect(footerFeedback()).toBeEmptyDOMElement();
-  await click(screen.getByRole('button', { name: 'beta 상세' }));
+  await click(screen.getByRole('treeitem', { name: 'beta 상세' }));
   await advance(0);
   expect(footerFeedback()).toBeEmptyDOMElement();
-  expect(screen.getByRole('button', { name: 'beta 상세' })).toHaveAttribute('aria-current', 'true');
+  expect(screen.getByRole('treeitem', { name: 'beta 상세' })).toHaveAttribute('aria-selected', 'true');
   await click(screen.getByRole('button', { name: '다시 연결' }));
   await advance(0);
   expect(footerFeedback()).toBeEmptyDOMElement();
@@ -210,7 +210,7 @@ it.each(['success', 'error'])('retains last-action history across selection and 
   await advance(2_000);
   await click(screen.getByRole('button', { name: '표시된 로그 복사' }));
   expect(feedback.querySelector('.copy-feedback-text')).toBe(text);
-  await click(screen.getByRole('button', { name: 'beta 상세' }));
+  await click(screen.getByRole('treeitem', { name: 'beta 상세' }));
   await advance(0);
   expect(feedback.querySelector('.copy-feedback-text')).toBe(text);
   await click(screen.getByRole('button', { name: '다시 연결' }));

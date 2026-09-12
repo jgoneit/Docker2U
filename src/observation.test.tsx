@@ -2,7 +2,7 @@ import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@te
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { mergeObservation, useObservation } from './useObservation';
 import { ObservationHistory, ResourceChart, resourceSegments } from './ObservationHistory';
-import { ProjectLogs, logRowsText } from './ProjectLogs';
+import { ProjectLogs, createProjectLogViewCache, logRowsText, useProjectLogCollection, PROJECT_LOG_VIEW_PAGE_BUDGET } from './ProjectLogs';
 import { observationApi, projectLogApi, type ObservationRead, type ResourcePoint, type ProjectLogPage } from './observationApi';
 import { PreferencesProvider } from './preferences';
 import type { Container } from './api';
@@ -16,6 +16,12 @@ const point = (sequence: number, offset = sequence * 5000): ResourcePoint => ({ 
 const read = (sequence = 1): ObservationRead => ({ sessionId: 'one', sequence, scope: { kind: 'all' }, inventory: null,
   resources: [point(sequence)], events: [], resourceTruncated: false, eventTruncated: false, inventoryError: null, statsError: null, eventError: null, eventStatus: 'following' });
 const container: Container = { handle: 'ha', fullId: 'a', shortId: 'a', name: 'web-1', composeProject: 'demo', composeService: 'web', state: 'running', health: 'healthy', image: 'web', ports: [], createdAt: '' };
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((accept, fail) => { resolve = accept; reject = fail; });
+  return { promise, resolve, reject };
+}
 const page = (count = 2): ProjectLogPage => ({ sessionId: 'one', project: 'demo', revision: count, maxSequence: count, totalRows: count, offset: 0, droppedRows: 0, needsSelection: false, error: null, retainedFrom: new Date(now).toISOString(), retainedTo: new Date(now + 1000).toISOString(),
   sources: [{ sourceId: 'a', fullId: 'a', containerName: 'web-1', serviceName: 'web', selected: true, status: 'following', error: null, droppedRows: 0 }],
   rows: Array.from({ length: count }, (_, index) => ({ rowId: `r${index}`, sequence: index + 1, sourceId: 'a', fullId: 'a', serviceName: 'web', containerName: 'web-1', timestamp: '2026-09-12T00:00:00.123456789Z', receivedAt: new Date(now).toISOString(), pipe: 'stdout', text: `line ${index}`, truncated: false })),
@@ -265,5 +271,329 @@ describe('project log empty states', () => {
     vi.mocked(projectLogApi.query).mockResolvedValue(initial);
     render(view(initial));
     expect(screen.getByText('보관 구간 (UTC): 2026-09-02 09:07:06 – 2026-09-08 13:00:54')).toBeVisible();
+  });
+});
+
+describe('project log view continuity', () => {
+  it('keeps an oversized page out of the cache without evicting smaller recent pages', () => {
+    const cache = createProjectLogViewCache();
+    const state = { page: page(), keyword: 'retained', services: null, paused: true, frozenSequence: 2, savedScroll: 7, anchorInset: 7, following: false, offset: 0, anchor: 'r0', delayed: false };
+    cache.save('small', state);
+    const previousBytes = cache.retainedPageBytes;
+    cache.save('oversized', { ...state, page: { ...page(100), rows: page(100).rows.map(row => ({ ...row, text: 'x'.repeat(64 * 1024) })) } });
+    expect(cache.views.get('small')!.page).toBe(state.page);
+    expect(cache.views.get('oversized')!.page).toBeNull();
+    expect(cache.views.get('oversized')!.keyword).toBe('retained');
+    expect(cache.views.get('oversized')!.anchor).toBe('r0');
+    expect(cache.retainedPageBytes).toBe(previousBytes);
+  });
+
+  it('keeps a restored missing-service filter empty instead of querying all rows into view', async () => {
+    const cache = createProjectLogViewCache(); cache.sessionId = 'one';
+    cache.save(JSON.stringify(['demo', null]), { page: null, keyword: '', services: ['removed-service'], paused: false, frozenSequence: null, savedScroll: 0, anchorInset: 0, following: true, offset: null, anchor: null, delayed: false });
+    render(<PreferencesProvider><ProjectLogs viewCache={cache} sessionId="one" project="demo" containers={[container]} initialPage={page()} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
+    await waitFor(() => expect(projectLogApi.query).toHaveBeenCalled());
+    expect(screen.queryByText('line 0')).not.toBeInTheDocument();
+    expect(screen.getByText('현재 필터에 맞는 로그가 없습니다.')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '필터 초기화' }));
+    await waitFor(() => expect(screen.getByText('line 0')).toBeVisible());
+  });
+
+  it('bounds cached long log pages while retaining settings and requerying an evicted view', async () => {
+    const cache = createProjectLogViewCache();
+    vi.mocked(projectLogApi.query).mockImplementation(async (_session, project, query) => ({ ...page(2), project, rows: page(2).rows.map(row => ({ ...row, fullId: query.sourceIds[0] ?? 'a', text: 'x'.repeat(64 * 1024) })) }));
+    const view = (fullId: string) => <PreferencesProvider><ProjectLogs viewCache={cache} sessionId="one" project="demo" containers={[container]} initialPage={page()} fullId={fullId} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>;
+    const { rerender } = render(view('container-0'));
+    await act(async () => {});
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'keep this filter' } });
+    await act(async () => {});
+    fireEvent.click(screen.getByRole('button', { name: '화면 일시정지' }));
+    for (let index = 1; index < 40; index++) { rerender(view(`container-${index}`)); await act(async () => {}); }
+    expect(cache.views.size).toBe(40);
+    expect(cache.retainedPageBytes).toBeLessThanOrEqual(PROJECT_LOG_VIEW_PAGE_BUDGET);
+    const evicted = cache.views.get(JSON.stringify(['demo', 'container-0']))!;
+    expect(evicted.page).toBeNull();
+    expect(evicted.keyword).toBe('keep this filter');
+    expect(evicted.paused).toBe(true);
+    expect(evicted.frozenSequence).toBe(2);
+    expect(cache.views.get(JSON.stringify(['demo', 'container-39']))!.page?.rows).toHaveLength(2);
+    const pending = deferred<ProjectLogPage>();
+    vi.mocked(projectLogApi.query).mockReturnValue(pending.promise);
+    rerender(view('container-0'));
+    expect(screen.getByRole('searchbox')).toHaveValue('keep this filter');
+    expect(screen.getByRole('button', { name: '화면 재개' })).toHaveAttribute('aria-pressed', 'true');
+    expect(document.querySelectorAll('.project-log-row')).toHaveLength(0);
+    expect(projectLogApi.query).toHaveBeenLastCalledWith('one', 'demo', expect.objectContaining({ sourceIds: ['container-0'], keyword: 'keep this filter', throughSequence: 2 }));
+  });
+
+  it('restores filters, frozen sequence, historical anchor and page by target after unmount', async () => {
+    const cache = createProjectLogViewCache();
+    const retained = { ...page(40), totalRows: 200, offset: 100, maxSequence: 250,
+      sources: [...page().sources, { ...page().sources[0]!, fullId: 'b', sourceId: 'b', serviceName: 'worker', containerName: 'worker-1' }] };
+    vi.mocked(projectLogApi.query).mockResolvedValue(retained);
+    const view = (fullId?: string, initialPage: ProjectLogPage | null = retained) => <PreferencesProvider><ProjectLogs viewCache={cache} sessionId="one" project="demo" containers={[container]} initialPage={initialPage} fullId={fullId} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>;
+    let mounted = render(view());
+    await waitFor(() => expect(projectLogApi.query).toHaveBeenCalledOnce());
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'Error[DB]' } });
+    fireEvent.click(screen.getByText('서비스 필터'));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'worker' }));
+    await waitFor(() => expect(projectLogApi.query).toHaveBeenLastCalledWith('one', 'demo', expect.objectContaining({ keyword: 'Error[DB]', sourceIds: ['a'] })));
+    const viewport = screen.getByRole('log');
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 260 });
+    Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 5200 });
+    fireEvent.scroll(viewport);
+    viewport.scrollTop = 115 * 26 + 7;
+    fireEvent.scroll(viewport);
+    fireEvent.click(screen.getByRole('button', { name: '화면 일시정지' }));
+    mounted.unmount();
+    mounted = render(view('b'));
+    expect(screen.getByRole('searchbox')).toHaveValue('');
+    expect(screen.getByRole('button', { name: '화면 일시정지' })).toHaveAttribute('aria-pressed', 'false');
+    mounted.unmount();
+    const pending = deferred<ProjectLogPage>();
+    vi.mocked(projectLogApi.query).mockReturnValue(pending.promise);
+    mounted = render(view(undefined, { ...page(0), sources: page().sources.map(source => ({ ...source, status: 'starting' })) }));
+    expect(screen.getByRole('searchbox')).toHaveValue('Error[DB]');
+    expect(screen.getByRole('button', { name: '화면 재개' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText('line 15')).toBeVisible();
+    expect(screen.getByRole('log').scrollTop).toBe(115 * 26 + 7);
+    await waitFor(() => expect(projectLogApi.query).toHaveBeenLastCalledWith('one', 'demo', expect.objectContaining({ keyword: 'Error[DB]', sourceIds: ['a'], throughSequence: 250, anchorRowId: 'r15', offset: 95 })));
+    expect(projectLogApi.configure).not.toHaveBeenCalled();
+    expect(projectLogApi.stop).not.toHaveBeenCalled();
+    mounted.unmount();
+  });
+
+  it('invalidates cached views on session changes and ignores the previous session response', async () => {
+    const cache = createProjectLogViewCache(), oldRead = deferred<ProjectLogPage>();
+    vi.mocked(projectLogApi.query).mockReturnValue(oldRead.promise);
+    const view = (sessionId: string, initialPage: ProjectLogPage | null) => <PreferencesProvider><ProjectLogs viewCache={cache} sessionId={sessionId} project="demo" containers={[container]} initialPage={initialPage} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>;
+    const { rerender } = render(view('one', page()));
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'old filter' } });
+    fireEvent.click(screen.getByRole('button', { name: '화면 일시정지' }));
+    rerender(view('two', null));
+    expect(screen.getByRole('searchbox')).toHaveValue('');
+    expect(screen.getByRole('button', { name: '화면 일시정지' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.queryByText('line 0')).not.toBeInTheDocument();
+    await act(async () => oldRead.resolve(page()));
+    expect(screen.queryByText('line 0')).not.toBeInTheDocument();
+    expect(cache.sessionId).toBe('two');
+    cache.clear();
+    expect(cache.views.size).toBe(0);
+    rerender(view('one', null));
+    expect(screen.getByRole('searchbox')).toHaveValue('');
+    expect(screen.queryByText('line 0')).not.toBeInTheDocument();
+  });
+
+  it('does not replace successful rows with initial or queried startup placeholders', async () => {
+    vi.useFakeTimers();
+    const starting = { ...page(0), sources: page().sources.map(source => ({ ...source, status: 'starting' as const })) };
+    vi.mocked(projectLogApi.query).mockResolvedValueOnce(page()).mockResolvedValueOnce(starting).mockResolvedValue(page(0));
+    const view = (initial: ProjectLogPage) => <PreferencesProvider><ProjectLogs sessionId="one" project="demo" containers={[container]} initialPage={initial} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>;
+    const { rerender } = render(view(page()));
+    await act(async () => {});
+    rerender(view(starting));
+    expect(screen.getByText('line 0')).toBeVisible();
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    expect(screen.getByText('line 0')).toBeVisible();
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    expect(screen.queryByText('line 0')).not.toBeInTheDocument();
+    expect(screen.getByText(/아직 수신한 로그가 없습니다/)).toBeVisible();
+  });
+});
+
+describe('project log query deadlines', () => {
+  it('distinguishes a delayed initial query from a confirmed empty stream', async () => {
+    vi.useFakeTimers();
+    const pending = deferred<ProjectLogPage>();
+    vi.mocked(projectLogApi.query).mockReturnValue(pending.promise);
+    render(<PreferencesProvider><ProjectLogs sessionId="one" project="demo" containers={[container]} initialPage={page(0)} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(screen.getByRole('status')).toHaveTextContent('로그 조회 응답이 지연되고 있습니다');
+    expect(screen.queryByText(/아직 수신한 로그가 없습니다/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '로그 다시 조회' })).toBeVisible();
+  });
+
+  it('preserves existing rows after ten seconds, requires manual retry, and discards the late response', async () => {
+    vi.useFakeTimers();
+    const oldRead = deferred<ProjectLogPage>(), newRead = deferred<ProjectLogPage>();
+    vi.mocked(projectLogApi.query).mockReturnValueOnce(oldRead.promise).mockReturnValueOnce(newRead.promise);
+    render(<PreferencesProvider><ProjectLogs sessionId="one" project="demo" containers={[container]} initialPage={page()} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
+    await act(async () => vi.advanceTimersByTimeAsync(9_999));
+    expect(screen.queryByRole('button', { name: '로그 다시 조회' })).not.toBeInTheDocument();
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(screen.getByText('로그 갱신이 지연되어 마지막 표시 구간을 유지하고 있습니다.')).toBeVisible();
+    expect(screen.getByText('line 0')).toBeVisible();
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(projectLogApi.query).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: '로그 다시 조회' }));
+    expect(projectLogApi.query).toHaveBeenCalledTimes(2);
+    await act(async () => newRead.resolve({ ...page(), rows: page().rows.map(row => ({ ...row, text: 'new result ' + row.rowId })) }));
+    expect(screen.getByText('new result r0')).toBeVisible();
+    await act(async () => oldRead.resolve(page()));
+    expect(screen.queryByText('line 0')).not.toBeInTheDocument();
+    expect(screen.getByText('new result r0')).toBeVisible();
+  });
+
+  it('queues changed filters behind an active query instead of issuing duplicate reads', async () => {
+    const oldRead = deferred<ProjectLogPage>(), nextRead = deferred<ProjectLogPage>();
+    vi.mocked(projectLogApi.query).mockReturnValueOnce(oldRead.promise).mockReturnValueOnce(nextRead.promise);
+    render(<PreferencesProvider><ProjectLogs sessionId="one" project="demo" containers={[container]} initialPage={page()} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'latest filter' } });
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    expect(projectLogApi.query).toHaveBeenCalledOnce();
+    await act(async () => oldRead.resolve({ ...page(), rows: [{ ...page().rows[0]!, text: 'obsolete result' }] }));
+    expect(screen.queryByText('obsolete result')).not.toBeInTheDocument();
+    expect(projectLogApi.query).toHaveBeenCalledTimes(2);
+    expect(projectLogApi.query).toHaveBeenLastCalledWith('one', 'demo', expect.objectContaining({ keyword: 'latest filter' }));
+    await act(async () => nextRead.resolve(page(0)));
+    expect(screen.getByText('현재 필터에 맞는 로그가 없습니다.')).toBeVisible();
+  });
+
+  it('does not report a quiet stream as a delayed query', async () => {
+    vi.useFakeTimers();
+    vi.mocked(projectLogApi.query).mockResolvedValue(page(0));
+    render(<PreferencesProvider><ProjectLogs sessionId="one" project="demo" containers={[container]} initialPage={page(0)} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(vi.mocked(projectLogApi.query).mock.calls.length).toBeGreaterThan(10);
+    expect(screen.queryByRole('button', { name: '로그 다시 조회' })).not.toBeInTheDocument();
+    expect(screen.getByText(/아직 수신한 로그가 없습니다/)).toBeVisible();
+  });
+});
+
+describe('project log source choices', () => {
+  it('keeps per-source status collapsed until the summary is opened', async () => {
+    render(<PreferencesProvider><ProjectLogs sessionId="one" project="demo" containers={[container]} initialPage={page()} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
+    expect(screen.getByText('선택한 1개 / 전체 1개')).toBeVisible();
+    expect(screen.getByText('web-1 · 수집 중')).not.toBeVisible();
+    fireEvent.click(screen.getByText('대상별 상태'));
+    expect(screen.getByText('web-1 · 수집 중')).toBeVisible();
+  });
+
+  it.each(['취소', '수집 대상 선택 닫기', 'Escape'])('discards pending source edits on %s', async action => {
+    const configure = vi.fn().mockResolvedValue(undefined);
+    render(<PreferencesProvider><ProjectLogs sessionId="one" project="demo" containers={[container]} initialPage={page()} configure={configure} error={null} onError={vi.fn()} /></PreferencesProvider>);
+    fireEvent.click(screen.getByRole('button', { name: '수집 대상' }));
+    fireEvent.click(within(screen.getByRole('group', { name: '로그 수집 대상 선택' })).getByRole('checkbox'));
+    if (action === 'Escape') fireEvent.keyDown(screen.getByRole('group', { name: '로그 수집 대상 선택' }), { key: 'Escape' });
+    else fireEvent.click(screen.getByRole('button', { name: action }));
+    expect(screen.queryByRole('group', { name: '로그 수집 대상 선택' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '수집 대상' })).toHaveFocus();
+    expect(configure).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '수집 대상' }));
+    expect(within(screen.getByRole('group', { name: '로그 수집 대상 선택' })).getByRole('checkbox')).toBeChecked();
+  });
+
+  it('preserves pending source choices when apply fails and uses current handles on retry', async () => {
+    const pending = deferred<void>();
+    const configure = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValue(undefined);
+    const other = { ...container, fullId: 'b', handle: 'hb', name: 'worker-1', composeService: 'worker' };
+    const initial = { ...page(), sources: [...page().sources, { ...page().sources[0]!, fullId: 'b', sourceId: 'b', serviceName: 'worker', containerName: 'worker-1', selected: false }] };
+    vi.mocked(projectLogApi.query).mockResolvedValue(initial);
+    const view = (containers: Container[]) => <PreferencesProvider><ProjectLogs sessionId="one" project="demo" containers={containers} initialPage={initial} configure={configure} error={null} onError={vi.fn()} /></PreferencesProvider>;
+    const { rerender } = render(view([container, other]));
+    fireEvent.click(screen.getByRole('button', { name: '수집 대상' }));
+    const group = screen.getByRole('group', { name: '로그 수집 대상 선택' });
+    fireEvent.click(within(group).getByRole('checkbox', { name: 'web · web-1' }));
+    fireEvent.click(within(group).getByRole('checkbox', { name: 'worker · worker-1' }));
+    fireEvent.click(screen.getByRole('button', { name: '수집 대상 적용' }));
+    expect(configure).toHaveBeenLastCalledWith(['hb']);
+    expect(screen.getByRole('button', { name: '적용 중…' })).toBeDisabled();
+    await act(async () => pending.reject({ code: 'Busy', message: 'Try after refresh' }));
+    expect(within(group).getByRole('checkbox', { name: 'worker · worker-1' })).toBeChecked();
+    expect(within(group).getByRole('checkbox', { name: 'web · web-1' })).not.toBeChecked();
+    expect(screen.getByRole('alert')).toHaveTextContent('Try after refresh');
+    rerender(view([container, { ...other, handle: 'hb-new' }]));
+    fireEvent.click(screen.getByRole('button', { name: '수집 대상 적용' }));
+    await waitFor(() => expect(screen.queryByRole('group', { name: '로그 수집 대상 선택' })).not.toBeInTheDocument());
+    expect(configure).toHaveBeenLastCalledWith(['hb-new']);
+  });
+
+  it('allows a required source picker to close without configuring an arbitrary subset', async () => {
+    const initial = { ...page(0), needsSelection: true, sources: page().sources.map(source => ({ ...source, selected: false })) };
+    vi.mocked(projectLogApi.query).mockResolvedValue(initial);
+    render(<PreferencesProvider><ProjectLogs sessionId="one" project="demo" containers={[container]} initialPage={initial} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
+    fireEvent.keyDown(screen.getByRole('group', { name: '로그 수집 대상 선택' }), { key: 'Escape' });
+    await act(async () => {});
+    expect(screen.queryByRole('group', { name: '로그 수집 대상 선택' })).not.toBeInTheDocument();
+    expect(screen.getByText('로그 수집 대상을 선택하세요.')).toBeVisible();
+    expect(projectLogApi.configure).not.toHaveBeenCalled();
+  });
+});
+
+describe('project log collection configuration', () => {
+  it('accepts only the latest configure response for the same project', async () => {
+    const automatic = deferred<ProjectLogPage>(), older = deferred<ProjectLogPage>(), newer = deferred<ProjectLogPage>();
+    vi.mocked(projectLogApi.configure).mockReturnValueOnce(automatic.promise).mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+    const onError = vi.fn();
+    const { result, rerender } = renderHook(({ onError }) => useProjectLogCollection('one', 'demo', true, onError), { initialProps: { onError } });
+    await act(async () => automatic.resolve({ ...page(), revision: 10 }));
+    let first!: Promise<void>, second!: Promise<void>;
+    await act(async () => { first = result.current.configure(['old']); });
+    act(() => { second = result.current.configure(['new']); });
+    expect(projectLogApi.configure).toHaveBeenCalledTimes(2);
+    await act(async () => { older.resolve({ ...page(), revision: 20 }); await first; });
+    expect(result.current.page?.revision).toBe(10);
+    expect(projectLogApi.configure).toHaveBeenLastCalledWith('one', 'demo', ['new']);
+    await act(async () => { newer.resolve({ ...page(), revision: 30 }); await second; });
+    expect(result.current.page?.revision).toBe(30);
+    rerender({ onError: vi.fn() });
+    expect(projectLogApi.configure).toHaveBeenCalledTimes(3);
+    expect(projectLogApi.stop).not.toHaveBeenCalled();
+  });
+
+  it('skips superseded queued configurations before invoking Core', async () => {
+    const automatic = deferred<ProjectLogPage>();
+    vi.mocked(projectLogApi.configure).mockReturnValueOnce(automatic.promise).mockResolvedValue({ ...page(), revision: 30 });
+    const { result } = renderHook(() => useProjectLogCollection('one', 'demo', true, vi.fn()));
+    await act(async () => {});
+    let older!: Promise<void>, newer!: Promise<void>;
+    act(() => { older = result.current.configure(['old']); newer = result.current.configure(['new']); });
+    expect(projectLogApi.configure).toHaveBeenCalledOnce();
+    await act(async () => { automatic.resolve(page()); await Promise.all([older, newer]); });
+    expect(vi.mocked(projectLogApi.configure).mock.calls.map(call => call[2])).toEqual([null, ['new']]);
+    expect(result.current.page?.revision).toBe(30);
+  });
+
+  it('finishes an active apply before stopping its project and configuring the next one', async () => {
+    const applying = deferred<ProjectLogPage>();
+    const order: string[] = [];
+    vi.mocked(projectLogApi.configure).mockImplementation(async (_session, project, handles) => {
+      order.push(`configure:${project}:${handles?.join() ?? 'auto'}`);
+      if (handles) { const result = await applying.promise; order.push('applied:demo'); return result; }
+      return { ...page(), project };
+    });
+    vi.mocked(projectLogApi.stop).mockImplementation(async () => { order.push('stop'); });
+    const { result, rerender } = renderHook(({ project }) => useProjectLogCollection('one', project, true, vi.fn()), { initialProps: { project: 'demo' } });
+    await act(async () => {});
+    let apply!: Promise<void>;
+    await act(async () => { apply = result.current.configure(['ha']); });
+    rerender({ project: 'next' });
+    await act(async () => {});
+    expect(order).toEqual(['configure:demo:auto', 'configure:demo:ha']);
+    await act(async () => { applying.resolve(page()); await apply; });
+    expect(order).toEqual(['configure:demo:auto', 'configure:demo:ha', 'applied:demo', 'stop', 'configure:next:auto']);
+    expect(result.current.page?.project).toBe('next');
+  });
+
+  it('rejects configure failures to callers while retaining the last successful collection', async () => {
+    vi.mocked(projectLogApi.configure).mockResolvedValueOnce(page()).mockRejectedValueOnce({ code: 'Busy', message: 'Inventory changed' });
+    const onError = vi.fn();
+    const { result } = renderHook(() => useProjectLogCollection('one', 'demo', true, onError));
+    await act(async () => {});
+    await act(async () => { await expect(result.current.configure(['ha'])).rejects.toEqual({ code: 'Busy', message: 'Inventory changed' }); });
+    expect(result.current.page?.rows).toHaveLength(2);
+    expect(result.current.error?.code).toBe('Busy');
+    expect(onError).toHaveBeenCalledOnce();
+  });
+
+  it('rejects an error-bearing configure page without reporting successful application', async () => {
+    const failure = { code: 'Busy', message: 'Source selection was not applied' };
+    vi.mocked(projectLogApi.configure).mockResolvedValueOnce(page()).mockResolvedValueOnce({ ...page(0), error: failure });
+    const { result } = renderHook(() => useProjectLogCollection('one', 'demo', true, vi.fn()));
+    await act(async () => {});
+    await act(async () => { await expect(result.current.configure(['ha'])).rejects.toEqual(failure); });
+    expect(result.current.page?.rows).toHaveLength(2);
+    expect(result.current.error).toEqual(failure);
   });
 });

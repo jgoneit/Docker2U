@@ -73,7 +73,7 @@ describe('appearance and language preserve the active Docker session', () => {
     expect(document.documentElement).toHaveAttribute('lang', 'en');
     expect(screen.getByRole('textbox', { name: 'Search containers' })).toHaveValue('backend');
     expect(screen.getByRole('checkbox', { name: 'Select backend for an action' })).toBeChecked();
-    expect(screen.getByRole('button', { name: 'backend details' })).toHaveAttribute('aria-current', 'true');
+    expect(screen.getByRole('treeitem', { name: 'backend details' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByLabelText('Recent log content')).toBe(output);
     expect(output.textContent).toBe(logs.text);
     expect(output.scrollTop).toBe(145);
@@ -223,7 +223,7 @@ describe('appearance and language preserve the active Docker session', () => {
     expect(feedback.querySelector('.copy-feedback-text')).toBe(notification);
     mounted.unmount();
     render(<App />);
-    await screen.findByRole('button', { name: 'backend details' });
+    await screen.findByRole('treeitem', { name: 'backend details' });
     expect(document.documentElement).toHaveAttribute('data-theme', 'light');
     expect(document.documentElement).toHaveAttribute('lang', 'en');
     expect(screen.queryByText('표시된 로그 복사됨')).not.toBeInTheDocument();
@@ -265,7 +265,7 @@ describe('clipboard feedback follows the latest copy attempt', () => {
     expect(writeText.mock.calls).toEqual(Array.from({ length: 4 }, () => [logs.text]));
     expect(copyButton).toHaveFocus();
     expect(output.textContent).toBe(logs.text);
-    expect(screen.getByRole('button', { name: 'backend 상세' })).toHaveAttribute('aria-current', 'true');
+    expect(screen.getByRole('treeitem', { name: 'backend 상세' })).toHaveAttribute('aria-selected', 'true');
     expect(callCounts()).toEqual(before);
   });
 
@@ -426,7 +426,7 @@ describe('log search shortcut routing', () => {
     expect(callCounts()).toEqual(before);
   });
 
-  it('does not intercept find before a log panel exists or after its container is deselected', async () => {
+  it('does not intercept find before logs exist and keeps find available for a filtered-out target', async () => {
     vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel');
     const pending = deferred<Environment>();
     mock.getEnvironment.mockReturnValueOnce(pending.promise);
@@ -441,9 +441,11 @@ describe('log search shortcut routing', () => {
     const containerSearch = screen.getByRole('textbox', { name: '컨테이너 검색' });
     await user.type(containerSearch, 'missing');
     const before = callCounts();
-    expect(screen.queryByLabelText('최근 로그 내용')).not.toBeInTheDocument();
-    expect(dispatchFind({ metaKey: true }).defaultPrevented).toBe(false);
+    expect(screen.getByLabelText('최근 로그 내용')).toHaveTextContent('LAST_LINE');
+    expect(screen.getByText('현재 대상이 검색 또는 상태 필터에 가려져 있습니다.')).toBeVisible();
     expect(containerSearch).toHaveFocus();
+    expect(dispatchFind({ metaKey: true }).defaultPrevented).toBe(true);
+    expect(screen.getByRole('searchbox', { name: '로그 검색' })).toHaveFocus();
     expect(callCounts()).toEqual(before);
   });
 

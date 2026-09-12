@@ -28,7 +28,7 @@ beforeEach(() => {
   mock.mutateContainers.mockImplementation(async (sessionId, currentGeneration, handles, action) => ({ sessionId, generation: currentGeneration, action, mutationBlocked: false, items: inventory(currentGeneration).containers.filter(container => handles.includes(container.handle)).map(container => ({ handle: container.handle, fullId: container.fullId, name: container.name, outcome: 'succeeded', message: 'done', result: succeeded })) }));
 });
 async function connected() {
-  await screen.findByRole('button', { name: 'alpha 상세' });
+  await screen.findByRole('treeitem', { name: 'alpha 상세' });
   await waitFor(() => expect(mock.readLogStream).toHaveBeenCalledWith('one', 'stream-alpha-g1'));
 }
 async function restart(user: ReturnType<typeof userEvent.setup>, bulk = false) {
@@ -66,7 +66,7 @@ it.each(['clear', 'selection'])('respects %s during a pending Restart', async ch
   const mutation = deferred<MutationResult>(); mock.mutateContainer.mockReturnValueOnce(mutation.promise);
   await restart(user);
   if (change === 'clear') await user.click(screen.getByRole('button', { name: '로그 화면 비우기' }));
-  else await user.click(screen.getByRole('button', { name: 'beta 상세' }));
+  else await user.click(screen.getByRole('treeitem', { name: 'beta 상세' }));
   await act(async () => mutation.resolve(succeeded));
   await waitFor(() => expect(screen.getByRole('button', { name: '새로고침' })).toBeEnabled());
   await act(async () => initialRead.resolve(frame('stream-alpha-g1', 'obsolete tail')));

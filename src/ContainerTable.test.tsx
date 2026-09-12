@@ -1,5 +1,4 @@
 import { createRef, useRef } from 'react';
-import type { KeyboardEvent } from 'react';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
@@ -25,32 +24,31 @@ function sample(container: Container, values: Partial<ResourceSample> = {}): Res
 }
 
 function setup(overrides: Partial<ContainerTableProps> = {}, language: Language = 'ko') {
-  const props: ContainerTableProps = { groups: groupContainers([standalone, worker, api]), selectedId: api.fullId,
+  const props: ContainerTableProps = { groups: groupContainers([standalone, worker, api]), selectedTarget: { kind: 'container', fullId: api.fullId },
     checkedHandles: new Set(), checkboxDisabled: false, sampleFor: () => undefined,
-    inventoryRef: createRef<HTMLTableSectionElement>(), onSelect: vi.fn(), onToggle: vi.fn(), onRowKeyDown: vi.fn(), busy: false, ...overrides };
+    inventoryRef: createRef<HTMLDivElement>(), onSelect: vi.fn(), onToggle: vi.fn(), onProjectView: vi.fn(), busy: false, ...overrides };
   const view = render(<PreferencesProvider initialPreferences={{ theme: 'light', language }}><ContainerTable {...props} /></PreferencesProvider>);
   return { ...view, props };
 }
 
 function row(name: string, language: Language = 'ko') {
-  return screen.getByRole('button', { name: language === 'ko' ? `${name} 상세` : `${name} details` }).closest('tr')!;
+  return screen.getByRole('treeitem', { name: language === 'ko' ? `${name} 상세` : `${name} details` });
 }
 
 describe('container table', () => {
-  it.each(['ko', 'en'] as const)('exposes labelled columns, grouped counts and tbody inventory in %s', language => {
+  it.each(['ko', 'en'] as const)('exposes a grouped navigation tree with counts in %s', language => {
     const { props } = setup({}, language);
-    const table = screen.getByRole('table', { name: language === 'ko' ? '컨테이너 목록' : 'Container list' });
-    expect(within(table).getAllByRole('columnheader')).toHaveLength(6);
-    for (const name of language === 'ko' ? ['컨테이너', '상태', 'CPU', '메모리', '포트'] : ['Container', 'State', 'CPU', 'Memory', 'Ports']) {
-      expect(within(table).getByRole('columnheader', { name })).toBeVisible();
-    }
-    const project = screen.getByRole('heading', { name: 'backend' }).closest('tr')!;
+    const tree = screen.getByRole('tree', { name: language === 'ko' ? '컨테이너 목록' : 'Container list' });
+    const project = within(tree).getByRole('treeitem', { name: language === 'ko' ? 'backend 프로젝트' : 'backend project' });
+    expect(project).toHaveAttribute('aria-level', '1');
+    expect(project).toHaveAttribute('aria-expanded', 'true');
     expect(within(project).getByText('2')).toHaveAccessibleName(language === 'ko' ? '2개 컨테이너' : '2 containers');
-    const ungrouped = screen.getByRole('heading', { name: language === 'ko' ? '프로젝트 없음' : 'No project' }).closest('tr')!;
+    const ungrouped = within(tree).getByRole('treeitem', { name: language === 'ko' ? '프로젝트 없음' : 'No project' });
     expect(within(ungrouped).getByText('1')).toBeVisible();
-    expect(props.inventoryRef.current?.tagName).toBe('TBODY');
-    expect(props.inventoryRef.current?.querySelectorAll('.container-row')).toHaveLength(3);
-    expect(within(table).getAllByRole('checkbox')).toHaveLength(3);
+    expect(ungrouped).not.toHaveAttribute('aria-selected');
+    expect(props.inventoryRef.current).toBe(tree);
+    expect(within(tree).getAllByRole('treeitem')).toHaveLength(5);
+    expect(within(tree).getAllByRole('checkbox')).toHaveLength(3);
   });
 
   it('keeps checkbox actions separate from details and respects disabled action selection', async () => {
@@ -61,7 +59,7 @@ describe('container table', () => {
     await user.click(screen.getByRole('checkbox', { name: 'api 작업 대상으로 선택' }));
     expect(onToggle).toHaveBeenCalledExactlyOnceWith(api);
     expect(onSelect).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: 'api 상세' }));
+    await user.click(screen.getByRole('treeitem', { name: 'api 상세' }));
     expect(onSelect).toHaveBeenCalledExactlyOnceWith(api);
     expect(onToggle).toHaveBeenCalledTimes(1);
     unmount();
@@ -69,30 +67,91 @@ describe('container table', () => {
     expect(screen.getByRole('checkbox', { name: 'api 작업 대상으로 선택' })).toBeDisabled();
     await user.click(screen.getByRole('checkbox', { name: 'api 작업 대상으로 선택' }));
     expect(onToggle).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole('button', { name: 'api 상세' })).toBeEnabled();
+    expect(screen.getByRole('treeitem', { name: 'api 상세' })).not.toHaveAttribute('aria-disabled', 'true');
   });
 
-  it('preserves roving focus and forwards keyboard navigation indexes across project headers', async () => {
+  it('navigates both projects and children with focus-only arrows and explicit activation', async () => {
     const user = userEvent.setup();
-    const keys = vi.fn((event: KeyboardEvent<HTMLButtonElement>, index: number) => ({ key: event.key, index }));
-    const { props } = setup({ selectedId: worker.fullId, onRowKeyDown: keys });
-    const buttons = props.inventoryRef.current!.querySelectorAll<HTMLButtonElement>('.container-row');
-    expect([...buttons].map(button => button.tabIndex)).toEqual([-1, 0, -1]);
-    expect(buttons[1]).toHaveAttribute('aria-current', 'true');
-    fireEvent.keyDown(buttons[2]!, { key: 'Home' });
-    expect(keys.mock.results[0]?.value).toEqual({ key: 'Home', index: 2 });
-    fireEvent.keyDown(buttons[1]!, { key: 'ArrowDown' });
-    expect(keys.mock.results[1]?.value).toEqual({ key: 'ArrowDown', index: 1 });
-    buttons[1]!.focus();
+    const { props } = setup({ selectedTarget: { kind: 'container', fullId: worker.fullId } });
+    const project = screen.getByRole('treeitem', { name: 'backend 프로젝트' });
+    const workerRow = row('worker');
+    expect(workerRow).toHaveAttribute('tabindex', '0');
+    workerRow.focus();
+    await user.keyboard('{ArrowLeft}');
+    expect(project).toHaveFocus();
+    expect(props.onSelect).not.toHaveBeenCalled();
+    expect(props.onProjectView).not.toHaveBeenCalled();
     await user.keyboard('{Enter}');
+    expect(props.onProjectView).toHaveBeenCalledExactlyOnceWith('backend');
+    await user.keyboard('{ArrowRight}');
+    expect(row('api')).toHaveFocus();
+    await user.keyboard('{ArrowDown}{Enter}');
     expect(props.onSelect).toHaveBeenCalledExactlyOnceWith(worker);
-    expect(props.onToggle).not.toHaveBeenCalled();
+    await user.keyboard('{End}');
+    expect(row('standalone')).toHaveFocus();
+    await user.keyboard('{Home}');
+    expect(project).toHaveFocus();
+    expect([...props.inventoryRef.current!.querySelectorAll('[role="treeitem"]')].filter(node => node.getAttribute('tabindex') === '0')).toEqual([project]);
   });
 
-  it.each([null, 'filtered-out-id'])('makes the first visible name keyboard reachable without a visible selection (%s)', selectedId => {
-    const { props } = setup({ selectedId });
-    expect([...props.inventoryRef.current!.querySelectorAll<HTMLButtonElement>('.container-row')].map(button => button.tabIndex)).toEqual([0, -1, -1]);
-    expect(props.inventoryRef.current!.querySelector('[aria-current]')).toBeNull();
+  it.each([null, { kind: 'container', fullId: 'filtered-out-id' }] as const)('makes the first project keyboard reachable without a visible selection (%s)', selectedTarget => {
+    setup({ selectedTarget });
+    expect(screen.getByRole('treeitem', { name: 'backend 프로젝트' })).toHaveAttribute('tabindex', '0');
+    expect(row('api')).toHaveAttribute('tabindex', '-1');
+  });
+
+  it('selects the project row and container whitespace independently from checkbox and port actions', async () => {
+    const user = userEvent.setup();
+    const onShowConnections = vi.fn();
+    const { props } = setup({ onShowConnections });
+    await user.click(screen.getByText('backend'));
+    expect(props.onProjectView).toHaveBeenCalledExactlyOnceWith('backend');
+    await user.click(within(row('api')).getByText('CPU', { exact: false }));
+    expect(props.onSelect).toHaveBeenCalledExactlyOnceWith(api);
+    await user.click(screen.getByRole('button', { name: 'api 접속 정보 보기' }));
+    expect(onShowConnections).toHaveBeenCalledExactlyOnceWith(api);
+    expect(props.onSelect).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole('checkbox', { name: 'api 작업 대상으로 선택' }));
+    expect(props.onToggle).toHaveBeenCalledExactlyOnceWith(api);
+    expect(props.onProjectView).toHaveBeenCalledTimes(1);
+    expect(props.onSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it('collapses independently of selection and checks and marks the hidden selected child', async () => {
+    const user = userEvent.setup();
+    const { props } = setup({ checkedHandles: new Set([api.handle]) });
+    await user.click(screen.getByRole('button', { name: 'backend 접기' }));
+    const project = screen.getByRole('treeitem', { name: 'backend 프로젝트' });
+    expect(project).toHaveAttribute('aria-expanded', 'false');
+    expect(project).toHaveAttribute('data-selected-descendant', 'true');
+    expect(project).toHaveAccessibleDescription('선택한 컨테이너: api');
+    expect(within(project).getByRole('img', { name: '선택한 컨테이너: api' })).toBeVisible();
+    expect(screen.queryByRole('treeitem', { name: 'api 상세' })).not.toBeInTheDocument();
+    expect(props.onProjectView).not.toHaveBeenCalled();
+    expect(props.onSelect).not.toHaveBeenCalled();
+    expect(props.onToggle).not.toHaveBeenCalled();
+    project.focus();
+    await user.keyboard('{ArrowRight}');
+    expect(project).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('checkbox', { name: 'api 작업 대상으로 선택' })).toBeChecked();
+    await user.keyboard('{ArrowRight}');
+    expect(row('api')).toHaveFocus();
+  });
+
+  it('highlights only the selected project and never selects the no-project group', async () => {
+    const user = userEvent.setup();
+    const { props } = setup({ selectedTarget: { kind: 'project', name: 'backend' } });
+    expect(screen.getByRole('treeitem', { name: 'backend 프로젝트' })).toHaveAttribute('aria-selected', 'true');
+    expect(row('api')).toHaveAttribute('aria-selected', 'false');
+    const ungrouped = screen.getByRole('treeitem', { name: '프로젝트 없음' });
+    await user.click(screen.getByText('프로젝트 없음'));
+    expect(ungrouped).toHaveAttribute('aria-expanded', 'false');
+    expect(props.onProjectView).not.toHaveBeenCalled();
+    expect(props.onSelect).not.toHaveBeenCalled();
+    ungrouped.focus();
+    await user.keyboard(' ');
+    expect(ungrouped).toHaveAttribute('aria-expanded', 'true');
+    expect(props.onProjectView).not.toHaveBeenCalled();
   });
 
   it('uses current sample values without hiding zero or clamping multi-core CPU, and abbreviates memory', () => {
@@ -143,12 +202,12 @@ describe('container table', () => {
       .mockResolvedValueOnce(response(true, recoveredAt, 125.5, '128MiB / 2GiB'));
     const onError = vi.fn();
     function Insights() {
-      const inventoryRef = useRef<HTMLTableSectionElement>(null);
+      const inventoryRef = useRef<HTMLDivElement>(null);
       const stats = useContainerStats({ snapshot, containers: snapshot.containers, enabled: true, onError });
       return <>
-        <ContainerTable groups={groupContainers(snapshot.containers)} selectedId={api.fullId} checkedHandles={new Set()}
+        <ContainerTable groups={groupContainers(snapshot.containers)} selectedTarget={{ kind: 'container', fullId: api.fullId }} checkedHandles={new Set()}
           checkboxDisabled={false} sampleFor={stats.sampleFor} inventoryRef={inventoryRef}
-          onSelect={() => {}} onToggle={() => {}} onRowKeyDown={() => {}} busy={false} />
+          onSelect={() => {}} onToggle={() => {}} busy={false} />
         <ContainerSummary container={api} snapshot={snapshot} copy={async () => {}} mutationBlocked={false}
           mutationAllowed resourceSample={stats.sampleFor(api)} />
       </>;
@@ -157,7 +216,7 @@ describe('container table', () => {
     const view = render(<PreferencesProvider initialPreferences={{ theme: 'light', language: 'ko' }}><Insights /></PreferencesProvider>);
     try {
       await act(async () => { await Promise.resolve(); });
-      const table = screen.getByRole('table', { name: '컨테이너 목록' });
+      const table = screen.getByRole('tree', { name: '컨테이너 목록' });
       expect(row('api').querySelector('.container-cpu-value')).toHaveTextContent('—');
       expect(row('api').querySelector('.container-memory-value')).toHaveTextContent('—');
       expect(screen.queryByText('오래된 값')).not.toBeInTheDocument();
@@ -168,7 +227,7 @@ describe('container table', () => {
       expect(screen.getByText('수집된 값 없음')).toBeVisible();
 
       await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
-      expect(within(table).getByRole('cell', { name: '0.00%' })).toBeVisible();
+      expect(within(table).getByText('0.00%')).toBeVisible();
       expect(detail).toHaveTextContent('0.00%');
       expect(detail).toHaveTextContent('64MiB / 2GiB');
       expect(document.querySelector('.resource-metadata time')).toHaveAttribute('datetime', observedAt);
@@ -183,8 +242,8 @@ describe('container table', () => {
       expect(document.querySelector('.resource-metadata time')).toHaveAttribute('datetime', observedAt);
 
       await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
-      expect(within(table).getByRole('cell', { name: '125.50%' })).toBeVisible();
-      expect(within(table).getByRole('cell', { name: '128MiB' })).toBeVisible();
+      expect(within(table).getByText('125.50%')).toBeVisible();
+      expect(within(table).getByText('128MiB')).toBeVisible();
       expect(detail).toHaveTextContent('125.50%');
       expect(detail).toHaveTextContent('128MiB / 2GiB');
       expect(document.querySelector('.resource-metadata time')).toHaveAttribute('datetime', recoveredAt);
@@ -209,8 +268,8 @@ describe('container table', () => {
   it('retains full names and ports for assistive text and hover while exposing list busy state', () => {
     const long = { ...api, name: 'company-backend-long-development-container-name', ports: ['127.0.0.1:8080→8080/tcp', '[::]:9000→9000/tcp'] };
     setup({ groups: groupContainers([long]), busy: true }, 'en');
-    expect(screen.getByRole('table')).toHaveAttribute('aria-busy', 'true');
-    expect(screen.getByRole('button', { name: `${long.name} details` })).toHaveAttribute('title', long.name);
+    expect(screen.getByRole('tree')).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getByRole('treeitem', { name: `${long.name} details` })).toHaveAttribute('title', long.name);
     expect(screen.getByText(long.ports.join(', '))).toHaveAttribute('title', long.ports.join(', '));
     expect(screen.getByRole('checkbox', { name: `Select ${long.name} for an action` })).toBeVisible();
   });

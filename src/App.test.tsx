@@ -41,7 +41,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 async function connected() {
-  await screen.findByRole('button', { name: 'backend 상세' });
+  await screen.findByRole('treeitem', { name: 'backend 상세' });
   await waitFor(() => expect(screen.getByRole('button', { name: '새로고침' })).toBeEnabled());
 }
 async function openLatestResult(user: ReturnType<typeof userEvent.setup>) {
@@ -83,18 +83,18 @@ describe('bulk selection and recovery', () => {
     checkbox.focus();
     await user.keyboard(' ');
     expect(checkbox).toBeChecked();
-    expect(screen.getByRole('button', { name: 'backend 상세' })).toHaveAttribute('aria-current', 'true');
+    expect(screen.getByRole('treeitem', { name: 'backend 상세' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('checkbox', { name: '보이는 컨테이너 전체 선택' })).toBePartiallyChecked();
     expect(screen.getByRole('button', { name: '시작 (1)' })).toBeEnabled();
     expect(screen.getByRole('button', { name: '중지 (0)' })).toBeDisabled();
-    await user.click(screen.getByRole('button', { name: 'redis 상세' }));
+    await user.click(screen.getByRole('treeitem', { name: 'redis 상세' }));
     expect(checkbox).toBeChecked();
-    expect(screen.getByRole('button', { name: 'redis 상세' })).toHaveAttribute('aria-current', 'true');
+    expect(screen.getByRole('treeitem', { name: 'redis 상세' })).toHaveAttribute('aria-selected', 'true');
     await user.click(screen.getByRole('button', { name: '선택 해제' }));
     expect(checkbox).not.toBeChecked();
     expect(screen.queryByRole('button', { name: /시작 \(/ })).not.toBeInTheDocument();
   });
-  it('selects only visible containers and clears selection after search and filter changes', async () => {
+  it('retains checked containers that remain visible after search and filter changes', async () => {
     const user = userEvent.setup();
     render(<App />);
     await connected();
@@ -103,9 +103,8 @@ describe('bulk selection and recovery', () => {
     expect(all).toBeChecked();
     expect(screen.getByText('2개 선택')).toBeVisible();
     await user.type(screen.getByRole('textbox', { name: '컨테이너 검색' }), 'redis');
-    expect(all).not.toBeChecked();
+    expect(all).toBeChecked();
     expect(screen.queryByText('2개 선택')).not.toBeInTheDocument();
-    await user.click(all);
     expect(screen.getByText('1개 선택')).toBeVisible();
     await user.click(screen.getByRole('button', { name: '시작 (1)' }));
     await waitFor(() => expect(mock.mutateContainers).toHaveBeenCalledExactlyOnceWith('session-1', 1, ['handle-2-g1'], 'start'));
@@ -114,13 +113,12 @@ describe('bulk selection and recovery', () => {
     await user.clear(screen.getByRole('textbox', { name: '컨테이너 검색' }));
     await user.click(all);
     await user.click(screen.getByRole('button', { name: '실행 중' }));
-    expect(all).not.toBeChecked();
+    expect(all).toBeChecked();
     expect(screen.queryByText('2개 선택')).not.toBeInTheDocument();
-    await user.click(all);
     expect(screen.getByRole('button', { name: '시작 (0)' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '중지 (1)' })).toBeEnabled();
   });
-  it('clears checked targets at refresh start, including a failed refresh, and on reconnect', async () => {
+  it('preserves checked targets during a failed refresh and clears them on reconnect', async () => {
     const user = userEvent.setup();
     render(<App />);
     await connected();
@@ -128,7 +126,7 @@ describe('bulk selection and recovery', () => {
     const pending = deferred<ContainerList>();
     mock.listContainers.mockReturnValueOnce(pending.promise);
     await user.click(screen.getByRole('button', { name: '새로고침' }));
-    expect(screen.getByRole('checkbox', { name: 'redis 작업 대상으로 선택' })).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'redis 작업 대상으로 선택' })).toBeChecked();
     await act(async () => pending.reject({ code: 'MalformedOutput', message: 'list failed' }));
     expect(screen.getByRole('checkbox', { name: 'redis 작업 대상으로 선택' })).toBeDisabled();
     await user.click(screen.getByRole('button', { name: '다시 연결' }));
@@ -222,7 +220,7 @@ describe('bulk selection and recovery', () => {
     render(<App />);
     await connected();
     await user.click(screen.getByRole('checkbox', { name: '보이는 컨테이너 전체 선택' }));
-    await user.click(screen.getByRole('button', { name: 'redis 상세' }));
+    await user.click(screen.getByRole('treeitem', { name: 'redis 상세' }));
     const single = recovery().getByRole<HTMLButtonElement>('button', { name: '시작' });
     const bulk = screen.getByRole<HTMLButtonElement>('button', { name: '시작 (1)' });
     act(() => { single.click(); bulk.click(); single.click(); });
@@ -254,7 +252,7 @@ describe('bulk selection and recovery', () => {
     expect(report.getByText(/현재 상태 재조회는 원래 명령의 성공을 의미하지 않습니다/)).toBeVisible();
     await waitFor(() => expect(screen.getByRole('button', { name: '새로고침' })).toBeEnabled());
     expect(mock.listContainers).toHaveBeenCalledTimes(2);
-    await user.click(screen.getByRole('button', { name: 'redis 상세' }));
+    await user.click(screen.getByRole('treeitem', { name: 'redis 상세' }));
     expect(report.getByText('결과 불명 1개')).toBeVisible();
     await user.click(screen.getByRole('button', { name: '새로고침' }));
     await waitFor(() => expect(mock.listContainers).toHaveBeenCalledTimes(3));
@@ -549,7 +547,7 @@ describe('environment and inventory', () => {
     expect(screen.getByText(/목록 갱신 시각/)).not.toBeVisible();
     fireEvent.click(screen.getByText('컨테이너 정보'));
     expect(screen.getByText(/목록 갱신 시각/)).toBeVisible();
-    expect(within(screen.getByRole('table', { name: '컨테이너 목록' })).queryByRole('button', { name: '중지' })).not.toBeInTheDocument();
+    expect(within(screen.getByRole('tree', { name: '컨테이너 목록' })).queryByRole('button', { name: '중지' })).not.toBeInTheDocument();
   });
   it.each([
     ['CliNotFound', 'Docker CLI를 확인할 수 없습니다.'],
@@ -612,32 +610,34 @@ describe('environment and inventory', () => {
     render(<App />);
     await connected();
     await user.type(screen.getByRole('textbox', { name: '컨테이너 검색' }), '8080');
-    expect(within(screen.getByRole('table', { name: '컨테이너 목록' })).getAllByRole('button', { name: / 상세$/ })).toHaveLength(1);
-    expect(within(screen.getByRole('table', { name: '컨테이너 목록' })).getByRole('button', { name: / 상세$/ })).toHaveTextContent('backend');
+    expect(within(screen.getByRole('tree', { name: '컨테이너 목록' })).getAllByRole('treeitem', { name: / 상세$/ })).toHaveLength(1);
+    expect(within(screen.getByRole('tree', { name: '컨테이너 목록' })).getByRole('treeitem', { name: / 상세$/ })).toHaveTextContent('backend');
     await user.clear(screen.getByRole('textbox', { name: '컨테이너 검색' }));
     await user.type(screen.getByRole('textbox'), 'missing');
     expect(screen.getByText('검색 결과가 없습니다.')).toBeVisible();
     await user.click(screen.getByRole('button', { name: '검색·필터 초기화' }));
     await user.click(within(screen.getByLabelText('컨테이너 필터')).getByRole('button', { name: '중지' }));
-    expect(within(screen.getByRole('table', { name: '컨테이너 목록' })).getAllByRole('button', { name: / 상세$/ })).toHaveLength(1);
-    expect(within(screen.getByRole('table', { name: '컨테이너 목록' })).getByRole('button', { name: / 상세$/ })).toHaveTextContent('redis');
+    expect(within(screen.getByRole('tree', { name: '컨테이너 목록' })).getAllByRole('treeitem', { name: / 상세$/ })).toHaveLength(1);
+    expect(within(screen.getByRole('tree', { name: '컨테이너 목록' })).getByRole('treeitem', { name: / 상세$/ })).toHaveTextContent('redis');
     mock.listContainers.mockResolvedValueOnce(list(2, []));
     await user.click(screen.getByRole('button', { name: '새로고침' }));
     expect(await screen.findByRole('heading', { name: '아직 컨테이너가 없습니다.' })).toBeVisible();
     expect(screen.getByText('현재 Engine에 컨테이너가 없습니다.')).toBeVisible();
   });
-  it('moves selection and focus with arrows, Home, and End', async () => {
+  it('moves tree focus with arrows and selects explicitly with Enter', async () => {
     const user = userEvent.setup();
     render(<App />);
     await connected();
-    const first = screen.getByRole('button', { name: 'backend 상세' });
+    const first = screen.getByRole('treeitem', { name: 'backend 상세' });
     first.focus();
     await user.keyboard('{ArrowDown}');
-    expect(screen.getByRole('button', { name: 'redis 상세' })).toHaveFocus();
-    expect(screen.getByRole('button', { name: 'redis 상세' })).toHaveAttribute('aria-current', 'true');
+    expect(screen.getByRole('treeitem', { name: 'redis 상세' })).toHaveFocus();
+    expect(first).toHaveAttribute('aria-selected', 'true');
+    await user.keyboard('{Enter}');
+    expect(screen.getByRole('treeitem', { name: 'redis 상세' })).toHaveAttribute('aria-selected', 'true');
     expect(recovery().getByRole('button', { name: '시작' })).toBeEnabled();
     await user.keyboard('{Home}');
-    expect(first).toHaveFocus();
+    expect(screen.getByRole('treeitem', { name: '프로젝트 없음' })).toHaveFocus();
     await user.keyboard('{End}{ArrowUp}');
     expect(first).toHaveFocus();
   });
@@ -648,7 +648,7 @@ describe('environment and inventory', () => {
     mock.listContainers.mockRejectedValueOnce({ code: 'MalformedOutput', message: '전체 목록을 해석하지 못했습니다.' });
     await user.click(screen.getByRole('button', { name: '새로고침' }));
     expect(await screen.findByText('오래된 정보 · 마지막 정상 목록입니다.')).toBeVisible();
-    expect(within(screen.getByRole('table', { name: '컨테이너 목록' })).getAllByRole('button', { name: / 상세$/ })).toHaveLength(2);
+    expect(within(screen.getByRole('tree', { name: '컨테이너 목록' })).getAllByRole('treeitem', { name: / 상세$/ })).toHaveLength(2);
     expect(recovery().getByRole('button', { name: '중지' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '로그 조회' })).toBeDisabled();
     await user.click(screen.getByRole('button', { name: '새로고침' }));
@@ -670,17 +670,17 @@ describe('environment and inventory', () => {
     await user.click(reconnectButton);
     expect(mock.getEnvironment).toHaveBeenCalledTimes(1);
     expect(mock.listContainers).toHaveBeenCalledTimes(2);
-    expect(within(screen.getByRole('table', { name: '컨테이너 목록' })).getAllByRole('button', { name: / 상세$/ })).toHaveLength(2);
-    expect(screen.getByRole('button', { name: 'backend 상세' })).toBeVisible();
-    expect(screen.getByRole('button', { name: 'redis 상세' })).toBeVisible();
+    expect(within(screen.getByRole('tree', { name: '컨테이너 목록' })).getAllByRole('treeitem', { name: / 상세$/ })).toHaveLength(2);
+    expect(screen.getByRole('treeitem', { name: 'backend 상세' })).toBeVisible();
+    expect(screen.getByRole('treeitem', { name: 'redis 상세' })).toBeVisible();
     expect(recovery().getByRole('button', { name: '중지' })).toBeDisabled();
     await act(async () => { pending.resolve(list(2, [{ ...backend, name: 'refreshed-container' }])); });
-    expect(screen.getByRole('button', { name: 'refreshed-container 상세' })).toBeVisible();
+    expect(screen.getByRole('treeitem', { name: 'refreshed-container 상세' })).toBeVisible();
     expect(reconnectButton).toBeEnabled();
     mock.getEnvironment.mockResolvedValueOnce({ ...environment, sessionId: 'session-2' });
     mock.listContainers.mockResolvedValueOnce(list(1, [{ ...redis, name: 'new-session-container' }], 'session-2'));
     await user.click(reconnectButton);
-    expect(await screen.findByRole('button', { name: 'new-session-container 상세' })).toBeVisible();
+    expect(await screen.findByRole('treeitem', { name: 'new-session-container 상세' })).toBeVisible();
     expect(mock.getEnvironment).toHaveBeenCalledTimes(2);
     expect(mock.listContainers).toHaveBeenCalledTimes(3);
     expect(mock.listContainers).toHaveBeenLastCalledWith('session-2');
@@ -703,20 +703,20 @@ describe('environment and inventory', () => {
     await user.click(reconnectButton);
     expect(mock.getEnvironment).toHaveBeenCalledTimes(1);
     expect(mock.listContainers).toHaveBeenCalledTimes(2);
-    expect(within(screen.getByRole('table', { name: '컨테이너 목록' })).getAllByRole('button', { name: / 상세$/ })).toHaveLength(2);
-    expect(screen.getByRole('button', { name: 'backend 상세' })).toBeVisible();
-    expect(screen.getByRole('button', { name: 'redis 상세' })).toBeVisible();
+    expect(within(screen.getByRole('tree', { name: '컨테이너 목록' })).getAllByRole('treeitem', { name: / 상세$/ })).toHaveLength(2);
+    expect(screen.getByRole('treeitem', { name: 'backend 상세' })).toBeVisible();
+    expect(screen.getByRole('treeitem', { name: 'redis 상세' })).toBeVisible();
     await act(async () => { pending.reject(failure); });
     await user.click(screen.getByText(`진단 상세 · ${failure.code}`));
     expect(screen.getByText(failure.message)).toBeVisible();
     expect(screen.getByText('오래된 정보 · 마지막 정상 목록입니다.')).toBeVisible();
-    expect(within(screen.getByRole('table', { name: '컨테이너 목록' })).getAllByRole('button', { name: / 상세$/ })).toHaveLength(2);
+    expect(within(screen.getByRole('tree', { name: '컨테이너 목록' })).getAllByRole('treeitem', { name: / 상세$/ })).toHaveLength(2);
     expect(refreshButton).toBeEnabled();
     expect(reconnectButton).toBeEnabled();
     mock.getEnvironment.mockResolvedValueOnce({ ...environment, sessionId: 'session-2' });
     mock.listContainers.mockResolvedValueOnce(list(1, [{ ...redis, name: 'new-session-container' }], 'session-2'));
     await user.click(reconnectButton);
-    expect(await screen.findByRole('button', { name: 'new-session-container 상세' })).toBeVisible();
+    expect(await screen.findByRole('treeitem', { name: 'new-session-container 상세' })).toBeVisible();
     expect(mock.getEnvironment).toHaveBeenCalledTimes(2);
     expect(mock.listContainers).toHaveBeenCalledTimes(3);
     expect(mock.listContainers).toHaveBeenLastCalledWith('session-2');
@@ -739,9 +739,9 @@ describe('environment and inventory', () => {
     });
     expect(mock.getEnvironment).toHaveBeenCalledTimes(1);
     expect(mock.listContainers).toHaveBeenCalledTimes(2);
-    expect(within(screen.getByRole('table', { name: '컨테이너 목록' })).getAllByRole('button', { name: / 상세$/ })).toHaveLength(2);
-    expect(screen.getByRole('button', { name: 'backend 상세' })).toBeVisible();
-    expect(screen.getByRole('button', { name: 'redis 상세' })).toBeVisible();
+    expect(within(screen.getByRole('tree', { name: '컨테이너 목록' })).getAllByRole('treeitem', { name: / 상세$/ })).toHaveLength(2);
+    expect(screen.getByRole('treeitem', { name: 'backend 상세' })).toBeVisible();
+    expect(screen.getByRole('treeitem', { name: 'redis 상세' })).toBeVisible();
     expect(reconnectButton).toBeDisabled();
     await act(async () => { pending.resolve(list(2)); });
     expect(reconnectButton).toBeEnabled();
@@ -753,8 +753,8 @@ describe('environment and inventory', () => {
     mock.listContainers.mockResolvedValueOnce(list(1, [{ ...backend, name: 'stale-generation' }]));
     await user.click(screen.getByRole('button', { name: '새로고침' }));
     expect(await screen.findByText('오래된 정보 · 마지막 정상 목록입니다.')).toBeVisible();
-    expect(screen.queryByRole('button', { name: 'stale-generation 상세' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'backend 상세' })).toBeVisible();
+    expect(screen.queryByRole('treeitem', { name: 'stale-generation 상세' })).not.toBeInTheDocument();
+    expect(screen.getByRole('treeitem', { name: 'backend 상세' })).toBeVisible();
   });
 });
 
@@ -819,7 +819,7 @@ describe('container recovery policy and confirmation', () => {
     mock.mutateContainer.mockResolvedValueOnce({ ...succeeded, outcome: 'failed', message: 'CLI가 종료 코드 1을 반환했습니다.', stderr: 'container failure', exitCode: 1 });
     render(<App />);
     await connected();
-    await user.click(screen.getByRole('button', { name: 'redis 상세' }));
+    await user.click(screen.getByRole('treeitem', { name: 'redis 상세' }));
     await user.click(recovery().getByRole('button', { name: '시작' }));
     await openLatestResult(user);
     expect(await screen.findByRole('heading', { name: /^실패 ·/ })).toBeVisible();
@@ -865,7 +865,7 @@ describe('container recovery policy and confirmation', () => {
     mock.mutateContainer.mockRejectedValueOnce(failure);
     render(<App />);
     await connected();
-    await user.click(screen.getByRole('button', { name: 'redis 상세' }));
+    await user.click(screen.getByRole('treeitem', { name: 'redis 상세' }));
     await user.click(recovery().getByRole('button', { name: '시작' }));
     await openLatestResult(user);
     expect(await screen.findByRole('heading', { name: /^결과 불명 ·/ })).toBeVisible();
@@ -877,7 +877,7 @@ describe('container recovery policy and confirmation', () => {
     mock.mutateContainer.mockRejectedValueOnce({ code: 'TargetChanged', message: '대상이 변경되었습니다.' });
     render(<App />);
     await connected();
-    await user.click(screen.getByRole('button', { name: 'redis 상세' }));
+    await user.click(screen.getByRole('treeitem', { name: 'redis 상세' }));
     await user.click(recovery().getByRole('button', { name: '시작' }));
     await openLatestResult(user);
     expect(await screen.findByRole('heading', { name: /^실패 ·/ })).toBeVisible();
@@ -893,7 +893,7 @@ describe('recent log snapshots and diagnostics', () => {
     mock.getRecentLogs.mockImplementationOnce(() => old.promise);
     render(<App />);
     await connected();
-    await user.click(screen.getByRole('button', { name: 'redis 상세' }));
+    await user.click(screen.getByRole('treeitem', { name: 'redis 상세' }));
     expect(mock.getRecentLogs).toHaveBeenCalledTimes(1);
     await act(async () => { old.resolve(log('session-1', 'handle-1-g1', 'old container logs')); });
     await screen.findByText('service ready');
@@ -972,7 +972,7 @@ describe('recent log snapshots and diagnostics', () => {
 });
 
 describe('latest operation survives detail selection independently', () => {
-  it('keeps an explicitly opened result through deselection and replaces it between single and bulk work', async () => {
+  it('keeps an explicitly opened result through filtered navigation and replaces it between single and bulk work', async () => {
     const user = userEvent.setup();
     render(<App />);
     await connected();
@@ -984,14 +984,14 @@ describe('latest operation survives detail selection independently', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: '새로고침' })).toBeEnabled());
     await user.type(screen.getByRole('textbox', { name: '컨테이너 검색' }), 'redis');
     expect(result).toBeVisible();
-    expect(screen.queryByRole('region', { name: '서비스 복구' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '서비스 복구' })).toBeVisible();
     await user.click(screen.getByRole('checkbox', { name: 'redis 작업 대상으로 선택' }));
     await user.click(screen.getByRole('button', { name: '시작 (1)' }));
     await openLatestResult(user);
     expect(await screen.findByRole('region', { name: '최근 일괄 작업 결과' })).toBeVisible();
     expect(screen.queryByRole('region', { name: '최근 작업 결과' })).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole('button', { name: '새로고침' })).toBeEnabled());
-    await user.click(screen.getByRole('button', { name: 'redis 상세' }));
+    await user.click(screen.getByRole('treeitem', { name: 'redis 상세' }));
     await user.click(recovery().getByRole('button', { name: '시작' }));
     await openLatestResult(user);
     expect(await screen.findByRole('region', { name: '최근 작업 결과' })).toBeVisible();
@@ -999,7 +999,7 @@ describe('latest operation survives detail selection independently', () => {
     expect(document.querySelectorAll('.latest-operation .operation-result')).toHaveLength(1);
   });
 
-  it('preserves an explicitly opened unknown result after deselection and reconnect without labeling it successful', async () => {
+  it('preserves an explicitly opened unknown result after filtered navigation and reconnect without labeling it successful', async () => {
     const user = userEvent.setup();
     mock.mutateContainer.mockResolvedValueOnce({ ...succeeded, outcome: 'resultUnknown', reconciliation: 'failed', mutationBlocked: true });
     render(<App />);
@@ -1012,7 +1012,7 @@ describe('latest operation survives detail selection independently', () => {
     await user.type(screen.getByRole('textbox', { name: '컨테이너 검색' }), 'redis');
     expect(result).toBeVisible();
     expect(within(result).queryByRole('button', { name: '결과 펼치기' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('region', { name: '서비스 복구' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '서비스 복구' })).toBeVisible();
     await user.click(screen.getByRole('button', { name: '다시 연결' }));
     await waitFor(() => expect(recovery().getByRole('button', { name: '시작' })).toBeEnabled());
     expect(within(result).getByRole('heading', { name: '결과 불명 · 중지 · backend' })).toBeVisible();
@@ -1117,11 +1117,11 @@ describe('CLI connection session replacement', () => {
     act(() => { stop.click(); reconnect.click(); });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.getByRole('region', { name: '최근 작업 결과' })).toBeVisible();
-    expect(screen.queryByRole('button', { name: 'backend 상세' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('treeitem', { name: 'backend 상세' })).not.toBeInTheDocument();
     mock.listContainers.mockResolvedValueOnce(list(1, [{ ...backend, handle: 'engine-b-handle', name: 'backend-on-b' }], 'session-b'));
     mock.getRecentLogs.mockImplementation(async (sessionId, handle) => log(sessionId, handle, 'Engine B logs'));
     await act(async () => nextConnection.resolve({ ...environment, sessionId: 'session-b', contextName: 'desktop-linux', endpoint: 'unix:///Users/test/.docker/run/docker.sock', engineId: 'engine-b' }));
-    expect(await screen.findByRole('button', { name: 'backend-on-b 상세' })).toBeVisible();
+    expect(await screen.findByRole('treeitem', { name: 'backend-on-b 상세' })).toBeVisible();
     expect(mock.getRecentLogs).not.toHaveBeenCalledWith('session-b', 'engine-b-handle-g1');
     await act(async () => oldLogs.resolve(log('session-1', 'handle-1-g2', 'late Engine A logs')));
     expect(await screen.findByText('Engine B logs')).toBeVisible();
@@ -1158,7 +1158,7 @@ describe('CLI connection session replacement', () => {
     await user.click(screen.getByRole('button', { name: '다시 연결' }));
     expect(await screen.findByRole('heading', { name: '로컬 Docker 소켓을 확인할 수 없습니다.' })).toBeVisible();
     expect(screen.getByRole('region', { name: '최근 일괄 작업 결과' })).toBeVisible();
-    expect(screen.queryByRole('button', { name: 'backend 상세' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('treeitem', { name: 'backend 상세' })).not.toBeInTheDocument();
     expect(screen.queryByLabelText('최근 로그 내용')).not.toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: '보이는 컨테이너 전체 선택' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '새로고침' })).toBeDisabled();

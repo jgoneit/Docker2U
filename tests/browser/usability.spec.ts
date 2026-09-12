@@ -150,7 +150,8 @@ test('shows inventory age without selection and advances it without inventory or
   await page.clock.fastForward(120_000);
   await expect(age).toContainText(lang === 'ko' ? '4분 전' : '4 minutes ago');
   await page.getByRole('textbox', { name: words[lang].containerSearch, exact: true }).fill('no matching fixture');
-  await expect(page.locator('.log-content')).toHaveCount(0);
+  await expect(page.locator('.log-content')).toContainText('LAST_LINE_300');
+  await expect(page.locator('.selection-hidden-notice')).toBeVisible();
   await expect(age).toBeVisible();
   expect(nonSamplingCalls(await readCalls())).toEqual(nonSamplingCalls(before));
   await expectNoHorizontalOverflow(page);
@@ -220,7 +221,7 @@ async function expectLogFits(page: Page, minimumLines = 0) {
   const boundary = { top: Math.max(0, metrics.detail.top), bottom: Math.min(metrics.detail.bottom, metrics.footer.top, metrics.viewport.height) };
   expect(metrics.panel.height).toBeGreaterThan(0);
   expect(metrics.content.height, `log viewport retains its minimum height: ${JSON.stringify(metrics)}`).toBeGreaterThanOrEqual(80);
-  expect(metrics.content.top, 'log viewport is reachable inside the lower pane').toBeGreaterThanOrEqual(Math.max(boundary.top, metrics.panel.top) - 1);
+  expect(metrics.content.top, 'log viewport is reachable inside the detail pane').toBeGreaterThanOrEqual(Math.max(boundary.top, metrics.panel.top) - 1);
   expect(metrics.content.bottom, 'log viewport fits above the footer after pane scrolling').toBeLessThanOrEqual(Math.min(boundary.bottom, metrics.panel.bottom) + 1);
   for (const rect of [metrics.panel, metrics.content]) {
     expect(rect.left).toBeGreaterThanOrEqual(metrics.detail.left - 1);
@@ -270,13 +271,14 @@ test('fits the complete log viewport before interaction and while toggling searc
   await testInfo.attach('log-layout', { body: JSON.stringify({ closed, opened }), contentType: 'application/json' });
   if (viewportHeight === 1000) {
     const separator = page.getByRole('separator');
-    const originalHeight = Number(await separator.getAttribute('aria-valuenow'));
+    await expect(separator).toHaveAttribute('aria-orientation', 'vertical');
+    const originalWidth = Number(await separator.getAttribute('aria-valuenow'));
     await page.setViewportSize({ width: 1280, height: 800 });
     await expectLogFits(page, 1);
-    const smallerHeight = Number(await separator.getAttribute('aria-valuenow'));
-    expect(smallerHeight).toBeLessThanOrEqual(originalHeight);
-    expect(smallerHeight).toBeGreaterThanOrEqual(Number(await separator.getAttribute('aria-valuemin')));
-    expect(smallerHeight).toBeLessThanOrEqual(Number(await separator.getAttribute('aria-valuemax')));
+    const smallerWidth = Number(await separator.getAttribute('aria-valuenow'));
+    expect(smallerWidth).toBeLessThanOrEqual(originalWidth);
+    expect(smallerWidth).toBeGreaterThanOrEqual(Number(await separator.getAttribute('aria-valuemin')));
+    expect(smallerWidth).toBeLessThanOrEqual(Number(await separator.getAttribute('aria-valuemax')));
     await page.setViewportSize({ width: 1600, height: 1000 });
     await expectLogFits(page, 1);
   }
@@ -463,7 +465,7 @@ test('opens completed results from the statusbar and retains their target after 
   await page.getByRole('button', { name: t.closeResult, exact: true }).click();
   await expect(result).toHaveCount(0);
   await expect(recent).toBeFocused();
-  await page.getByRole('button', { name: `${redis} ${t.details}`, exact: true }).click();
+  await page.getByRole('treeitem', { name: `${redis} ${t.details}`, exact: true }).click();
   await recent.click();
   await expect(result).toContainText(backend);
   await expect(recent).toBeInViewport();
@@ -489,7 +491,7 @@ test('allows unknown notices and result details to close independently while ret
   await expect(result.getByRole('button', { name: t.showResult, exact: true })).toHaveCount(0);
   await expect(result.getByRole('button', { name: t.hideResult, exact: true })).toHaveCount(0);
   await expectLogFits(page);
-  await page.getByRole('button', { name: `${redis} ${t.details}`, exact: true }).click();
+  await page.getByRole('treeitem', { name: `${redis} ${t.details}`, exact: true }).click();
   await expect(result).toContainText(backend);
   await page.getByRole('button', { name: t.closeResult, exact: true }).click();
   await expect(result).toHaveCount(0);
@@ -572,7 +574,7 @@ test('uses manual keyboard tabs while preserving a paused live log search and it
   await testInfo.attach('detail-tabs-preserved-logs', { body: await page.screenshot(), contentType: 'image/png' });
 });
 
-test('keeps long IPv6 bindings and the final published port copy reachable in the lower pane', async ({ page }, testInfo) => {
+test('keeps long IPv6 bindings and the final published port copy reachable in the detail pane', async ({ page }, testInfo) => {
   const lang = language(testInfo), t = words[lang];
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { (window as unknown as { __copiedInsight: string }).__copiedInsight = text; } } });
@@ -675,7 +677,7 @@ test('opens log search with the platform shortcut and selects the retained query
   }
 });
 
-test('clears container search without resetting its filter or selecting a container', async ({ page }, testInfo) => {
+test('clears container search while retaining its filter and selected detail', async ({ page }, testInfo) => {
   const t = words[language(testInfo)];
   await openFixture(page);
   const input = page.getByRole('textbox', { name: t.containerSearch, exact: true });
@@ -688,8 +690,8 @@ test('clears container search without resetting its filter or selecting a contai
   await expect(input).toBeFocused();
   await expect(filter).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('.container-row')).toHaveCount(2);
-  await expect(page.locator('.container-row[aria-current="true"]')).toHaveCount(0);
-  await expect(page.locator('.log-content')).toHaveCount(0);
+  await expect(page.getByRole('treeitem', { name: `${backend} ${t.details}`, exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.log-content')).toContainText('LAST_LINE_300');
   await expect(page.getByRole('button', { name: t.clearContainerSearch, exact: true })).toHaveCount(0);
 });
 
@@ -742,7 +744,7 @@ test('renders semantic action colors, neutral disabled and cancel states, and ke
     await page.keyboard.press('Escape');
     await expect(button).toBeFocused();
   }
-  await page.getByRole('button', { name: `${redis} ${t.details}`, exact: true }).click();
+  await page.getByRole('treeitem', { name: `${redis} ${t.details}`, exact: true }).click();
   await page.mouse.move(0, 0);
   await expect(start).toBeEnabled();
   await expectButtonPalette(start, 'start-action', 'on-action');

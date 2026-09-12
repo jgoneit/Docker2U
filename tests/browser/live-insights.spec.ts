@@ -5,16 +5,16 @@ const worker = 'worker-상태확인-required';
 const standalone = 'scheduler-일시정지-paused';
 const words = {
   ko: {
-    project: '프로젝트', none: '프로젝트 없음', settings: '설정', details: '상세',
+    project: '프로젝트', refresh: '새로고침', none: '프로젝트 없음', settings: '설정', details: '상세',
     selectAll: '보이는 컨테이너 전체 선택', searchContainers: '컨테이너 검색',
-    resources: '자원 사용량', pause: '일시정지', resume: '재개', resize: '로그 패널 높이 조절',
+    resources: '자원 사용량', pause: '일시정지', resume: '재개', resize: '탐색 영역 너비 조절',
     search: '로그 검색', openSearch: '로그 검색 열기', closeSearch: '로그 검색 닫기', next: '다음 일치',
     clear: '로그 화면 비우기', copy: '표시된 로그 복사', load: '로그 조회', latest: '최신 로그로',
   },
   en: {
-    project: 'Project', none: 'No project', settings: 'Settings', details: 'details',
+    project: 'project', refresh: 'Refresh', none: 'No project', settings: 'Settings', details: 'details',
     selectAll: 'Select all visible containers', searchContainers: 'Search containers',
-    resources: 'Resource usage', pause: 'Pause', resume: 'Resume', resize: 'Resize log pane',
+    resources: 'Resource usage', pause: 'Pause', resume: 'Resume', resize: 'Resize navigation pane',
     search: 'Search logs', openSearch: 'Open log search', closeSearch: 'Close log search', next: 'Next match',
     clear: 'Clear displayed logs', copy: 'Copy displayed logs', load: 'Load logs', latest: 'Latest logs',
   },
@@ -46,32 +46,52 @@ test.beforeEach(async ({ page }, info) => {
   }, { theme: info.project.metadata.theme, language: language(info) });
 });
 
-test('project filtering clears action selection and removes a hidden container detail', async ({ page }, info) => {
-  const t = words[language(info)];
+test('tree navigation and refresh preserve action selection while search removes excluded targets', async ({ page }, info) => {
+  const lang = language(info), t = words[lang];
   await openLive(page);
-  await expect(page.locator('.container-project-header h3')).toHaveText(['orders', 'workers', t.none]);
+  await expect(page.getByRole('tree', { name: lang === 'ko' ? '컨테이너 목록' : 'Container list', exact: true })).toBeVisible();
+  await expect(page.locator('.project-tree-name')).toHaveText(['orders', 'workers', t.none]);
   await expect(page.locator('.container-project-count')).toHaveText(['2', '1', '1']);
   await page.getByRole('checkbox', { name: t.selectAll, exact: true }).check();
   await expect(page.locator('.container-checkbox:checked')).toHaveCount(4);
-  const filter = page.getByRole('combobox', { name: t.project, exact: true });
-  await filter.selectOption({ label: 'workers' });
-  await expect(page.locator('.container-row')).toHaveCount(1);
-  await expect(page.locator('.container-checkbox:checked')).toHaveCount(0);
+  const workers = page.getByRole('treeitem', { name: `workers ${t.project}`, exact: true });
+  await workers.locator('.project-tree-name').click();
+  await expect(workers).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.container-row')).toHaveCount(4);
+  await expect(page.locator('.container-checkbox:checked')).toHaveCount(4);
   await expect(page.locator('.log-content')).toHaveCount(0);
   await expect(page.locator('.detail-panel')).not.toContainText(backend);
-  await page.getByRole('button', { name: `${worker} ${t.details}`, exact: true }).click();
+  await page.getByRole('button', { name: t.refresh, exact: true }).click();
+  await expect(page.getByRole('button', { name: t.refresh, exact: true })).toBeEnabled();
+  await expect(page.locator('.container-checkbox:checked')).toHaveCount(4);
+
+  // Moving tree focus does not change the displayed target until activation.
+  await workers.focus();
+  await workers.press('ArrowDown');
+  const workerNode = page.getByRole('treeitem', { name: `${worker} ${t.details}`, exact: true });
+  await expect(workerNode).toBeFocused();
+  await expect(workers).toHaveAttribute('aria-selected', 'true');
+  await expect(workerNode).toHaveAttribute('aria-selected', 'false');
+  await workerNode.press('Enter');
+  await expect(workerNode).toHaveAttribute('aria-selected', 'true');
   await expect(page.locator('.log-content')).toContainText('LIVE 2');
-  await page.getByRole('checkbox', { name: t.selectAll, exact: true }).check();
-  await filter.selectOption('none');
-  await expect(page.locator('.container-project-header h3')).toHaveText([t.none]);
-  await expect(page.locator('.container-row')).toHaveCount(1);
-  await expect(page.locator('.container-row')).toContainText(standalone);
-  await expect(page.locator('.container-checkbox:checked')).toHaveCount(0);
-  await expect(page.locator('.log-content')).toHaveCount(0);
-  await filter.selectOption('all');
+  await expect(page.locator('.container-checkbox:checked')).toHaveCount(4);
+
+  const ungrouped = page.getByRole('treeitem', { name: t.none, exact: true });
+  await ungrouped.focus();
+  await ungrouped.press('ArrowLeft');
+  await expect(ungrouped).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.getByRole('treeitem', { name: `${standalone} ${t.details}`, exact: true })).toHaveCount(0);
+  await expect(workerNode).toHaveAttribute('aria-selected', 'true');
+  await ungrouped.press('ArrowRight');
+  await expect(page.locator('.container-row')).toHaveCount(4);
+  await expect(page.locator('.container-checkbox:checked')).toHaveCount(4);
   await page.getByRole('textbox', { name: t.searchContainers, exact: true }).fill('orders');
-  await expect(page.locator('.container-project-header h3')).toHaveText(['orders']);
+  await expect(page.locator('.project-tree-name')).toHaveText(['orders']);
   await expect(page.locator('.container-row')).toHaveCount(2);
+  await expect(page.locator('.container-checkbox:checked')).toHaveCount(2);
+  await expect(page.locator('.selection-hidden-notice')).toBeVisible();
+  await expect(page.locator('.detail-panel')).toContainText(worker);
   const observed = await calls(page);
   expect(observed.mutateContainer).toBe(0);
   expect(observed.mutateContainers).toBe(0);
@@ -82,7 +102,7 @@ test('shows consistent current resources with readable controls in each theme an
   await openLive(page);
   await expect(page.locator('html')).toHaveAttribute('lang', language(info));
   await expect(page.locator('html')).toHaveAttribute('data-theme', String(info.project.metadata.theme));
-  const selectedRow = page.locator('tr.container-list-item').filter({ has: page.getByRole('button', { name: `${backend} ${t.details}`, exact: true }) });
+  const selectedRow = page.getByRole('treeitem', { name: `${backend} ${t.details}`, exact: true });
   const detailed = page.getByRole('region', { name: t.resources, exact: true });
   await expect(selectedRow.locator('.container-cpu-value')).toHaveText('125.50%');
   await expect(selectedRow.locator('.container-memory-value')).toContainText('64MiB');
@@ -95,7 +115,7 @@ test('shows consistent current resources with readable controls in each theme an
   await detailed.scrollIntoViewIfNeeded();
   await expect(detailed).toBeInViewport();
   await information.locator('summary').click();
-  await expect(page.getByRole('combobox', { name: t.project, exact: true })).toBeInViewport();
+  await expect(page.getByRole('treeitem', { name: `orders ${t.project}`, exact: true }).locator('.project-tree-name')).toBeInViewport();
   await page.getByRole('button', { name: t.pause, exact: true }).scrollIntoViewIfNeeded();
   await expect(page.getByRole('button', { name: t.pause, exact: true })).toBeInViewport();
   await page.locator('.log-content').scrollIntoViewIfNeeded();
@@ -113,7 +133,7 @@ test('shows consistent current resources with readable controls in each theme an
   expect(layout.logHeight).toBeGreaterThanOrEqual(80);
   expect(layout.logBottom).toBeLessThanOrEqual(layout.footerTop + 1);
 
-  const readability = await page.locator('.project-filter, .project-filter select, .container-project-header h3, .container-cpu-value, .container-memory-value, .resource-values strong, .log-stream-status, .compact-actions button:not(:disabled), .pane-resizer').evaluateAll(elements => {
+  const readability = await page.locator('.project-tree-name, .container-tree-name, .container-cpu-value, .container-memory-value, .resource-values strong, .log-stream-status, .compact-actions button:not(:disabled), .pane-resizer').evaluateAll(elements => {
     type Color = [number, number, number, number];
     const color = (value: string): Color => {
       const parts = value.match(/[\d.]+/g)?.map(Number);
@@ -231,58 +251,64 @@ test('preserves frozen search across preferences and Clear stops reads until exp
   expect((await calls(page)).startLogStream).toBe(cleared.startLogStream! + 1);
 });
 
-test('resizes the lower log pane with pointer and keyboard while retaining the live view', async ({ page }, info) => {
+test('resizes the navigation width with pointer and keyboard while retaining the live view', async ({ page }, info) => {
   const lang = language(info), t = words[lang];
   await openLive(page);
   const separator = page.getByRole('separator', { name: t.resize, exact: true });
-  await expect(separator).toHaveAttribute('aria-orientation', 'horizontal');
+  await expect(separator).toHaveAttribute('aria-orientation', 'vertical');
   await expect(separator).toHaveAttribute('aria-controls', 'inventory-pane detail-pane');
   const size = async () => ({
-    height: Number(await separator.getAttribute('aria-valuenow')),
+    width: Number(await separator.getAttribute('aria-valuenow')),
     min: Number(await separator.getAttribute('aria-valuemin')),
     max: Number(await separator.getAttribute('aria-valuemax')),
   });
   const geometry = () => page.evaluate(() => ({
-    detail: document.querySelector('#detail-pane')!.getBoundingClientRect().height,
-    inventory: document.querySelector('#inventory-pane')!.getBoundingClientRect().height,
+    detail: document.querySelector('#detail-pane')!.getBoundingClientRect().width,
+    inventory: document.querySelector('#inventory-pane')!.getBoundingClientRect().width,
+    inventoryRight: document.querySelector('#inventory-pane')!.getBoundingClientRect().right,
+    detailLeft: document.querySelector('#detail-pane')!.getBoundingClientRect().left,
+    inventoryTop: document.querySelector('#inventory-pane')!.getBoundingClientRect().top,
+    detailTop: document.querySelector('#detail-pane')!.getBoundingClientRect().top,
   }));
   const initial = await size(), initialGeometry = await geometry();
   expect(initial.min).toBeGreaterThan(0);
   expect(initial.max).toBeGreaterThan(initial.min);
-  expect(initial.height).toBeGreaterThanOrEqual(initial.min);
-  expect(initial.height).toBeLessThanOrEqual(initial.max);
-  expect(initialGeometry.detail).toBeCloseTo(initial.height, 0);
+  expect(initial.width).toBeGreaterThanOrEqual(initial.min);
+  expect(initial.width).toBeLessThanOrEqual(initial.max);
+  expect(initialGeometry.inventory).toBeCloseTo(initial.width, 0);
+  expect(initialGeometry.detailLeft).toBeGreaterThanOrEqual(initialGeometry.inventoryRight);
+  expect(initialGeometry.detailTop).toBeCloseTo(initialGeometry.inventoryTop, 0);
   const content = page.locator('.logs-panel:not([hidden]) .log-content');
   const contentNode = (await content.elementHandle())!;
   const receiptNode = (await page.locator('.log-fetched-at time').elementHandle())!;
   const before = await calls(page);
 
   const rect = (await separator.boundingBox())!;
-  const grow = initial.max - initial.height >= 20;
-  const distance = Math.min(40, grow ? initial.max - initial.height : initial.height - initial.min);
+  const grow = initial.max - initial.width >= 20;
+  const distance = Math.min(40, grow ? initial.max - initial.width : initial.width - initial.min);
   expect(distance).toBeGreaterThan(0);
   await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2);
   await page.mouse.down();
-  await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2 + (grow ? -distance : distance), { steps: 5 });
+  await page.mouse.move(rect.x + rect.width / 2 + (grow ? distance : -distance), rect.y + rect.height / 2, { steps: 5 });
   await page.mouse.up();
-  await expect.poll(async () => (await size()).height).not.toBe(initial.height);
+  await expect.poll(async () => (await size()).width).not.toBe(initial.width);
   const dragged = await size(), draggedGeometry = await geometry();
-  expect(dragged.height).toBeGreaterThanOrEqual(dragged.min);
-  expect(dragged.height).toBeLessThanOrEqual(dragged.max);
-  expect(draggedGeometry.detail).toBeCloseTo(dragged.height, 0);
-  expect(draggedGeometry.inventory - initialGeometry.inventory).toBeCloseTo(initial.height - dragged.height, 0);
+  expect(dragged.width).toBeGreaterThanOrEqual(dragged.min);
+  expect(dragged.width).toBeLessThanOrEqual(dragged.max);
+  expect(draggedGeometry.inventory).toBeCloseTo(dragged.width, 0);
+  expect(draggedGeometry.detail - initialGeometry.detail).toBeCloseTo(initial.width - dragged.width, 0);
   await separator.focus();
   await page.keyboard.press('Home');
-  await expect.poll(async () => (await size()).height).toBe(initial.min);
+  await expect.poll(async () => (await size()).width).toBe(initial.min);
   await page.keyboard.press('End');
-  await expect.poll(async () => (await size()).height).toBe(initial.max);
-  await page.keyboard.press('ArrowDown');
-  await expect.poll(async () => (await size()).height).toBe(Math.max(initial.min, initial.max - 20));
-  await page.keyboard.press('ArrowUp');
-  await expect.poll(async () => (await size()).height).toBe(initial.max);
+  await expect.poll(async () => (await size()).width).toBe(initial.max);
+  await page.keyboard.press('ArrowLeft');
+  await expect.poll(async () => (await size()).width).toBe(Math.max(initial.min, initial.max - 20));
+  await page.keyboard.press('ArrowRight');
+  await expect.poll(async () => (await size()).width).toBe(initial.max);
   await expect(separator).toBeFocused();
   await separator.dblclick();
-  await expect.poll(async () => (await size()).height).toBe(initial.height);
+  await expect.poll(async () => (await size()).width).toBe(initial.width);
   await moreReads(page, before.readLogStream!);
   expect(await content.evaluate((element, original) => element === original, contentNode)).toBe(true);
   expect(await page.locator('.log-fetched-at time').evaluate((element, original) => element === original, receiptNode)).toBe(true);
@@ -311,7 +337,7 @@ test('resizes the lower log pane with pointer and keyboard while retaining the l
   await page.setViewportSize(viewport.height === 680 ? { width: 1280, height: 800 } : { width: 1024, height: 680 });
   await expect(page.getByRole('searchbox', { name: next.search, exact: true })).toHaveValue('LAST_LINE_300');
   await expect(page.getByRole('button', { name: next.resume, exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByRole('button', { name: `${backend} ${next.details}`, exact: true })).toHaveAttribute('aria-current', 'true');
+  await expect(page.getByRole('treeitem', { name: `${backend} ${next.details}`, exact: true })).toHaveAttribute('aria-selected', 'true');
   expect(await content.textContent()).toBe(frozen);
   expect(await content.evaluate(element => element.scrollTop)).toBeCloseTo(scrollTop, 0);
   await expect(page.locator('.log-fetched-at time')).toHaveAttribute('datetime', receivedAt!);
@@ -319,9 +345,35 @@ test('resizes the lower log pane with pointer and keyboard while retaining the l
   const current = Number(await renamedSeparator.getAttribute('aria-valuenow'));
   expect(current).toBeGreaterThanOrEqual(Number(await renamedSeparator.getAttribute('aria-valuemin')));
   expect(current).toBeLessThanOrEqual(Number(await renamedSeparator.getAttribute('aria-valuemax')));
-  expect((await geometry()).detail).toBeCloseTo(current, 0);
+  expect((await geometry()).inventory).toBeCloseTo(current, 0);
   const after = await calls(page);
   for (const name of Object.keys(before).filter(name => !['getContainerStats', 'readLogStream'].includes(name))) expect(after[name], name).toBe(before[name]);
   await info.attach('split-pane-layout', { body: JSON.stringify({ initial, initialGeometry, dragged, draggedGeometry, current, before, after }), contentType: 'application/json' });
   await info.attach('split-pane-screen', { body: await page.screenshot(), contentType: 'image/png' });
+});
+
+test('standalone navigation restores frozen search and the visible scroll position', async ({ page }, info) => {
+  const t = words[language(info)];
+  await openLive(page);
+  const target = page.getByRole('treeitem', { name: `${standalone} ${t.details}`, exact: true });
+  await target.click();
+  const content = page.locator('.log-content');
+  await expect(content).toContainText('LAST_LINE_300');
+  await page.getByRole('button', { name: t.pause, exact: true }).click();
+  await page.getByRole('button', { name: t.openSearch, exact: true }).click();
+  await page.getByRole('searchbox', { name: t.search, exact: true }).fill('Request processed');
+  await expect(content.locator('mark')).toHaveText('Request processed');
+  await content.evaluate(node => { node.scrollTop = 1500; });
+  await expect.poll(() => content.evaluate(node => node.scrollTop)).toBe(1500);
+  const frozen = await content.textContent();
+  await page.getByRole('treeitem', { name: `${worker} ${t.details}`, exact: true }).click();
+  await expect(content).toContainText('LAST_LINE_300');
+  await target.click();
+  await expect(page.getByRole('searchbox', { name: t.search, exact: true })).toHaveValue('Request processed');
+  await expect(page.getByRole('button', { name: t.resume, exact: true })).toHaveAttribute('aria-pressed', 'true');
+  expect(await content.textContent()).toBe(frozen);
+  await expect.poll(() => content.evaluate(node => node.scrollTop)).toBe(1500);
+  await moreReads(page, (await calls(page)).readLogStream!);
+  expect(await content.textContent()).toBe(frozen);
+  expect(await content.evaluate(node => node.scrollTop)).toBe(1500);
 });
