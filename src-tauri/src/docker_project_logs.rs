@@ -1088,6 +1088,7 @@ impl Core {
             let weak = Arc::downgrade(&self.project_logs);
             let state = Arc::downgrade(&self.state);
             let observation = Arc::downgrade(&self.observation);
+            let compose_operations = Arc::downgrade(&self.compose_operations);
             let session_id = id.to_string();
             let full_id = container.full_id.clone();
             let sink = Arc::new(move |message: ReaderMessage| {
@@ -1117,6 +1118,9 @@ impl Core {
                     manager.receive(&session_id, &full_id, token, message);
                 }
                 if let Some(error) = invalidates {
+                    if let Some(operations) = compose_operations.upgrade() {
+                        operations.lock().unwrap().cancel_session(&session_id);
+                    }
                     if let Some(state) = state.upgrade() {
                         if let Some(session) = state
                             .lock()

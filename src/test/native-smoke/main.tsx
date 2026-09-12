@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from '../../App';
 import { api, coreError, type ContainerDetails } from '../../api';
+import { composeApi } from '../../composeApi';
 import { observationApi, projectLogApi, type ObservationRead } from '../../observationApi';
 import '../../styles.css';
 import { initializePreferences } from '../../preferences';
@@ -106,6 +107,34 @@ const nativeStop = api.stopLogStream;
 api.stopLogStream = async (...args) => { await nativeStop(...args); ++streamEvidence.stops; changed(); };
 const nativeDetails = api.getContainerDetails;
 api.getContainerDetails = async (...args) => { const details = await nativeDetails(...args); ++detailsReads; lastDetails = details; return details; };
+
+// Observe the real Compose IPC contract in the separate native fixture bundle.
+// Only metadata is recorded: resolved configuration/environment values never enter evidence.
+const nativeComposePick = composeApi.pick;
+composeApi.pick = async (...args) => { const selected = await nativeComposePick(...args); record('compose picker', { kind: args[0], selected: selected !== null }); return selected; };
+const nativeComposePreview = composeApi.preview;
+composeApi.preview = async (...args) => {
+  try { const preview = await nativeComposePreview(...args); record('compose preview', { name: preview.project.name, services: preview.services.map(service => service.name), existingContainers: preview.existingContainers }); return preview; }
+  catch (error) { record('compose preview failed', { code: coreError(error).code }); throw error; }
+};
+const nativeComposeSave = composeApi.save;
+composeApi.save = async (...args) => { const project = await nativeComposeSave(...args); record('compose registered', { id: project.id, name: project.name, revision: project.revision }); return project; };
+const nativeComposePrepare = composeApi.prepare;
+composeApi.prepare = async (...args) => { const prepared = await nativeComposePrepare(...args); record('compose prepared', { name: prepared.project.name, action: prepared.action, existingContainers: prepared.existingContainers }); return prepared; };
+const nativeComposeStart = composeApi.start;
+composeApi.start = async (...args) => { const operation = await nativeComposeStart(...args); record('compose started', { id: operation.id, action: operation.action, phase: operation.phase }); return operation; };
+const composePhases = new Map<string, string>();
+const nativeComposeRead = composeApi.read;
+composeApi.read = async (...args) => {
+  const reply = await nativeComposeRead(...args); const operation = reply.operation;
+  if (composePhases.get(operation.id) !== operation.phase) {
+    composePhases.set(operation.id, operation.phase);
+    record('compose phase', { id: operation.id, action: operation.action, phase: operation.phase, outcome: operation.outcome, reconciliation: operation.reconciliation, observedContainers: operation.observedContainers, errorCode: operation.error?.code ?? null });
+  }
+  return reply;
+};
+const nativeComposeCancel = composeApi.cancel;
+composeApi.cancel = async (...args) => { const operation = await nativeComposeCancel(...args); record('compose cancelled', { id: operation.id, phase: operation.phase, cancelRequested: operation.cancelRequested }); return operation; };
 
 // An explicitly armed, test-only response fault. Both configure and retry still
 // execute real Rust IPC; this proves UI recovery, not a native reader failure.

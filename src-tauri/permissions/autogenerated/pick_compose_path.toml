@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pick-compose-path"
+description = "Enables the pick_compose_path command without any pre-configured scope."
+commands.allow = ["pick_compose_path"]
+
+[[permission]]
+identifier = "deny-pick-compose-path"
+description = "Denies the pick_compose_path command without any pre-configured scope."
+commands.deny = ["pick_compose_path"]

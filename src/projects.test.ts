@@ -22,3 +22,28 @@ it('keeps project names distinct from selector sentinel values', () => {
   }
   expect(parseProjectFilter('invalid')).toEqual({ kind: 'all' });
 });
+
+import { projectTreeGroups } from './projects';
+import type { ComposeProject } from './composeApi';
+const registration: ComposeProject = { id: 'registration-1', name: 'orders', revision: 1, composeFile: '/work/compose.yaml', workingDirectory: '/work', envFile: null };
+it('merges a registration into its discovered name without duplicate rows or invented handles', () => {
+  const api = row('api', 'orders'); const groups = projectTreeGroups([api, row('standalone')], [registration], '', 'all');
+  expect(groups.map(group => group.name)).toEqual(['orders', null]); expect(groups[0]?.registration).toEqual(registration);
+  expect(groups[0]?.containers).toEqual([api]);
+});
+it('keeps registrations without containers in all and stopped, but not running filters', () => {
+  expect(projectTreeGroups([], [registration], '', 'all')[0]?.containers).toEqual([]);
+  expect(projectTreeGroups([], [registration], '', 'stopped')).toHaveLength(1);
+  expect(projectTreeGroups([], [registration], '', 'running')).toEqual([]);
+});
+it('searches empty registrations by project and directory and keeps configuration errors in attention', () => {
+  expect(projectTreeGroups([], [registration], '/work', 'all')).toHaveLength(1);
+  expect(projectTreeGroups([], [registration], 'missing', 'all')).toEqual([]);
+  const issue = { code: 'ComposeProjectConflict', message: 'Configuration does not match.' };
+  expect(projectTreeGroups([], [registration], '', 'attention', new Map([['orders', issue]]))[0]?.issue).toEqual(issue);
+});
+it('retains a discovered row after unregistering and removes only the absent registration', () => {
+  const containers = [row('api', 'orders')];
+  expect(projectTreeGroups(containers, [], '', 'all')[0]?.name).toBe('orders');
+  expect(projectTreeGroups([], [], '', 'all')).toEqual([]);
+});

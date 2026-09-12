@@ -9,6 +9,8 @@ use std::{
     time::Duration,
 };
 
+#[path = "docker_compose.rs"]
+mod compose;
 #[path = "docker_details.rs"]
 mod details;
 #[path = "engine_reader.rs"]
@@ -21,6 +23,10 @@ mod project_logs;
 mod stats;
 #[path = "docker_stream.rs"]
 mod stream;
+pub use compose::{
+    ComposeAction, ComposeOperation, ComposeOperationPreview, ComposeOperationRead, ComposeProject,
+    ComposeProjectInput, ComposeProjectPreview,
+};
 pub use details::ContainerDetails;
 pub use observation::{ObservationHold, ObservationRead, ObservationScope};
 pub use project_logs::{ProjectLogPage, ProjectLogQuery};
@@ -508,6 +514,7 @@ struct State {
     refreshing: bool,
     diagnosing: bool,
     mutating: bool,
+    compose_operation: Option<String>,
     stats_running: bool,
     details_running: bool,
     stream_starting: bool,
@@ -555,6 +562,8 @@ pub struct Core {
     observation: Arc<Mutex<Option<Arc<observation::ObservationService>>>>,
     engine_reader: Arc<Mutex<Option<(String, engine_reader::EngineReader)>>>,
     project_logs: Arc<Mutex<project_logs::ProjectLogManager>>,
+    compose_registry: Arc<Mutex<compose::ComposeRegistry>>,
+    compose_operations: Arc<Mutex<compose::ComposeOperationManager>>,
     #[cfg(test)]
     config: Option<RuntimeConfig>,
     #[cfg(test)]
@@ -565,6 +574,8 @@ pub struct Core {
     launch_env: Option<HashMap<String, String>>,
     #[cfg(test)]
     log_registration_barrier: Option<Arc<std::sync::Barrier>>,
+    #[cfg(test)]
+    compose_pre_spawn_barriers: Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>,
 }
 
 fn args(values: &[&str]) -> Vec<String> {
@@ -679,6 +690,7 @@ impl Core {
             state.session = None;
         }
         self.cancel_observation();
+        self.cancel_all_compose_and_wait();
         self.cancel_project_logs();
         self.cancel_log_stream();
         self.runner.shutdown();
@@ -887,6 +899,7 @@ impl Core {
         };
         // Reserve reconnection before retiring workers so a Busy result cannot
         // stop a still-current background observer or race a new mutation.
+        self.cancel_all_compose_and_wait();
         self.stop_observation();
         self.cancel_project_logs();
         self.engine_reader.lock().unwrap().take();
@@ -1309,7 +1322,11 @@ impl Core {
     pub fn mutate_container(&self, id: &str, handle: &str, action: Action) -> Result<Mutation> {
         let (session, container, reservation) = {
             let mut state = self.state.lock().unwrap();
-            if state.refreshing || state.diagnosing || state.mutating {
+            if state.refreshing
+                || state.diagnosing
+                || state.mutating
+                || state.compose_operation.is_some()
+            {
                 return Err(ApiError::new(
                     "Busy",
                     "Wait for the current environment operation",
@@ -1362,7 +1379,11 @@ impl Core {
     ) -> Result<BulkMutation> {
         let (session, containers, reservation) = {
             let mut state = self.state.lock().unwrap();
-            if state.refreshing || state.diagnosing || state.mutating {
+            if state.refreshing
+                || state.diagnosing
+                || state.mutating
+                || state.compose_operation.is_some()
+            {
                 return Err(ApiError::new("Busy", "An operation is still in progress"));
             }
             let session = state

@@ -2,7 +2,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     io::Read,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex,
@@ -15,6 +15,30 @@ use std::{
 pub const STDOUT_LIMIT: usize = 8 * 1024 * 1024;
 pub const STDERR_LIMIT: usize = 256 * 1024;
 pub const LOG_LIMIT: usize = 2 * 1024 * 1024;
+
+/// Opt-in process policy for Compose; legacy follows have no deadline.
+#[derive(Clone, Default)]
+pub struct ProcessOptions {
+    pub cwd: Option<PathBuf>,
+    pub deadline: Option<Instant>,
+    pub cancel: Arc<AtomicBool>,
+    pub isolate_compose_env: bool,
+}
+
+impl ProcessOptions {
+    fn check_launch(&self) -> Result<(), String> {
+        if self.cancel.load(Ordering::Acquire) {
+            return Err("Process cancelled before launch".into());
+        }
+        if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err("Process deadline elapsed before launch".into());
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Default)]
 pub struct Runner {
@@ -34,6 +58,7 @@ pub struct Output {
     pub logs: Vec<u8>,
     pub truncated: bool,
     pub interrupted: bool,
+    pub timed_out: bool,
     pub duration_ms: u64,
 }
 
@@ -46,6 +71,7 @@ pub struct FollowRead {
     pub exit_code: Option<i32>,
     pub stderr: String,
     pub interrupted: bool,
+    pub timed_out: bool,
 }
 
 #[derive(Default)]
@@ -56,6 +82,7 @@ struct FollowCapture {
     exit_code: Option<i32>,
     stderr: String,
     interrupted: bool,
+    timed_out: bool,
 }
 
 impl FollowCapture {
@@ -90,7 +117,11 @@ struct FollowHandle {
 
 impl FollowHandle {
     fn stop(&self) {
-        self.cancel.store(true, Ordering::Release);
+        // A completed follow may share its token with later preparation steps.
+        // Releasing that handle must not turn a successful operation into cancel.
+        if !self.capture.lock().unwrap().terminal {
+            self.cancel.store(true, Ordering::Release);
+        }
         // Holding this lock through join makes concurrent stop calls wait for
         // the same completed cleanup. The worker never acquires this lock.
         let mut worker = self.worker.lock().unwrap();
@@ -121,6 +152,7 @@ impl FollowProcess {
             exit_code: capture.exit_code,
             stderr: capture.stderr.clone(),
             interrupted: capture.interrupted,
+            timed_out: capture.timed_out,
         }
     }
 
@@ -141,7 +173,7 @@ enum EscapeState {
 }
 
 /// At most three incomplete UTF-8 bytes and one escape state per pipe. Escape
-/// payloads are discarded as they arrive, including unbounded unterminated OSC.
+/// payloads are discarded as they arrive. A newline always resumes visible text.
 #[derive(Default)]
 struct StreamSanitizer {
     pending: Vec<u8>,
@@ -151,6 +183,11 @@ struct StreamSanitizer {
 impl StreamSanitizer {
     fn text(&mut self, text: &str, output: &mut String) {
         for ch in text.chars() {
+            if ch == '\n' {
+                self.escape = EscapeState::Text;
+                output.push(ch);
+                continue;
+            }
             match self.escape {
                 EscapeState::Text if ch == '\u{1b}' => self.escape = EscapeState::Escape,
                 EscapeState::Text => {
@@ -286,7 +323,12 @@ fn signal_group(id: u32, signal: i32) {
     }
 }
 
-fn isolated_command(executable: &Path, args: &[String], env: &[(String, String)]) -> Command {
+fn isolated_command(
+    executable: &Path,
+    args: &[String],
+    env: &[(String, String)],
+    options: &ProcessOptions,
+) -> Command {
     let mut command = Command::new(executable);
     command
         .args(args)
@@ -296,14 +338,22 @@ fn isolated_command(executable: &Path, args: &[String], env: &[(String, String)]
     // Core supplies a discovery allowlist or the pinned Engine config. Neither
     // one-shot nor follow work may inherit ambient Docker/provider overrides.
     for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("DOCKER_")
+        let name = key.to_string_lossy();
+        if name.starts_with("DOCKER_")
             || key == "COLIMA_HOME"
             || key == "LIMA_HOME"
+            || (options.isolate_compose_env
+                && (name.starts_with("COMPOSE_")
+                    || name.starts_with("BUILDX_")
+                    || name.starts_with("BUILDKIT_")))
         {
             command.env_remove(key);
         }
     }
     command.envs(env.iter().map(|(key, value)| (key, value)));
+    if let Some(cwd) = &options.cwd {
+        command.current_dir(cwd);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -319,7 +369,17 @@ impl Runner {
         args: &[String],
         env: &[(String, String)],
     ) -> Result<FollowProcess, String> {
-        let mut command = isolated_command(executable, args, env);
+        self.start_follow_with_options(executable, args, env, &ProcessOptions::default())
+    }
+
+    pub fn start_follow_with_options(
+        &self,
+        executable: &Path,
+        args: &[String],
+        env: &[(String, String)],
+        options: &ProcessOptions,
+    ) -> Result<FollowProcess, String> {
+        let mut command = isolated_command(executable, args, env, options);
         let mut registry = self
             .children
             .lock()
@@ -327,6 +387,9 @@ impl Runner {
         if self.closing.load(Ordering::Acquire) || registry.len() >= 8 {
             return Err("Process capacity unavailable".into());
         }
+        // The check, spawn and registration share the shutdown registry lock.
+        // Cancellation after this check is observed by the same token in worker.
+        options.check_launch()?;
         let child = command
             .spawn()
             .map_err(|error| format!("Cannot start {}: {error}", executable.display()))?;
@@ -338,7 +401,8 @@ impl Runner {
             registry: self.children.clone(),
         };
         let capture = Arc::new(Mutex::new(FollowCapture::default()));
-        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel = options.cancel.clone();
+        let deadline = options.deadline;
         let shared = capture.clone();
         let cancelled = cancel.clone();
         let closing = self.closing.clone();
@@ -396,6 +460,7 @@ impl Runner {
                     }
                 }
                 let mut interrupted = false;
+                let mut timed_out = false;
                 let status = loop {
                     match owned.child.try_wait() {
                         Ok(Some(status)) => break Some(status),
@@ -405,7 +470,9 @@ impl Runner {
                         }
                         Ok(None) => {}
                     }
-                    if cancelled.load(Ordering::Acquire)
+                    timed_out = deadline.is_some_and(|deadline| Instant::now() >= deadline);
+                    if timed_out
+                        || cancelled.load(Ordering::Acquire)
                         || closing.load(Ordering::Acquire)
                         || failed.load(Ordering::Acquire)
                     {
@@ -434,6 +501,7 @@ impl Runner {
                 capture.terminal = true;
                 capture.exit_code = status.and_then(|status| status.code());
                 capture.interrupted = interrupted || failed.load(Ordering::Acquire);
+                capture.timed_out = timed_out;
             })
             .map_err(|error| format!("Cannot start follow worker: {error}"))?;
         Ok(FollowProcess(Arc::new(FollowHandle {
@@ -451,15 +519,38 @@ impl Runner {
         timeout: Duration,
         logs: bool,
     ) -> Result<Output, String> {
+        let options = ProcessOptions {
+            deadline: Some(Instant::now() + timeout),
+            ..ProcessOptions::default()
+        };
+        self.run_with_options(executable, args, env, &options, logs)
+    }
+
+    pub fn run_with_options(
+        &self,
+        executable: &Path,
+        args: &[String],
+        env: &[(String, String)],
+        options: &ProcessOptions,
+        logs: bool,
+    ) -> Result<Output, String> {
         if self.closing.load(Ordering::Acquire) {
             return Err("Application is closing".into());
         }
-        let mut command = isolated_command(executable, args, env);
+        let mut command = isolated_command(executable, args, env, options);
         let started = Instant::now();
         #[cfg(test)]
-        let mut timeout_started = self.timeout_gate.is_none().then_some(started);
+        let gated_timeout = options
+            .deadline
+            .map(|deadline| deadline.saturating_duration_since(started));
+        #[cfg(test)]
+        let mut deadline = self
+            .timeout_gate
+            .is_none()
+            .then_some(options.deadline)
+            .flatten();
         #[cfg(not(test))]
-        let timeout_started = Some(started);
+        let deadline = options.deadline;
         let mut registry = self
             .children
             .lock()
@@ -467,49 +558,65 @@ impl Runner {
         if self.closing.load(Ordering::Acquire) || registry.len() >= 8 {
             return Err("Process capacity unavailable".into());
         }
-        let mut child = command
+        options.check_launch()?;
+        let child = command
             .spawn()
             .map_err(|e| format!("Cannot start {}: {e}", executable.display()))?;
         let id = child.id();
         registry.insert(id, ());
         drop(registry);
+        let mut owned = OwnedFollowChild {
+            child,
+            registry: self.children.clone(),
+        };
         let capture = Arc::new(Mutex::new(Capture::default()));
         let read_failed = Arc::new(AtomicBool::new(false));
         let mut readers = Vec::new();
         for (pipe, is_stderr) in [
             (
-                Box::new(child.stdout.take().unwrap()) as Box<dyn Read + Send>,
+                Box::new(owned.child.stdout.take().unwrap()) as Box<dyn Read + Send>,
                 false,
             ),
             (
-                Box::new(child.stderr.take().unwrap()) as Box<dyn Read + Send>,
+                Box::new(owned.child.stderr.take().unwrap()) as Box<dyn Read + Send>,
                 true,
             ),
         ] {
             let shared = capture.clone();
             let failed = read_failed.clone();
-            readers.push(thread::spawn(move || {
-                let mut pipe = pipe;
-                let mut buffer = [0u8; 16 * 1024];
-                loop {
-                    match pipe.read(&mut buffer) {
-                        Ok(0) => break,
-                        Ok(size) => shared
-                            .lock()
-                            .unwrap()
-                            .append(&buffer[..size], is_stderr, logs),
-                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                        Err(_) => {
-                            failed.store(true, Ordering::Release);
-                            break;
+            match thread::Builder::new()
+                .name("docker2u-process-pipe".into())
+                .spawn(move || {
+                    let mut pipe = pipe;
+                    let mut buffer = [0u8; 16 * 1024];
+                    loop {
+                        match pipe.read(&mut buffer) {
+                            Ok(0) => break,
+                            Ok(size) => {
+                                shared
+                                    .lock()
+                                    .unwrap()
+                                    .append(&buffer[..size], is_stderr, logs)
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                            Err(_) => {
+                                failed.store(true, Ordering::Release);
+                                break;
+                            }
                         }
                     }
+                }) {
+                Ok(reader) => readers.push(reader),
+                Err(_) => {
+                    read_failed.store(true, Ordering::Release);
+                    break;
                 }
-            }));
+            }
         }
         let mut interrupted = false;
+        let mut timed_out = false;
         let status = loop {
-            match child.try_wait() {
+            match owned.child.try_wait() {
                 Ok(Some(status)) => break Some(status),
                 Err(_) => {
                     interrupted = true;
@@ -518,22 +625,25 @@ impl Runner {
                 Ok(None) => {}
             }
             #[cfg(test)]
-            if timeout_started.is_none()
+            if deadline.is_none()
                 && self
                     .timeout_gate
                     .as_ref()
                     .is_some_and(|gate| gate.load(Ordering::Acquire))
             {
-                timeout_started = Some(Instant::now());
+                deadline = gated_timeout.map(|timeout| Instant::now() + timeout);
             }
-            if timeout_started.is_some_and(|started| started.elapsed() >= timeout)
+            timed_out = deadline.is_some_and(|deadline| Instant::now() >= deadline);
+            if timed_out
+                || options.cancel.load(Ordering::Acquire)
                 || self.closing.load(Ordering::Acquire)
+                || read_failed.load(Ordering::Acquire)
             {
                 interrupted = true;
                 signal_group(id, libc::SIGTERM);
                 let grace = Instant::now();
                 while grace.elapsed() < Duration::from_secs(2) {
-                    if matches!(child.try_wait(), Ok(Some(_))) {
+                    if matches!(owned.child.try_wait(), Ok(Some(_))) {
                         break;
                     }
                     thread::sleep(Duration::from_millis(10));
@@ -544,13 +654,13 @@ impl Runner {
         };
         // A descendant may keep pipes open even after its parent exits.
         signal_group(id, libc::SIGKILL);
-        let _ = child.wait();
+        let _ = owned.child.wait();
         for reader in readers {
             if reader.join().is_err() {
                 interrupted = true;
             }
         }
-        self.children.lock().unwrap().remove(&id);
+        drop(owned);
         let mut capture = capture.lock().unwrap();
         Ok(Output {
             code: status.and_then(|s| s.code()),
@@ -559,6 +669,7 @@ impl Runner {
             logs: capture.logs.drain(..).collect(),
             truncated: capture.truncated,
             interrupted: interrupted || read_failed.load(Ordering::Acquire),
+            timed_out,
             duration_ms: started.elapsed().as_millis() as u64,
         })
     }
@@ -588,32 +699,7 @@ impl Runner {
 
 /// Strip terminal escapes/control bytes and bound UTF-8 expansion after decoding.
 pub fn plain_text(bytes: &[u8], limit: usize) -> String {
-    let text = String::from_utf8_lossy(bytes);
-    let mut clean = String::new();
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\u{1b}' {
-            match chars.next() {
-                Some('[') => {
-                    for c in chars.by_ref() {
-                        if ('@'..='~').contains(&c) {
-                            break;
-                        }
-                    }
-                }
-                Some(']') => {
-                    while let Some(c) = chars.next() {
-                        if c == '\u{7}' || (c == '\u{1b}' && chars.next() == Some('\\')) {
-                            break;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        } else if ch == '\n' || ch == '\t' || (!ch.is_control() && ch != '\u{7f}') {
-            clean.push(ch);
-        }
-    }
+    let mut clean = StreamSanitizer::default().push(bytes, true);
     if clean.len() > limit {
         let mut start = clean.len() - limit;
         while !clean.is_char_boundary(start) {
@@ -626,7 +712,8 @@ pub fn plain_text(bytes: &[u8], limit: usize) -> String {
 
 #[cfg(test)]
 mod stream_text_tests {
-    use super::{FollowCapture, LOG_LIMIT, StreamSanitizer};
+    use super::{FollowCapture, LOG_LIMIT, ProcessOptions, Runner, StreamSanitizer, plain_text};
+    use std::{path::Path, sync::atomic::Ordering, thread, time::Duration};
 
     #[test]
     fn preserves_utf8_and_discards_controls_across_every_byte_boundary() {
@@ -668,5 +755,55 @@ mod stream_text_tests {
         assert!(capture.truncated);
         assert!(capture.pending.len() <= LOG_LIMIT);
         assert!(String::from_utf8(capture.pending.into()).is_ok());
+    }
+
+    #[test]
+    fn incomplete_escape_states_resume_at_newline_across_every_split() {
+        for escape in [
+            "\u{1b}",
+            "\u{1b}[123;",
+            "\u{1b}]title",
+            "\u{1b}]title\u{1b}",
+        ] {
+            let bytes = format!("이전{escape}\n다음 서비스 준비\n").into_bytes();
+            for split in 0..=bytes.len() {
+                let mut sanitizer = StreamSanitizer::default();
+                let mut text = sanitizer.push(&bytes[..split], false);
+                text.push_str(&sanitizer.push(&bytes[split..], true));
+                assert_eq!(text, "이전\n다음 서비스 준비\n", "split {split}");
+            }
+            assert_eq!(plain_text(&bytes, 1024), "이전\n다음 서비스 준비\n");
+        }
+    }
+
+    #[test]
+    fn cancellation_is_rechecked_after_waiting_for_launch_registry() {
+        for follow in [false, true] {
+            let runner = Runner::default();
+            let registry = runner.children.lock().unwrap();
+            let options = ProcessOptions::default();
+            let cancel = options.cancel.clone();
+            let worker_runner = runner.clone();
+            let (ready, waiting) = std::sync::mpsc::channel();
+            let worker = thread::spawn(move || {
+                ready.send(()).unwrap();
+                if follow {
+                    worker_runner
+                        .start_follow_with_options(Path::new("/usr/bin/true"), &[], &[], &options)
+                        .is_err()
+                } else {
+                    worker_runner
+                        .run_with_options(Path::new("/usr/bin/true"), &[], &[], &options, false)
+                        .is_err()
+                }
+            });
+            waiting.recv().unwrap();
+            // Keep launch blocked independently of subprocess scheduling.
+            thread::sleep(Duration::from_millis(20));
+            cancel.store(true, Ordering::Release);
+            drop(registry);
+            assert!(worker.join().unwrap());
+            assert!(runner.children.lock().unwrap().is_empty());
+        }
     }
 }

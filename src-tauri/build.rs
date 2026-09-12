@@ -20,6 +20,16 @@ fn main() {
             "query_project_logs",
             "retry_project_logs",
             "stop_project_logs",
+            "pick_compose_path",
+            "list_compose_projects",
+            "preview_compose_project",
+            "save_compose_project",
+            "remove_compose_project",
+            "prepare_compose_operation",
+            "start_compose_operation",
+            "list_compose_operations",
+            "read_compose_operation",
+            "cancel_compose_operation",
         ]),
     ))
     .expect("failed to generate the explicit application permissions");

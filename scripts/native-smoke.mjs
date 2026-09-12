@@ -57,7 +57,7 @@ if (command === 'build') {
     override,
   }, null, 2) + '\n');
   console.log(`Validation bundle: ${app}\nProduction CSP and Rust IPC are unchanged. This is a test-only bundle.`);
-} else if (['live-on', 'live-off'].includes(command)) {
+} else if (['live-on', 'live-off', 'compose-success', 'compose-fail', 'compose-quiet'].includes(command)) {
   // Reuse the fixture's controller ownership check. Only the exact live run in
   // /tmp can receive a gate; no Docker endpoint or user config is modified.
   await run('/usr/bin/python3', ['-c', `
@@ -76,11 +76,15 @@ if root.resolve() != root or root.parent != Path("/tmp").resolve() or not root.n
 launch = json.loads((root / "launch.json").read_text())
 if any(launch.get(key) != manifest.get(key) for key in ["runId", "binarySha256", "startedAtMs", "controllerPid"]):
     raise RuntimeError("Native smoke launch identity does not match")
-gate = root / "follow-live"
+compose = sys.argv[2].startswith("compose-")
+gate = root / ("compose-mode" if compose else "follow-live")
 if gate.is_symlink():
     raise RuntimeError("Refusing a linked follow gate")
 enabled = sys.argv[2] == "live-on"
-if enabled:
+if compose:
+    gate.write_text(sys.argv[2].removeprefix("compose-") + "\\n")
+    gate.chmod(0o600)
+elif enabled:
     gate.write_text("enabled\\n")
     gate.chmod(0o600)
 else:
@@ -106,6 +110,9 @@ print(json.dumps({"command": sys.argv[2], "fixtureRoot": str(root), "liveOutput"
   pnpm native:smoke socket-on    Restore the fixture socket before recovery checks
   pnpm native:smoke live-on      Emit fixture stdout/stderr ticks for live/pause/resume checks
   pnpm native:smoke live-off     Keep follow connected with no new fixture ticks
+  pnpm native:smoke compose-success  Complete synthetic Compose operations
+  pnpm native:smoke compose-fail  Fail after creating one fixture service
+  pnpm native:smoke compose-quiet  Wait silently until explicit cancellation
   pnpm native:smoke report [--ui-results path.json]  Combine CLI trace with the UI JSON report
   pnpm native:smoke stop         Stop only the owned validation run and archive evidence
 

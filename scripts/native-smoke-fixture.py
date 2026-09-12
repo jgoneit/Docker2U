@@ -47,6 +47,11 @@ def populate_fixture(root):
     config.mkdir(mode=0o700)
     write_json(config / "config.json", {"currentContext": "native-smoke-local"})
     shutil.copyfile(REPO / "tests/native-smoke/fake_docker.py", root / "docker")
+    shutil.copyfile(REPO / "tests/native-smoke/compose_fixture.py", root / "compose_fixture.py")
+    compose_spec = importlib.util.spec_from_file_location("native_compose_fixture", root / "compose_fixture.py")
+    compose = importlib.util.module_from_spec(compose_spec)
+    compose_spec.loader.exec_module(compose)
+    compose.make_project(root)
     (root / "docker").chmod(0o700)
     native_config = root / "home/Library/Application Support/io.github.jgoneit.docker2u"
     native_config.mkdir(mode=0o700, parents=True)
@@ -54,7 +59,7 @@ def populate_fixture(root):
 
 
 def child_environment(root):
-    environment = {key: value for key, value in os.environ.items() if not key.startswith("DOCKER_") and key not in ["COLIMA_HOME", "LIMA_HOME"]}
+    environment = {key: value for key, value in os.environ.items() if not key.startswith(("DOCKER_", "COMPOSE_", "BUILDX_", "BUILDKIT_")) and key not in ["COLIMA_HOME", "LIMA_HOME"]}
     # This dictionary belongs only to the child; the launching shell and user's files are unchanged.
     environment.update(HOME=str(root / "home"), DOCKER_CONFIG=str(root / "docker-config"), PATH=str(root) + ":/usr/bin:/bin")
     return environment
@@ -85,7 +90,7 @@ def archive_trace(manifest):
     coverage = {(item["ui"]["mode"], name) for item in ui_reports for name in item["verification"]["completedProbes"]}
     expected = {("worker", name) for name in ["search", "connection-clear", "socket", "recovery", *INSIGHT_STEPS]} | {(mode, "search") for mode in ["constructor-fail", "never-ready"]}
     report = {**manifest, "cliEvents": len(events), "rejectedCommands": rejected,
-              "dockerExecution": "isolated read-only Python fixture; no real Docker CLI is discovered or invoked",
+              "dockerExecution": "isolated Python fixture with synthetic Compose state; no real Docker CLI is discovered or invoked",
               "uiReports": ui_reports, "requiredCoverageComplete": expected <= coverage,
               "observationCoverageComplete": {("worker", name) for name in OBSERVATION_STEPS} <= coverage}
     write_json(evidence / "report.json", report)
@@ -105,6 +110,42 @@ OBSERVATION_STEPS = {
     "observation-baseline": ["captured native project observation baseline"],
     "observation-restore": ["verified native background collection and restore"],
 }
+
+COMPOSE_METADATA_FIELDS = {
+    "compose picker": {"kind", "selected"},
+    "compose preview": {"name", "services", "existingContainers"},
+    "compose preview failed": {"code"},
+    "compose registered": {"id", "name", "revision"},
+    "compose prepared": {"name", "action", "existingContainers"},
+    "compose started": {"id", "action", "phase"},
+    "compose phase": {"id", "action", "phase", "outcome", "reconciliation", "observedContainers", "errorCode"},
+    "compose cancelled": {"id", "phase", "cancelRequested"},
+}
+
+
+def validate_compose_metadata(step):
+    """Accept bounded IPC metadata, never award a UI/viewport completion probe."""
+    detail = step.get("detail")
+    if not isinstance(detail, dict) or set(detail) != COMPOSE_METADATA_FIELDS[step["name"]]:
+        raise ValueError("Compose metadata fields are missing or include unapproved payload")
+    for key, value in detail.items():
+        if key in ("selected", "cancelRequested"):
+            valid = type(value) is bool
+        elif key in ("revision", "existingContainers", "observedContainers"):
+            valid = (key == "observedContainers" and value is None) or (type(value) is int and value >= (1 if key == "revision" else 0))
+        elif key == "services":
+            valid = isinstance(value, list) and len(value) <= 256 and all(isinstance(name, str) and 0 < len(name) <= 256 for name in value)
+        else:
+            valid = (key in ("outcome", "errorCode") and value is None) or (isinstance(value, str) and 0 < len(value) <= 256)
+        if not valid:
+            raise ValueError("Compose metadata contains an invalid value: " + key)
+    for key, allowed in {"kind": {"file", "directory", "env"}, "action": {"up", "stop"},
+                         "phase": {"preparing", "running", "reconciling", "finished"},
+                         "outcome": {None, "succeeded", "failed", "resultUnknown", "cancelledBeforeStart"},
+                         "reconciliation": {"pending", "succeeded", "failed", "skipped"}}.items():
+        if key in detail and detail[key] not in allowed:
+            raise ValueError("Compose metadata contains an unknown state: " + key)
+    return {"name": step["name"], "timeMs": step["timeMs"], "detail": detail}
 
 
 def validate_observation(probe, by_name, attempt, steps, events, manifest):
@@ -321,7 +362,7 @@ def validate_insights(probe, by_name, attempt, events, launch_start):
 def validate_ui(manifest, ui, events, now_ms=None):
     if ui.get("marker") != "NATIVE_SMOKE_HARNESS" or ui.get("binding") != {key: manifest[key] for key in ["runId", "binarySha256", "startedAtMs"]}:
         raise ValueError("UI report does not belong to this exact native launch and binary")
-    if ui.get("nativeIpc") is not True or ui.get("status") != "passed" or ui.get("failures"):
+    if ui.get("nativeIpc") is not True or ui.get("status") not in ("passed", "ready") or ui.get("failures"):
         raise ValueError("UI report contains incomplete or failed probes")
     mode = ui.get("mode")
     if mode not in ["worker", "constructor-fail", "never-ready"]:
@@ -336,10 +377,15 @@ def validate_ui(manifest, ui, events, now_ms=None):
         raise ValueError("UI steps are out of order")
     completed = []
     clear_order = []
+    metadata = []
     pending = None
     for index, step in enumerate(steps):
         name = step.get("name", "")
-        if name.startswith("started "):
+        if name in COMPOSE_METADATA_FIELDS:
+            metadata.append(validate_compose_metadata(step))
+        elif name.startswith("compose "):
+            raise ValueError("Unknown Compose metadata step")
+        elif name.startswith("started "):
             if pending is not None:
                 raise ValueError("Overlapping or incomplete UI probe")
             pending = (name.removeprefix("started "), index)
@@ -416,9 +462,12 @@ def validate_ui(manifest, ui, events, now_ms=None):
             pending = None
         elif name.startswith("failed "):
             raise ValueError("UI report retains a failed probe")
-    if pending or not completed:
+    if pending or (not completed and not metadata):
         raise ValueError("UI report has no complete probe")
-    return {"accepted": True, "completedProbes": completed, "clearOrderProofs": clear_order}
+    if completed and ui.get("status") != "passed":
+        raise ValueError("UI report contains incomplete or failed probes")
+    return {"accepted": True, "completedProbes": completed, "clearOrderProofs": clear_order,
+            "metadataEvidence": metadata, "metadataOnly": not completed, "composeUiVerified": False}
 
 
 def owned_controller(manifest):

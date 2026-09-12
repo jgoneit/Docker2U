@@ -4,11 +4,53 @@ mod process;
 mod process_tests;
 
 use docker::{
-    Action, ApiError, BulkMutation, ContainerDetails, ContainerList, Core, Environment,
-    LogStreamChunk, LogStreamStarted, Logs, Mutation, ObservationHold, ObservationRead,
-    ObservationScope, ProjectLogPage, ProjectLogQuery, StatsSnapshot,
+    Action, ApiError, BulkMutation, ComposeAction, ComposeOperation, ComposeOperationPreview,
+    ComposeOperationRead, ComposeProject, ComposeProjectInput, ComposeProjectPreview,
+    ContainerDetails, ContainerList, Core, Environment, LogStreamChunk, LogStreamStarted, Logs,
+    Mutation, ObservationHold, ObservationRead, ObservationScope, ProjectLogPage, ProjectLogQuery,
+    StatsSnapshot,
 };
 use tauri::Manager;
+use tauri_plugin_dialog::DialogExt;
+
+#[tauri::command]
+async fn pick_compose_path(
+    app: tauri::AppHandle,
+    kind: String,
+) -> Result<Option<String>, ApiError> {
+    worker(move || {
+        let picker = app.dialog().file();
+        let selected = match kind.as_str() {
+            "file" => picker
+                .add_filter("Compose", &["yaml", "yml"])
+                .blocking_pick_file(),
+            "directory" => picker.blocking_pick_folder(),
+            "env" => picker.blocking_pick_file(),
+            _ => {
+                return Err(ApiError {
+                    code: "InvalidSelection".into(),
+                    message: "Unknown Compose path kind".into(),
+                    command: None,
+                    stderr: None,
+                });
+            }
+        };
+        selected
+            .map(|selection| {
+                selection
+                    .into_path()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .map_err(|error| ApiError {
+                        code: "InvalidSelection".into(),
+                        message: format!("Cannot use the selected local path: {error}"),
+                        command: None,
+                        stderr: None,
+                    })
+            })
+            .transpose()
+    })
+    .await
+}
 
 async fn worker<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, ApiError> + Send + 'static,
@@ -194,9 +236,113 @@ async fn retry_observation_events(
     worker(move || core.retry_observation_events(&session_id)).await
 }
 
+#[tauri::command]
+async fn list_compose_projects(
+    core: tauri::State<'_, Core>,
+) -> Result<Vec<ComposeProject>, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.list_compose_projects()).await
+}
+
+#[tauri::command]
+async fn preview_compose_project(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    input: ComposeProjectInput,
+) -> Result<ComposeProjectPreview, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.preview_compose_project(&session_id, input)).await
+}
+
+#[tauri::command]
+async fn save_compose_project(
+    core: tauri::State<'_, Core>,
+    preview_id: String,
+) -> Result<ComposeProject, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.save_compose_project(&preview_id)).await
+}
+
+#[tauri::command]
+async fn remove_compose_project(
+    core: tauri::State<'_, Core>,
+    project_id: String,
+    expected_revision: u64,
+) -> Result<(), ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.remove_compose_project(&project_id, expected_revision)).await
+}
+
+#[tauri::command]
+async fn prepare_compose_operation(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    project_id: String,
+    expected_revision: u64,
+    action: ComposeAction,
+) -> Result<ComposeOperationPreview, ApiError> {
+    let core = core.inner().clone();
+    worker(move || {
+        core.prepare_compose_operation(&session_id, &project_id, expected_revision, action)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn start_compose_operation(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    prepare_id: String,
+    request_id: String,
+) -> Result<ComposeOperation, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.start_compose_operation(&session_id, &prepare_id, &request_id)).await
+}
+
+#[tauri::command]
+async fn list_compose_operations(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+) -> Result<Vec<ComposeOperation>, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.list_compose_operations(&session_id)).await
+}
+
+#[tauri::command]
+async fn read_compose_operation(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    operation_id: String,
+    after_sequence: u64,
+) -> Result<ComposeOperationRead, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.read_compose_operation(&session_id, &operation_id, after_sequence)).await
+}
+
+#[tauri::command]
+async fn cancel_compose_operation(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    operation_id: String,
+) -> Result<ComposeOperation, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.cancel_compose_operation(&session_id, &operation_id)).await
+}
+
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(Core::default())
+        .setup(|app| {
+            let path = app
+                .path()
+                .app_config_dir()?
+                .join("compose-projects.v1.json");
+            app.state::<Core>()
+                .set_compose_storage_path(path)
+                .map_err(|error| std::io::Error::other(error.message))?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_environment,
             list_containers,
@@ -217,6 +363,16 @@ pub fn run() {
             query_project_logs,
             retry_project_logs,
             stop_project_logs,
+            pick_compose_path,
+            list_compose_projects,
+            preview_compose_project,
+            save_compose_project,
+            remove_compose_project,
+            prepare_compose_operation,
+            start_compose_operation,
+            list_compose_operations,
+            read_compose_operation,
+            cancel_compose_operation,
         ])
         .build(tauri::generate_context!())
         .expect("Docker2U could not start")
@@ -258,7 +414,17 @@ mod ipc_tests {
                 "allow-configure-project-logs",
                 "allow-query-project-logs",
                 "allow-retry-project-logs",
-                "allow-stop-project-logs"
+                "allow-stop-project-logs",
+                "allow-pick-compose-path",
+                "allow-list-compose-projects",
+                "allow-preview-compose-project",
+                "allow-save-compose-project",
+                "allow-remove-compose-project",
+                "allow-prepare-compose-operation",
+                "allow-start-compose-operation",
+                "allow-list-compose-operations",
+                "allow-read-compose-operation",
+                "allow-cancel-compose-operation"
             ])
         );
     }

@@ -25,7 +25,7 @@ export function installObservationFixture() {
   async function logs(sessionId: string, project: string): Promise<ProjectLogPage> {
     if (!snapshot) snapshot = await api.listContainers(sessionId);
     const containers = snapshot.containers.filter(container => container.composeProject === project);
-    const rows: ProjectLogRow[] = Array.from({ length: 3000 + Math.floor((Date.now() - started) / 500) }, (_, i) => {
+    const rows: ProjectLogRow[] = Array.from({ length: containers.length ? 3000 + Math.floor((Date.now() - started) / 500) : 0 }, (_, i) => {
       const container = containers[i % containers.length]!;
       const timestamp = new Date(started - 60000 + i * 25).toISOString().replace('Z', '123456Z');
       return { rowId: `row-${i}`, sequence: i + 1, sourceId: container.fullId, fullId: container.fullId, serviceName: container.composeService,

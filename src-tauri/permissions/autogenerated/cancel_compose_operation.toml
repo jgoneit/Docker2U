@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cancel-compose-operation"
+description = "Enables the cancel_compose_operation command without any pre-configured scope."
+commands.allow = ["cancel_compose_operation"]
+
+[[permission]]
+identifier = "deny-cancel-compose-operation"
+description = "Denies the cancel_compose_operation command without any pre-configured scope."
+commands.deny = ["cancel_compose_operation"]

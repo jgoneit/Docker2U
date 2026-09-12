@@ -76,7 +76,7 @@ class FixtureIsolationTests(unittest.TestCase):
 
     def test_only_child_environment_and_owned_config_change(self):
         before = dict(os.environ)
-        with patch.dict(os.environ, {"DOCKER_HOST": "unix:///real.sock", "DOCKER_CONTEXT": "real", "DOCKER_TLS_VERIFY": "1", "COLIMA_HOME": "/real-colima", "LIMA_HOME": "/real-lima"}):
+        with patch.dict(os.environ, {"DOCKER_HOST": "unix:///real.sock", "DOCKER_CONTEXT": "real", "DOCKER_TLS_VERIFY": "1", "COLIMA_HOME": "/real-colima", "LIMA_HOME": "/real-lima", "COMPOSE_FILE": "/real-compose.yaml", "BUILDX_BUILDER": "remote", "BUILDKIT_HOST": "tcp://real:1234"}):
             actual = fixture.child_environment(self.root)
             self.assertEqual(os.environ["DOCKER_HOST"], "unix:///real.sock")
             self.assertEqual(actual["HOME"], str(self.root / "home"))
@@ -84,6 +84,7 @@ class FixtureIsolationTests(unittest.TestCase):
             self.assertEqual({key for key in actual if key.startswith("DOCKER_")}, {"DOCKER_CONFIG"})
             self.assertNotIn("COLIMA_HOME", actual)
             self.assertNotIn("LIMA_HOME", actual)
+            self.assertFalse(any(key.startswith(("COMPOSE_", "BUILDX_", "BUILDKIT_")) for key in actual))
         self.assertEqual(dict(os.environ), before)
         config = json.loads((self.root / "home/Library/Application Support/io.github.jgoneit.docker2u/runtime.json").read_text())
         self.assertEqual(config, {"dockerPath": str(self.root / "docker")})
@@ -230,7 +231,213 @@ class FixtureIsolationTests(unittest.TestCase):
         self.assertTrue(self.root.exists())
 
 
+
+class ComposeFixtureTests(unittest.TestCase):
+    setUp = FixtureIsolationTests.setUp
+    cli = FixtureIsolationTests.cli
+
+    def compose_arguments(self, command, name="native-compose", source=None):
+        directory = self.root / "compose project 한글"
+        return self.host + ["compose", "--ansi", "never", "--progress", "plain",
+                            "--project-directory", str(directory), "--project-name", name,
+                            "--file", str(source or directory / "compose.yaml"),
+                            "--env-file", str(directory / ".env"), *command]
+
+    def compose_environment(self):
+        return {**self.environment, "DOCKER_HOST": self.host[1], "COMPOSE_REMOVE_ORPHANS": "false",
+                "COMPOSE_PROFILES": "", "COMPOSE_MENU": "false", "BUILDX_BUILDER": "default"}
+
+    def compose_cli(self, command, name="native-compose", source=None, environment=None):
+        return subprocess.run([sys.executable, str(self.root / "docker"), *self.compose_arguments(command, name, source)],
+                              cwd=self.root / "compose project 한글", env=environment or self.compose_environment(),
+                              capture_output=True, timeout=5)
+
+    def require_up(self):
+        result = self.compose_cli(["up", "--detach"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return docker.compose.rows(self.root)
+
+    def test_version_help_and_config_match_core_contract_without_secret_in_trace(self):
+        for command, expected in [(["version", "--short"], b"2.39.4"), (["--help"], b"--project-directory"),
+                                  (["config", "--help"], b"--format"), (["up", "--help"], b"--detach"),
+                                  (["stop", "--help"], b"--timeout")]:
+            result = subprocess.run([sys.executable, str(self.root / "docker"), *self.host, "compose", *command],
+                                    env=self.compose_environment(), capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(expected, result.stdout)
+        result = self.compose_cli(["config", "--format", "json"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        model = json.loads(result.stdout)
+        self.assertEqual(model["name"], "native-compose")
+        self.assertEqual(set(model["services"]), {"api", "worker"})
+        self.assertIn("build", model["services"]["worker"])
+        self.assertIn(docker.compose.SECRET, result.stdout.decode())
+        self.assertNotIn(docker.compose.SECRET, (self.root / "trace.jsonl").read_text())
+        self.assertEqual(docker.compose.rows(self.root), [])
+
+    def test_project_lifecycle_preserves_provenance_and_changes_full_ids_on_recreation(self):
+        filtered = self.host + ["container", "ls", "--all", "--no-trunc", "--filter",
+                                "label=com.docker.compose.project=native-compose", "--format", "{{.ID}}"]
+        self.assertEqual(self.cli(filtered).stdout, b"")
+        before = self.require_up()
+        identifiers = [row["Id"] for row in before]
+        self.assertEqual(len(identifiers), 2)
+        self.assertEqual(len(set(identifiers)), 2)
+        self.assertTrue(all(len(identifier) == 64 for identifier in identifiers))
+        self.assertEqual(self.cli(filtered).stdout.decode().splitlines(), identifiers)
+        source = (REPO / "src-tauri/src/docker_compose.rs").read_text()
+        projection = source.split('const PROVENANCE_FORMAT: &str = r#"', 1)[1].split('"#;', 1)[0]
+        self.assertEqual(docker.compose.PROVENANCE_FORMAT, projection)
+        result = self.cli(self.host + ["container", "inspect", "--format", projection, *identifiers])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        provenance = [json.loads(line) for line in result.stdout.splitlines()]
+        for row in provenance:
+            self.assertEqual(row["Project"], "native-compose")
+            self.assertEqual(row["WorkingDirectory"], str(self.root / "compose project 한글"))
+            self.assertEqual(row["ConfigFiles"], str(self.root / "compose project 한글/compose.yaml"))
+            self.assertEqual(set(row), {"Id", "Project", "WorkingDirectory", "ConfigFiles"})
+        result = self.cli(self.host + ["container", "stats", "--no-stream", "--no-trunc", "--format", "{{json .}}", *identifiers])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([json.loads(line)["ID"] for line in result.stdout.splitlines()], identifiers)
+        for row in before:
+            result = self.cli(self.host + ["container", "inspect", "--format", docker.DETAILS_FORMAT, row["Id"]])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            details = json.loads(result.stdout)
+            self.assertEqual(details["Id"], row["Id"])
+            self.assertEqual(details["State"], "running")
+            self.assertEqual(details["HealthConfigured"], row["ComposeService"] == "api")
+            self.assertFalse(details["OOMKilled"])
+            result = self.cli(self.host + ["container", "logs", "--tail", "300", "--timestamps", row["Id"]])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, docker.dense_logs(identity()))
+        result = self.compose_cli(["stop"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        stopped = docker.compose.rows(self.root)
+        self.assertEqual([row["Id"] for row in stopped], identifiers)
+        self.assertTrue(all(row["State"] == "exited" for row in stopped))
+        newer = self.require_up()
+        self.assertTrue(set(identifiers).isdisjoint(row["Id"] for row in newer))
+        stale = self.cli(self.host + ["container", "inspect", "--format", docker.INSPECT_FORMAT, identifiers[0]])
+        self.assertEqual(stale.returncode, 95)
+        self.assertEqual(stale.stdout, b"")
+
+    def test_partial_failure_leaves_observable_started_service_and_other_project_untouched(self):
+        first = self.compose_cli(["up", "--detach"], name="another-project")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        existing = docker.compose.rows(self.root)
+        (self.root / "compose-mode").write_text("fail")
+        result = self.compose_cli(["up", "--detach"])
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b"NATIVE_COMPOSE_PARTIAL_FAILURE", result.stdout)
+        current = docker.compose.rows(self.root)
+        self.assertEqual([row for row in current if row["ComposeProject"] == "another-project"], existing)
+        partial = [row for row in current if row["ComposeProject"] == "native-compose"]
+        self.assertEqual(len(partial), 1)
+        self.assertEqual(partial[0]["ComposeService"], "api")
+        self.assertEqual(partial[0]["State"], "running")
+        (self.root / "compose-mode").write_text("success")
+        self.assertEqual(self.compose_cli(["stop"]).returncode, 0)
+        self.assertEqual([row for row in docker.compose.rows(self.root) if row["ComposeProject"] == "another-project"], existing)
+
+    def test_config_failures_and_foreign_or_ambient_inputs_are_rejected(self):
+        result = self.compose_cli(["config", "--format", "json"], source=self.root / "compose project 한글/invalid.yaml")
+        self.assertEqual(result.returncode, 95)
+        self.assertEqual(result.stdout, b"")
+        (self.root / "compose-config-fail").write_text("missing required variable")
+        self.assertEqual(self.compose_cli(["config", "--format", "json"]).returncode, 1)
+        (self.root / "compose-config-fail").unlink()
+        cases = [{"DOCKER_HOST": "unix:///foreign.sock"}, {"COMPOSE_REMOVE_ORPHANS": "true"},
+                 {"COMPOSE_FILE": "/foreign/compose.yaml"}, {"COMPOSE_ENV_FILES": "/foreign/env"},
+                 {"BUILDX_BUILDER": "remote"}, {"BUILDKIT_HOST": "tcp://foreign:1234"}]
+        for overrides in cases:
+            with self.subTest(overrides=overrides):
+                result = self.compose_cli(["up", "--detach"], environment={**self.compose_environment(), **overrides})
+                self.assertEqual(result.returncode, 95)
+                self.assertEqual(result.stdout, b"")
+        without_builder_pin = self.compose_environment()
+        del without_builder_pin["BUILDX_BUILDER"]
+        result = self.compose_cli(["up", "--detach"], environment=without_builder_pin)
+        self.assertEqual(result.returncode, 95, "clearing builder variables must not fall back to a persisted selection")
+        self.assertEqual(result.stdout, b"")
+        for command in [["down"], ["up", "--detach", "--remove-orphans"], ["exec", "api", "sh"], ["build"]]:
+            self.assertEqual(self.compose_cli(command).returncode, 95)
+        self.assertEqual(docker.compose.rows(self.root), [])
+
+    def test_quiet_operation_and_blocked_configuration_cancel_without_later_mutation(self):
+        for command, marker, expected_phase in [(["up", "--detach"], "compose-mode", "compose-operation"),
+                                                (["config", "--format", "json"], "compose-config-block", "compose-config")]:
+            with self.subTest(command=command):
+                (self.root / marker).write_text("quiet")
+                process = subprocess.Popen([sys.executable, str(self.root / "docker"), *self.compose_arguments(command)],
+                                           cwd=self.root / "compose project 한글", env=self.compose_environment(),
+                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+                try:
+                    deadline = time.monotonic() + 5
+                    while not any(row["phase"] == expected_phase and row["pid"] == process.pid for row in fixture.read_trace(self.root)):
+                        self.assertIsNone(process.poll())
+                        self.assertLess(time.monotonic(), deadline)
+                        time.sleep(0.02)
+                    time.sleep(0.05)
+                    self.assertIsNone(process.poll())
+                    process.terminate()
+                    stdout, stderr = process.communicate(timeout=3)
+                    self.assertEqual(process.returncode, 130, stderr)
+                    self.assertNotIn(b"NATIVE_COMPOSE_END", stdout)
+                    self.assertEqual(docker.compose.rows(self.root), [])
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                        process.communicate(timeout=3)
+                    (self.root / marker).unlink()
+
+
 class EvidenceValidationTests(unittest.TestCase):
+    def test_compose_ipc_metadata_does_not_award_ui_coverage(self):
+        report = {**clear_report(), "status": "ready", "steps": [
+            step("compose picker", 1100, {"kind": "file", "selected": True}),
+            step("compose preview", 1200, {"name": "native-compose", "services": ["api", "worker"], "existingContainers": 0}),
+            step("compose registered", 1300, {"id": "registration-id", "name": "native-compose", "revision": 1}),
+            step("compose prepared", 1400, {"name": "native-compose", "action": "up", "existingContainers": 0}),
+            step("compose started", 1500, {"id": "operation-id", "action": "up", "phase": "preparing"}),
+            step("compose phase", 1600, {"id": "operation-id", "action": "up", "phase": "finished", "outcome": "succeeded", "reconciliation": "succeeded", "observedContainers": 2, "errorCode": None}),
+            step("compose cancelled", 1700, {"id": "another-operation", "phase": "running", "cancelRequested": True}),
+            step("compose preview failed", 1800, {"code": "ComposeValidationFailed"}),
+        ]}
+        result = fixture.validate_ui(identity(), report, [], now_ms=5000)
+        self.assertTrue(result["accepted"])
+        self.assertTrue(result["metadataOnly"])
+        self.assertFalse(result["composeUiVerified"])
+        self.assertEqual(result["completedProbes"], [])
+        self.assertEqual(result["metadataEvidence"], report["steps"])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "fixture"
+            root.mkdir()
+            evidence = Path(directory) / "evidence"
+            submissions = evidence / "ui-results"
+            submissions.mkdir(parents=True)
+            fixture.write_json(submissions / "compose.json", {"ui": report, "verification": result})
+            summary = fixture.archive_trace({**identity(), "fixtureRoot": str(root), "evidenceDirectory": str(evidence)})
+            self.assertFalse(summary["requiredCoverageComplete"])
+            self.assertFalse(summary["observationCoverageComplete"])
+
+    def test_compose_metadata_keeps_existing_probe_coverage_and_rejects_raw_payloads(self):
+        report = clear_report()
+        metadata = step("compose picker", 4500, {"kind": "file", "selected": True})
+        report["steps"].append(metadata)
+        result = fixture.validate_ui(identity(), report, native_events(), now_ms=5000)
+        self.assertEqual(result["completedProbes"], ["connection-clear"])
+        self.assertFalse(result["metadataOnly"])
+        self.assertFalse(result["composeUiVerified"])
+        for fields in [{"kind": "file", "selected": True, "environment": {"SECRET": "hidden"}},
+                       {"kind": "file", "selected": "yes"}, {"kind": "unknown", "selected": True}]:
+            changed = copy.deepcopy(report)
+            changed["steps"][-1]["detail"] = fields
+            with self.subTest(fields=fields), self.assertRaises(ValueError):
+                fixture.validate_ui(identity(), changed, native_events(), now_ms=5000)
+        forged = {**report, "steps": [step("started compose", 1100), step("passed compose", 1200)]}
+        with self.assertRaisesRegex(ValueError, "no matching probe"):
+            fixture.validate_ui(identity(), forged, [], now_ms=5000)
+
     def test_accepts_same_pid_order_with_launch_and_binary_binding(self):
         result = fixture.validate_ui(identity(), clear_report(), native_events(), now_ms=5000)
         self.assertTrue(result["accepted"])

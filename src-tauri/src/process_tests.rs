@@ -1,6 +1,7 @@
 //! Process contract tests use only uniquely owned files and child process groups.
 use crate::process::{
-    FollowProcess, FollowRead, LOG_LIMIT, Output, Runner, STDERR_LIMIT, STDOUT_LIMIT, plain_text,
+    FollowProcess, FollowRead, LOG_LIMIT, Output, ProcessOptions, Runner, STDERR_LIMIT,
+    STDOUT_LIMIT, plain_text,
 };
 use std::{
     fs,
@@ -277,6 +278,7 @@ fn timeout_kills_term_resistant_child_and_descendant_group() {
     gate.store(true, Ordering::Release);
     let out = owned.worker.take().unwrap().join().unwrap().unwrap();
     assert!(out.interrupted);
+    assert!(out.timed_out);
     assert_eq!(out.code, None);
     assert!(out.duration_ms >= 2_000);
     assert!(started.elapsed() >= Duration::from_secs(2));
@@ -504,4 +506,229 @@ fn follow_and_one_shot_share_capacity_and_shutdown_closes_follow_work() {
         assert!(follow.read().terminal);
     }
     assert!(runner.start_follow(&fixture.executable, &[], &[]).is_err());
+}
+
+#[test]
+fn compose_options_use_explicit_unicode_working_directory_and_literal_arguments() {
+    let fixture = Fixture::new("pwd -P\nprintf '%s\\0' \"$@\"");
+    let cwd = fixture.root.join("한글 프로젝트 폴더");
+    fs::create_dir(&cwd).unwrap();
+    let cwd = fs::canonicalize(cwd).unwrap();
+    let args = vec!["$HOME $(touch must-not-exist) ; `pwd`".into()];
+    let options = ProcessOptions {
+        cwd: Some(cwd.clone()),
+        deadline: Some(Instant::now() + Duration::from_secs(5)),
+        isolate_compose_env: true,
+        ..ProcessOptions::default()
+    };
+    let output = Runner::default()
+        .run_with_options(&fixture.executable, &args, &[], &options, false)
+        .unwrap();
+    assert_eq!(output.code, Some(0));
+    assert!(!output.interrupted && !output.timed_out);
+    assert_eq!(
+        output.stdout,
+        format!("{}\n{}\0", cwd.display(), args[0]).as_bytes()
+    );
+    assert!(!cwd.join("must-not-exist").exists());
+    let follow = Runner::default()
+        .start_follow_with_options(&fixture.executable, &args, &[], &options)
+        .unwrap();
+    let (output, text) = follow_until(&follow, |output, _| output.terminal);
+    assert_eq!(output.exit_code, Some(0));
+    assert_eq!(text, format!("{}\n{}", cwd.display(), args[0]));
+    assert!(!cwd.join("must-not-exist").exists());
+}
+
+#[test]
+fn compose_options_strip_ambient_compose_and_builder_values_then_apply_pins() {
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "process_tests::compose_environment_probe",
+            "--nocapture",
+        ])
+        .env("DOCKER2U_COMPOSE_ENV_PROBE", "1")
+        .env("DOCKER_HOST", "tcp://hostile.example:2375")
+        .env("COMPOSE_FILE", "/hostile/compose.yml")
+        .env("COMPOSE_PROJECT_NAME", "hostile")
+        .env("COMPOSE_PROFILES", "danger")
+        .env("COMPOSE_ENV_FILES", "/hostile/env")
+        .env("COMPOSE_REMOVE_ORPHANS", "true")
+        .env("COMPOSE_NEW_UNKNOWN_OVERRIDE", "hostile")
+        .env("BUILDX_BUILDER", "remote")
+        .env("BUILDX_CONFIG", "/hostile/buildx")
+        .env("BUILDKIT_HOST", "tcp://hostile.example:1234")
+        .env("BUILDKIT_PROGRESS", "tty")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("compose environment pinned"));
+}
+
+#[test]
+fn compose_environment_probe() {
+    if std::env::var_os("DOCKER2U_COMPOSE_ENV_PROBE").is_none() {
+        return;
+    }
+    let fixture = Fixture::new(
+        "for key in COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_ENV_FILES COMPOSE_NEW_UNKNOWN_OVERRIDE BUILDX_BUILDER BUILDX_CONFIG BUILDKIT_HOST BUILDKIT_PROGRESS; do\n if /usr/bin/printenv \"$key\" >/dev/null; then exit 71; fi\ndone\nprintf '%s\\n' \"$DOCKER_HOST\" \"$COMPOSE_REMOVE_ORPHANS\" \"$COMPOSE_PROFILES\"",
+    );
+    let env = vec![
+        ("DOCKER_HOST".into(), "unix:///pinned.sock".into()),
+        ("COMPOSE_REMOVE_ORPHANS".into(), "false".into()),
+        ("COMPOSE_PROFILES".into(), "".into()),
+    ];
+    let options = ProcessOptions {
+        isolate_compose_env: true,
+        deadline: Some(Instant::now() + Duration::from_secs(5)),
+        ..ProcessOptions::default()
+    };
+    let runner = Runner::default();
+    let output = runner
+        .run_with_options(&fixture.executable, &[], &env, &options, false)
+        .unwrap();
+    assert_eq!(output.code, Some(0));
+    assert_eq!(output.stdout, b"unix:///pinned.sock\nfalse\n\n");
+    let follow = runner
+        .start_follow_with_options(&fixture.executable, &[], &env, &options)
+        .unwrap();
+    let (output, text) = follow_until(&follow, |output, _| output.terminal);
+    assert_eq!(output.exit_code, Some(0));
+    assert_eq!(text, "unix:///pinned.sock\nfalse\n\n");
+    println!("compose environment pinned");
+}
+
+#[test]
+fn cancelled_or_expired_options_never_launch_and_do_not_consume_capacity() {
+    let fixture = Fixture::new("echo $$ > \"$1/must-not-launch\"");
+    let runner = Runner::default();
+    let cancelled = ProcessOptions {
+        cancel: Arc::new(AtomicBool::new(true)),
+        ..ProcessOptions::default()
+    };
+    let expired = ProcessOptions {
+        deadline: Some(Instant::now() - Duration::from_secs(1)),
+        ..ProcessOptions::default()
+    };
+    for options in [cancelled, expired] {
+        for _ in 0..9 {
+            assert!(
+                runner
+                    .run_with_options(&fixture.executable, &fixture.args(), &[], &options, false)
+                    .is_err()
+            );
+            assert!(
+                runner
+                    .start_follow_with_options(&fixture.executable, &fixture.args(), &[], &options)
+                    .is_err()
+            );
+        }
+    }
+    assert!(!fixture.root.join("must-not-launch").exists());
+    let result = runner
+        .run(
+            Path::new("/usr/bin/true"),
+            &[],
+            &[],
+            Duration::from_secs(5),
+            false,
+        )
+        .unwrap();
+    assert_eq!(result.code, Some(0));
+}
+
+#[test]
+fn shared_cancel_interrupts_quiet_preparation_and_cleans_resistant_descendants() {
+    let fixture = Fixture::new(RESISTS_TERM);
+    let runner = Runner::default();
+    let options = ProcessOptions::default();
+    let cancelled = options.cancel.clone();
+    let worker_runner = runner.clone();
+    let executable = fixture.executable.clone();
+    let args = fixture.args();
+    let worker = thread::spawn(move || {
+        worker_runner.run_with_options(&executable, &args, &[], &options, false)
+    });
+    let parent = fixture.pid("parent.pid");
+    let descendant = fixture.pid("descendant.pid");
+    cancelled.store(true, Ordering::Release);
+    let output = worker.join().unwrap().unwrap();
+    assert!(output.interrupted && !output.timed_out);
+    assert_eq!(output.code, None);
+    assert_gone(parent);
+    assert_gone(descendant);
+}
+
+#[test]
+fn shared_cancel_interrupts_quiet_follow_and_prevents_later_launch() {
+    let fixture = Fixture::new(RESISTS_TERM);
+    let runner = Runner::default();
+    let options = ProcessOptions::default();
+    let follow = runner
+        .start_follow_with_options(&fixture.executable, &fixture.args(), &[], &options)
+        .unwrap();
+    let parent = fixture.pid("parent.pid");
+    let descendant = fixture.pid("descendant.pid");
+    assert!(!follow.read().terminal);
+    options.cancel.store(true, Ordering::Release);
+    let (output, _) = follow_until(&follow, |output, _| output.terminal);
+    assert!(output.interrupted && !output.timed_out);
+    assert_gone(parent);
+    assert_gone(descendant);
+    assert!(
+        runner
+            .start_follow_with_options(&fixture.executable, &fixture.args(), &[], &options)
+            .is_err()
+    );
+}
+
+#[test]
+fn follow_deadline_interrupts_quiet_process_and_records_timeout() {
+    let fixture = Fixture::new("exec /bin/sleep 30");
+    let options = ProcessOptions {
+        deadline: Some(Instant::now() + Duration::from_millis(400)),
+        ..ProcessOptions::default()
+    };
+    let follow = Runner::default()
+        .start_follow_with_options(&fixture.executable, &[], &[], &options)
+        .unwrap();
+    let (output, text) = follow_until(&follow, |output, _| output.terminal);
+    assert!(output.interrupted && output.timed_out);
+    assert_eq!(output.exit_code, None);
+    assert!(text.is_empty());
+    assert!(
+        follow.read().timed_out,
+        "terminal classification survives reads"
+    );
+}
+
+#[test]
+fn completed_follow_stays_successful_when_read_after_deadline() {
+    let fixture = Fixture::new("printf done");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let options = ProcessOptions {
+        deadline: Some(deadline),
+        ..ProcessOptions::default()
+    };
+    let follow = Runner::default()
+        .start_follow_with_options(&fixture.executable, &[], &[], &options)
+        .unwrap();
+    let (output, text) = follow_until(&follow, |output, _| output.terminal);
+    assert_eq!(output.exit_code, Some(0));
+    assert_eq!(text, "done");
+    thread::sleep(deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(20));
+    let late = follow.read();
+    assert_eq!(late.exit_code, Some(0));
+    assert!(!late.interrupted && !late.timed_out);
+    follow.stop();
+    assert!(
+        !options.cancel.load(Ordering::Acquire),
+        "joining successful follow must preserve shared token"
+    );
 }
