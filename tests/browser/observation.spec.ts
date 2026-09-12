@@ -101,6 +101,48 @@ test('Core refresh preserves checked identities and project history shows CPU ab
   expect(await page.evaluate(() => (window as unknown as { __docker2uObservationCalls: Record<string, number> }).__docker2uObservationCalls.configureLogs)).toBe(subscriptions);
 });
 
+test('history accordion places visible charts directly below the selected service and supports keyboard disclosure', async ({ page }, info) => {
+  const en = info.project.metadata.language === 'en';
+  await page.getByRole('tab', { name: en ? 'History' : '이력', exact: true }).click();
+  const items = page.locator('.history-service-item'), first = items.nth(0), second = items.nth(1);
+  await expect(items).toHaveCount(2);
+  const firstButton = first.locator('.history-service'), secondButton = second.locator('.history-service');
+  await firstButton.focus(); await firstButton.press('Enter');
+  await expect(firstButton).toHaveAttribute('aria-expanded', 'true');
+  const panel = first.getByRole('region');
+  await expect(panel).toHaveAttribute('id', (await firstButton.getAttribute('aria-controls'))!);
+  await expect(panel).toHaveAttribute('aria-labelledby', (await firstButton.getAttribute('id'))!);
+  await expect(panel.locator('.resource-chart')).toHaveCount(2);
+  expect(await firstButton.evaluate(button => button.nextElementSibling?.getAttribute('role'))).toBe('region');
+  await panel.scrollIntoViewIfNeeded();
+  const layout = await first.evaluate(item => {
+    const row = item.querySelector('.history-service')!.getBoundingClientRect();
+    const region = item.querySelector('[role="region"]')!.getBoundingClientRect();
+    const next = item.nextElementSibling!.getBoundingClientRect();
+    return { rowBottom: row.bottom, panelTop: region.top, panelBottom: region.bottom, nextTop: next.top, widthOverflow: item.scrollWidth - item.clientWidth };
+  });
+  expect(layout.panelTop).toBeGreaterThanOrEqual(layout.rowBottom);
+  expect(layout.panelBottom).toBeLessThanOrEqual(layout.nextTop);
+  expect(layout.widthOverflow).toBeLessThanOrEqual(1);
+  for (const chart of await panel.locator('.resource-chart svg').all()) await expect(chart).toBeInViewport({ ratio: 1 });
+  await firstButton.press('Space');
+  await expect(firstButton).toHaveAttribute('aria-expanded', 'false');
+  await expect(first.getByRole('region')).toHaveCount(0);
+  await firstButton.press('Enter');
+  await secondButton.focus(); await secondButton.press('Enter');
+  await expect(firstButton).toHaveAttribute('aria-expanded', 'false');
+  await expect(secondButton).toHaveAttribute('aria-expanded', 'true');
+  await expect(first.getByRole('region')).toHaveCount(0);
+  await expect(second.getByRole('region')).toBeVisible();
+  await expect(page.locator('.history-service[aria-expanded="true"]')).toHaveCount(1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
+  await page.locator('.container-row').first().click();
+  await page.getByRole('tab', { name: en ? 'History' : '이력', exact: true }).click();
+  await expect(page.locator('.history-services')).toHaveCount(0);
+  await expect(page.locator('.resource-chart')).toHaveCount(2);
+  await expect(page.locator('.resource-chart').first()).toContainText('145%');
+});
+
 test('container logs reuse the active project subscription and expose only that source', async ({ page }, info) => {
   const en = info.project.metadata.language === 'en';
   const before = await page.evaluate(() => (window as unknown as { __docker2uObservationCalls: Record<string, number> }).__docker2uObservationCalls.configureLogs);

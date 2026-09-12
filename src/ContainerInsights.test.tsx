@@ -7,19 +7,42 @@ import { containerDetailsFixture } from './test/containerDetailsFixture';
 const view = (props: Partial<ContainerInsightsProps> = {}, language: 'ko' | 'en' = 'en') => render(<PreferencesProvider initialPreferences={{ theme: 'dark', language }}><ContainerInsights
   tab="diagnostics" details={containerDetailsFixture()} loading={false} error={null} stale={false} reload={() => {}} copy={() => {}} {...props} /></PreferencesProvider>);
 
-it('does not infer OOM from exit 137 and distinguishes unknown values from zero or false', () => {
+it('keeps unknown termination values without presenting a false OOM flag as a problem', () => {
   const details = containerDetailsFixture();
   details.diagnostics.restartCount = null; details.diagnostics.finishedAt = null;
   view({ details });
   expect(screen.getByText('137')).toBeVisible();
-  expect(screen.getByText('No OOM termination reported by Engine')).toBeVisible();
+  expect(screen.queryByText('OOM termination')).not.toBeInTheDocument();
   expect(screen.getByText('Exit code 137 alone does not establish an out-of-memory termination.')).toBeVisible();
   expect(screen.queryByText('Engine reported an OOM termination')).not.toBeInTheDocument();
   expect(screen.getAllByText('Unavailable')).toHaveLength(2);
 });
 
+it.each(['running', 'paused', 'created', 'restarting'])('does not present previous termination fields as current diagnostics while %s', state => {
+  const details = containerDetailsFixture(); details.diagnostics.state = state;
+  view({ details });
+  // The Engine response still includes the previous exit code and finish time.
+  expect(screen.queryByText('Exit code')).not.toBeInTheDocument();
+  expect(screen.queryByText('Finished at')).not.toBeInTheDocument();
+  expect(screen.queryByText('OOM termination')).not.toBeInTheDocument();
+  expect(screen.queryByText(/Exit code 137 alone/)).not.toBeInTheDocument();
+  expect(screen.getByText('Started at')).toBeVisible();
+  expect(screen.getByText('Restart count')).toBeVisible();
+});
+
+it.each(['exited', 'dead'])('retains observed termination details and a zero exit code for %s without inventing an unknown OOM result', state => {
+  const details = containerDetailsFixture();
+  details.diagnostics.state = state; details.diagnostics.exitCode = 0; details.diagnostics.oomKilled = null;
+  view({ details });
+  expect(screen.getByText('Exit code').parentElement).toHaveTextContent('Exit code0');
+  expect(screen.getByText('Finished at').parentElement?.querySelector('time')).toHaveAttribute('datetime', details.diagnostics.finishedAt);
+  expect(screen.queryByText('OOM termination')).not.toBeInTheDocument();
+  expect(screen.queryByText(/Engine reported an OOM termination/)).not.toBeInTheDocument();
+});
+
 it('reports OOM only from the explicit Engine flag and preserves zero counters', () => {
   const details = containerDetailsFixture(); details.diagnostics.oomKilled = true; details.diagnostics.restartCount = 0;
+  details.diagnostics.state = 'running';
   view({ details });
   expect(screen.getByText('Engine reported an OOM termination')).toBeVisible();
   expect(screen.getByText('0')).toBeVisible();
@@ -47,8 +70,11 @@ it.each(['ko', 'en'] as const)('distinguishes unavailable health, unconfigured c
 
 it('renders retained health output as plain text and copies only the displayed bounded output', () => {
   const details = containerDetailsFixture(); const output = '<img src=x onerror=alert(1)> connection refused'; const copy = vi.fn();
+  details.diagnostics.state = 'running';
   details.diagnostics.health = { status: 'unhealthy', failingStreak: 2, recentFailures: [{ startedAt: null, finishedAt: '2026-09-08T02:59:00Z', exitCode: 1, output, truncated: true }] };
   const { container } = view({ details, copy });
+  expect(screen.getByText('Finished at').parentElement?.querySelector('time')).toHaveAttribute('datetime', '2026-09-08T02:59:00Z');
+  expect(screen.getByText('Exit code').parentElement).toHaveTextContent('Exit code1');
   expect(screen.getByText(output)).not.toBeVisible();
   fireEvent.click(screen.getByText('View check output'));
   expect(screen.getByText(output)).toBeVisible(); expect(container.querySelector('img')).toBeNull();
@@ -100,6 +126,9 @@ it('copies observed aliases or IPv6 with one selected container port without mul
   expect(copy.mock.calls).toEqual([['postgres-primary', 'address'], ['postgres-primary:5432', 'address'], ['[fd00::2]:5432', 'address']]);
   expect(within(networks).getAllByRole('button', { name: /Copy address/ })).toHaveLength(4);
   expect(within(networks).queryByText('postgres-primary:5433')).not.toBeInTheDocument();
+  fireEvent.change(screen.getByRole('combobox', { name: 'Port for container-network addresses' }), { target: { value: '' } });
+  fireEvent.click(within(networks).getByRole('button', { name: 'Copy address: postgres-primary' }));
+  expect(copy).toHaveBeenLastCalledWith('postgres-primary', 'address');
 });
 
 it('never offers unspecified internal IPs or aliases as copyable addresses', () => {

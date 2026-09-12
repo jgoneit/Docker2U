@@ -124,6 +124,43 @@ it('keeps old samples in graphs but hides stale current values and pages a 10,00
   expect(screen.getByText('0–150%')).toBeVisible();
 });
 
+it('expands resource history directly below its named row and closes the previous item', () => {
+  const worker = { ...container, fullId: 'b', handle: 'hb', name: 'worker-1', composeService: 'worker' };
+  const value = { ...read(), resources: [point(1), { ...point(2), fullId: 'b', cpuPercent: 230 }] };
+  render(<PreferencesProvider><ObservationHistory observation={value} containers={[container, worker]} /></PreferencesProvider>);
+  const webButton = screen.getByRole('button', { name: /^web\s*web-1/ });
+  const workerButton = screen.getByRole('button', { name: /^worker\s*worker-1/ });
+  fireEvent.click(webButton);
+  const webPanel = screen.getByRole('region', { name: /^web\s*web-1/ });
+  expect(webButton).toHaveAttribute('aria-controls', webPanel.id);
+  expect(webButton.nextElementSibling).toBe(webPanel);
+  expect(within(webPanel).getByText('0–150%')).toBeVisible();
+  expect(screen.getAllByRole('img')).toHaveLength(2);
+  fireEvent.click(workerButton);
+  expect(webPanel).not.toBeVisible();
+  expect(webButton).toHaveAttribute('aria-expanded', 'false');
+  const workerPanel = screen.getByRole('region', { name: /^worker\s*worker-1/ });
+  expect(workerButton.nextElementSibling).toBe(workerPanel);
+  expect(within(workerPanel).getByText('0–230%')).toBeVisible();
+  expect(screen.getAllByRole('img')).toHaveLength(2);
+  fireEvent.click(workerButton);
+  expect(workerButton).toHaveAttribute('aria-expanded', 'false');
+  expect(screen.queryByRole('region', { name: /^(web|worker)/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole('img')).not.toBeInTheDocument();
+});
+
+it('keeps the expanded history across handle refresh but does not attach it to a recreated name', () => {
+  const view = (items: Container[]) => <PreferencesProvider><ObservationHistory observation={read()} containers={items} /></PreferencesProvider>;
+  const { rerender } = render(view([container]));
+  fireEvent.click(screen.getByRole('button', { name: /^web\s*web-1/ }));
+  rerender(view([{ ...container, handle: 'new-handle' }]));
+  expect(screen.getByRole('region', { name: /^web\s*web-1/ })).toBeVisible();
+  rerender(view([{ ...container, handle: 'recreated-handle', fullId: 'different-id' }]));
+  expect(screen.getByRole('button', { name: /^web\s*web-1/ })).toHaveAttribute('aria-expanded', 'false');
+  expect(screen.queryByRole('region', { name: /^(web|worker)/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole('img')).not.toBeInTheDocument();
+});
+
 it('keeps the frozen scroll position when expanding and closing a paused log view', async () => {
   render(<PreferencesProvider><ProjectLogs copy={vi.fn().mockResolvedValue(undefined)} sessionId="one" project="demo" containers={[container]} initialPage={page()} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
   await waitFor(() => expect(projectLogApi.query).toHaveBeenCalled());
