@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Copy, Maximize2, Minimize2, Pause, Play, Search } from 'lucide-react';
+import { ChevronDown, Copy, Maximize2, Minimize2, Pause, Play, Search } from 'lucide-react';
 import { coreError, type Container, type CoreError } from './api';
 import { ErrorDetails } from './components';
 import { observationApi, projectLogApi, type ProjectLogPage, type ProjectLogRow } from './observationApi';
@@ -158,7 +158,7 @@ export function ProjectLogs({ sessionId, project, containers, initialPage, fullI
   const failure = error ?? collectionError;
   const content = <section className={`project-logs${expanded ? ' project-logs-expanded' : ''}`} aria-label={t('logs')}>
     <div className="project-log-toolbar">
-      {!fullId && <details className="project-service-filter"><summary>{t('serviceFilter')}{services !== null ? ` (${services.length})` : ''}</summary><div><button onClick={() => { setServices(null); resetFilter(); }}>{t('allServices')}</button>{serviceOptions.map(service => <label key={service}><input type="checkbox" checked={services === null || services.includes(service)} disabled={(services ?? serviceOptions).length === 1 && (services === null || services.includes(service))} onChange={event => { const base = services ?? serviceOptions; setServices(event.target.checked ? [...new Set([...base, service])] : base.filter(item => item !== service)); resetFilter(); }} />{service}</label>)}</div></details>}
+      {!fullId && <details className="project-service-filter"><summary>{t('serviceFilter')}{services !== null ? ` (${services.length})` : ''}<ChevronDown className="project-service-chevron" size={14} aria-hidden="true" /></summary><div><button onClick={() => { setServices(null); resetFilter(); }}>{t('allServices')}</button>{serviceOptions.map(service => <label key={service}><input type="checkbox" checked={services === null || services.includes(service)} disabled={(services ?? serviceOptions).length === 1 && (services === null || services.includes(service))} onChange={event => { const base = services ?? serviceOptions; setServices(event.target.checked ? [...new Set([...base, service])] : base.filter(item => item !== service)); resetFilter(); }} />{service}</label>)}</div></details>}
       <label className="project-keyword"><Search size={14} aria-hidden="true" /><input type="search" aria-label={t('keyword')} placeholder={t('keywordHint')} value={keyword} onChange={event => { setKeyword(event.target.value); resetFilter(); }} /></label>
       <button onClick={togglePaused} aria-pressed={paused}>{paused ? <Play size={14} aria-hidden="true" /> : <Pause size={14} aria-hidden="true" />}{t(paused ? 'resume' : 'pause')}</button>
       <button onClick={() => { resetFilter(); frozenSequence.current = null; setPaused(false); setQueryRevision(value => value + 1); }}>{t('latest')}</button>

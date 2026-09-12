@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ChevronRight } from 'lucide-react';
 import type { Container } from './api';
 import type { ObservationRead, ResourcePoint } from './observationApi';
 import { ErrorDetails } from './components';
@@ -67,7 +68,7 @@ export function ObservationHistory({ observation, containers, fullId, onRetry, r
     {observation?.resourceTruncated && <p className="observation-warning">{t('resourceTruncated')}</p>}
     {observation?.eventTruncated && <p className="observation-warning">{t('eventTruncated')}</p>}
     {!fullId && <div className="history-services">{containers.map(container => { const point = latest.get(container.fullId); const fresh = point?.available && container.state === 'running' && Date.now() - Date.parse(point.sampledAt) <= 15_000; return <button key={container.fullId} className="history-service" aria-expanded={activeId === container.fullId} onClick={() => setExpanded(activeId === container.fullId ? null : container.fullId)}>
-      <span><strong>{container.composeService ?? container.name}</strong><small>{container.name}</small></span><span>CPU {fresh && point.cpuPercent !== null ? `${point.cpuPercent.toFixed(1)}%` : '—'}</span><span>{fresh ? formatBytes(point.memoryUsageBytes) : '—'}</span>
+      <span><ChevronRight className="history-disclosure" size={14} aria-hidden="true" /><strong>{container.composeService ?? container.name}</strong><small>{container.name}</small></span><span>CPU {fresh && point.cpuPercent !== null ? `${point.cpuPercent.toFixed(1)}%` : '—'}</span><span>{fresh ? formatBytes(point.memoryUsageBytes) : '—'}</span>
     </button>; })}</div>}
     {activeId && <div className="history-charts" aria-label={t('resources')}>{points.length ? <><ResourceChart points={points} metric="cpu" /><ResourceChart points={points} metric="memory" /></> : <p className="observation-hint">{t('noHistory')}</p>}</div>}
     <h3>{t('stateChanges')}</h3>

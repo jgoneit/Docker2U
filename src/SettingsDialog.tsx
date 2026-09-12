@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef } from 'react';
-import { Settings, X } from 'lucide-react';
+import { ChevronsUpDown, Settings, X } from 'lucide-react';
 import { usePreferences } from './preferences';
 import type { Language, ThemePreference } from './preferences';
 import { useI18n } from './i18n';
@@ -40,8 +40,8 @@ export function SettingsDialog({ onClose, returnFocus }: { onClose: () => void; 
       }}>
       <div className="settings-heading"><h2 id="settings-title"><Settings size={20} aria-hidden="true" />{t('title')}</h2><button className="icon-button" onClick={onClose} aria-label={t('close')} title={t('close')}><X size={18} /></button></div>
       <p id="settings-description">{t('description')}</p>
-      <label className="setting-field" htmlFor="theme-preference"><span>{t('theme')}</span><select id="theme-preference" value={theme} onChange={event => setTheme(event.target.value as ThemePreference)}><option value="system">{t('system')}</option><option value="light">{t('light')}</option><option value="dark">{t('dark')}</option></select></label>
-      <label className="setting-field" htmlFor="language-preference"><span>{t('language')}</span><select id="language-preference" value={language} onChange={event => setLanguage(event.target.value as Language)}><option value="ko" lang="ko">한국어</option><option value="en" lang="en">English</option></select></label>
+      <label className="setting-field" htmlFor="theme-preference"><span>{t('theme')}</span><span className="setting-select-control"><select id="theme-preference" value={theme} onChange={event => setTheme(event.target.value as ThemePreference)}><option value="system">{t('system')}</option><option value="light">{t('light')}</option><option value="dark">{t('dark')}</option></select><ChevronsUpDown size={14} aria-hidden="true" /></span></label>
+      <label className="setting-field" htmlFor="language-preference"><span>{t('language')}</span><span className="setting-select-control"><select id="language-preference" value={language} onChange={event => setLanguage(event.target.value as Language)}><option value="ko" lang="ko">한국어</option><option value="en" lang="en">English</option></select><ChevronsUpDown size={14} aria-hidden="true" /></span></label>
       {storageError && <p className="settings-storage-error" role="alert">{t('storageError')}</p>}
       <div className="dialog-actions"><button onClick={onClose}>{t('close')}</button></div>
     </div>
