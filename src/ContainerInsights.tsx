@@ -46,22 +46,23 @@ export function ContainerDiagnostics({ details, copy }: { details: ContainerDeta
   const data = details.diagnostics;
   const stateKey = (['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead'] as const).find(value => value === data.state) ?? 'unknown';
   const stateText = translate(componentMessages, language, stateKey);
+  const terminated = data.state === 'exited' || data.state === 'dead';
   const healthKey = data.health?.status === 'healthy' ? 'healthy' : data.health?.status === 'unhealthy' ? 'unhealthy' : data.health?.status === 'starting' ? 'healthStarting' : 'healthUnknown';
   const summary = data.oomKilled === true ? t('summaryOom', { state: stateText })
     : data.healthAvailable && data.health?.status === 'unhealthy' ? t('summaryHealth', { state: stateText })
-    : (data.state === 'exited' || data.state === 'dead') && data.exitCode !== null ? t('summaryExit', { state: stateText, code: data.exitCode })
+    : terminated && data.exitCode !== null ? t('summaryExit', { state: stateText, code: data.exitCode })
     : t('summaryState', { state: stateText });
   return <div className="insights-body">
     <p className="insights-summary">{summary}</p>
     <dl className="insights-facts">
       <div><dt>{t('state')}</dt><dd>{translate(componentMessages, language, stateKey)}</dd></div>
-      <div><dt>{t('exitCode')}</dt><dd>{data.exitCode ?? t('unavailable')}</dd></div>
+      {terminated && <div><dt>{t('exitCode')}</dt><dd>{data.exitCode ?? t('unavailable')}</dd></div>}
       <div><dt>{t('started')}</dt><dd><ObservationTime value={data.startedAt} /></dd></div>
-      <div><dt>{t('finished')}</dt><dd><ObservationTime value={data.finishedAt} /></dd></div>
+      {terminated && <div><dt>{t('finished')}</dt><dd><ObservationTime value={data.finishedAt} /></dd></div>}
       <div><dt>{t('restarts')}</dt><dd>{data.restartCount ?? t('unavailable')}</dd></div>
-      <div><dt>{t('oom')}</dt><dd className={data.oomKilled === true ? 'insights-warning-text' : undefined}>{data.oomKilled === true ? t('oomTrue') : data.oomKilled === false ? t('oomFalse') : t('unavailable')}</dd></div>
+      {data.oomKilled === true && <div><dt>{t('oom')}</dt><dd className="insights-warning-text">{t('oomTrue')}</dd></div>}
     </dl>
-    {data.exitCode === 137 && data.oomKilled !== true && <p className="insights-hint">{t('exit137')}</p>}
+    {terminated && data.exitCode === 137 && data.oomKilled !== true && <p className="insights-hint">{t('exit137')}</p>}
     <section className="insights-section" aria-label={t('health')}><h3>{t('health')}</h3>
       {!data.healthAvailable ? <p className="insights-hint">{t('healthUnavailable')}</p>
         : data.healthConfigured === false ? <p className="insights-hint">{t('healthNotConfigured')}</p>
