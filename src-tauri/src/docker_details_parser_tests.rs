@@ -7,6 +7,7 @@ fn session() -> Session {
         stale: false,
         needs_validation: false,
         handles: HashMap::new(),
+        inventory: None,
         target: Target {
             docker: "/fixture/docker".into(),
             client_version: "fixture".into(),

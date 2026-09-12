@@ -37,7 +37,11 @@ export function useContainerDetails({ container, snapshot, active, enabled, onEr
   useEffect(() => {
     let live = true;
     const current = () => live && latest.current.key === key && latest.current.allowed;
-    if (viewRef.current.key !== key) update(emptyView(key));
+    if (viewRef.current.key !== key) {
+      const prior = viewRef.current.details;
+      const sameIdentity = prior?.sessionId === snapshot?.sessionId && prior?.fullId === container?.fullId;
+      update({ ...emptyView(key), details: sameIdentity ? prior : null, stale: sameIdentity });
+    }
     if (!allowed) {
       if (viewRef.current.key === key) update({ ...viewRef.current, loading: false, stale: true, settled: false });
       return;
@@ -88,7 +92,8 @@ export function useContainerDetails({ container, snapshot, active, enabled, onEr
     update({ ...prior, stale: true, settled: false });
     setRevision(value => value + 1);
   }, []);
-  const currentView = view.key === key ? view : emptyView(key);
+  const preserved = view.details?.sessionId === snapshot?.sessionId && view.details?.fullId === container?.fullId ? view.details : null;
+  const currentView = view.key === key ? view : { ...emptyView(key), details: preserved, stale: preserved !== null };
   return { details: currentView.details, error: currentView.error,
     loading: currentView.loading && allowed,
     stale: currentView.details !== null && (currentView.stale || !allowed), reload };

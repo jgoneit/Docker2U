@@ -612,12 +612,17 @@ dependencies = [
 name = "docker2u"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "bytes",
  "chrono",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "libc",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+ "tokio",
  "uuid",
 ]
 

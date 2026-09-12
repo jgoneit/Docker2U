@@ -2,6 +2,28 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
   "description": "Only explicitly registered Docker2U IPC on the main window.",
-  "windows": ["main"],
-  "permissions": ["allow-get-environment", "allow-list-containers", "allow-get-recent-logs", "allow-get-container-details", "allow-get-container-stats", "allow-start-log-stream", "allow-read-log-stream", "allow-stop-log-stream", "allow-mutate-container", "allow-mutate-containers"]
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "allow-get-environment",
+    "allow-list-containers",
+    "allow-get-recent-logs",
+    "allow-get-container-details",
+    "allow-get-container-stats",
+    "allow-start-log-stream",
+    "allow-read-log-stream",
+    "allow-stop-log-stream",
+    "allow-mutate-container",
+    "allow-mutate-containers",
+    "allow-configure-observation",
+    "allow-read-observation",
+    "allow-hold-observation",
+    "allow-release-observation-hold",
+    "allow-retry-observation-events",
+    "allow-configure-project-logs",
+    "allow-query-project-logs",
+    "allow-retry-project-logs",
+    "allow-stop-project-logs"
+  ]
 }

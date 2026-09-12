@@ -80,6 +80,7 @@ impl Core {
         if let Some(process) = process {
             process.stop();
         }
+        self.invalidate_session_observations(id, error);
     }
 
     /// Refresh regenerates handles. A still-readable full ID keeps the same stream.

@@ -15,6 +15,8 @@ mod bulk;
 mod details;
 #[path = "docker_insights_tests.rs"]
 mod insights;
+#[path = "docker_observation_tests.rs"]
+mod observation;
 
 struct Fixture {
     dir: PathBuf,

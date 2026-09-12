@@ -2,13 +2,13 @@
 """Own an isolated fake Docker socket and a directly launched validation app."""
 import argparse
 import hashlib
+import importlib.util
 import json
 import math
 import os
 from pathlib import Path
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import time
@@ -17,6 +17,13 @@ import uuid
 REPO = Path(__file__).resolve().parent.parent
 STATE = REPO / ".cache/native-smoke"
 ACTIVE = STATE / "active.json"
+
+
+def engine_listener(root):
+    spec = importlib.util.spec_from_file_location("native_engine_http", REPO / "tests/native-smoke/engine_http.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.EngineServer(root)
 
 
 def write_json(path, value):
@@ -78,7 +85,8 @@ def archive_trace(manifest):
     expected = {("worker", name) for name in ["search", "connection-clear", "socket", "recovery", *INSIGHT_STEPS]} | {(mode, "search") for mode in ["constructor-fail", "never-ready"]}
     report = {**manifest, "cliEvents": len(events), "rejectedCommands": rejected,
               "dockerExecution": "isolated read-only Python fixture; no real Docker CLI is discovered or invoked",
-              "uiReports": ui_reports, "requiredCoverageComplete": expected <= coverage}
+              "uiReports": ui_reports, "requiredCoverageComplete": expected <= coverage,
+              "observationCoverageComplete": {("worker", name) for name in OBSERVATION_STEPS} <= coverage}
     write_json(evidence / "report.json", report)
     return report
 
@@ -91,6 +99,67 @@ INSIGHT_STEPS = {
     "pane-resize": ["captured live pane before keyboard resize", "resized live pane with keyboard while receiving", "restored live pane without replacing the stream"],
     "detail-tabs": ["captured log view before detail tabs", "native diagnostics and bounded health output verified", "native connection candidates verified", "restored logs after all three tabs"],
 }
+
+OBSERVATION_STEPS = {
+    "observation-baseline": ["captured native project observation baseline"],
+    "observation-restore": ["verified native background collection and restore"],
+}
+
+
+def validate_observation(probe, by_name, attempt, steps, events, manifest):
+    expected_binding = {key: manifest[key] for key in ("runId", "binarySha256", "startedAtMs")}
+    ids = {format(value, "064x") for value in (1, 2)}
+    baseline_rows = [row for row in steps if row.get("name") == OBSERVATION_STEPS["observation-baseline"][0]
+                     and row["timeMs"] <= attempt[-1]["timeMs"]]
+    if not baseline_rows:
+        raise ValueError("Observation restore lacks a native baseline")
+    baseline_row = baseline_rows[-1]
+    baseline = baseline_row.get("detail", {})
+    if any(type(baseline.get(key)) is not int or baseline[key] < 1 for key in ("at", "generation", "sequence")):
+        raise ValueError("Observation baseline lacks positive Core sequence and generation")
+    if baseline.get("binding") != expected_binding or baseline.get("engineId") != "native-smoke-engine" or baseline.get("contextName") != "native-smoke-local":
+        raise ValueError("Observation baseline is not bound to the owned Engine and launch")
+    if manifest.get("fixtureRoot") and baseline.get("endpoint") != "unix://" + manifest["fixtureRoot"] + "/engine.sock":
+        raise ValueError("Observation baseline uses a foreign fixture socket")
+    if not isinstance(baseline.get("sessionId"), str) or not baseline["sessionId"] or set(baseline.get("fullIds", [])) != ids or baseline.get("sources") != 2:
+        raise ValueError("Observation baseline lacks the exact native sources and session")
+    if not {"tty", "stdout"} <= set(baseline.get("pipes", [])) or baseline.get("eventStatus") != "following" or baseline.get("resourcePoints", 0) < 1:
+        raise ValueError("Observation baseline lacks real TTY, multiplex, resources and events")
+    if not manifest["startedAtMs"] <= baseline.get("at", 0) <= baseline_row["timeMs"]:
+        raise ValueError("Observation baseline timestamp lies outside the launch")
+    for full_id in ids:
+        if not any(row.get("phase") == "api-log-binding" and row.get("fullId") == full_id and row.get("binding") == expected_binding
+                   and manifest["startedAtMs"] <= row.get("timeMs", 0) <= baseline["at"] for row in events):
+            raise ValueError("Observation launch binding was not emitted by both owned API streams")
+    if probe == "observation-baseline":
+        return
+    value = by_name[OBSERVATION_STEPS[probe][0]].get("detail", {})
+    if any(type(value.get(key)) is not int for key in ("hiddenAt", "restoredAt", "beforeGeneration", "afterGeneration", "beforeLogSequence", "afterLogSequence", "displayedInventoryAt")):
+        raise ValueError("Observation restore lacks numeric Core and visibility timestamps")
+    hidden, restored = value.get("hiddenAt", 0), value.get("restoredAt", 0)
+    if not baseline["at"] <= hidden < restored <= attempt[-1]["timeMs"] or restored - hidden < 10_000 or attempt[-1]["timeMs"] - baseline["at"] < 15_000:
+        raise ValueError("Native observation hidden interval is missing or too short")
+    if value.get("sessionId") != baseline["sessionId"] or value.get("beforeGeneration") != baseline.get("generation") or value.get("beforeLogSequence") != baseline.get("sequence"):
+        raise ValueError("Observation restore replaced its session or baseline")
+    if value.get("afterGeneration", 0) <= value["beforeGeneration"] or value.get("afterLogSequence", 0) <= value["beforeLogSequence"]:
+        raise ValueError("Background observations did not advance")
+    if not {("hidden", hidden), ("visible", restored)} <= {(row.get("state"), row.get("at")) for row in value.get("visibility", [])}:
+        raise ValueError("Native WebView visibility evidence is missing")
+    for key, count, minimum in [("resourceReceipts", "hiddenResourcePoints", 2), ("logReceipts", "hiddenLogRows", 2), ("eventReceipts", "hiddenEvents", 1)]:
+        rows = value.get(key, [])
+        if len(rows) < minimum or value.get(count) != len(rows) or any(row.get("fullId") not in ids or not hidden + 1000 < row.get("at", 0) < restored - 1000 for row in rows):
+            raise ValueError("Core observation receipts lie outside the hidden interval: " + key)
+    if value.get("renderedRows", 0) < 1 or not hidden < value.get("displayedInventoryAt", 0) <= attempt[-1]["timeMs"]:
+        raise ValueError("Restored native screen has not applied background data")
+    if not successful_command(events, ["container", "ls"], hidden, restored) or not successful_command(events, ["container", "stats"], hidden, restored):
+        raise ValueError("Hidden interval lacks successful native inventory and stats collection")
+    if not any(row.get("phase") == "stats-payload" and set(row.get("fullIds", [])) == ids and hidden < row.get("timeMs", 0) < restored for row in events):
+        raise ValueError("Native hidden stats payload does not match the project")
+    for phase, receipts in [("api-log-output", value["logReceipts"]), ("api-health-event", value["eventReceipts"])]:
+        if not any(row.get("phase") == phase and hidden < row.get("timeMs", 0) < restored
+                   and hidden < row.get("producedAtMs", 0) <= row["timeMs"]
+                   and any(receipt["fullId"] == row.get("fullId") and row["producedAtMs"] <= receipt["at"] for receipt in receipts) for row in events):
+            raise ValueError("Hidden Core receipts lack owned API output: " + phase)
 
 
 def successful_command(events, words, begin, end):
@@ -228,7 +297,7 @@ def validate_ui(manifest, ui, events, now_ms=None):
             pending = (name.removeprefix("started "), index)
         elif name.startswith("passed "):
             probe = name.removeprefix("passed ")
-            if pending is None or pending[0] != probe or probe not in ["search", "connection-clear", "socket", "recovery", *INSIGHT_STEPS]:
+            if pending is None or pending[0] != probe or probe not in ["search", "connection-clear", "socket", "recovery", *INSIGHT_STEPS, *OBSERVATION_STEPS]:
                 raise ValueError("UI completion has no matching probe start")
             attempt = steps[pending[1]:index + 1]
             by_name = {row["name"]: row for row in attempt}
@@ -238,6 +307,7 @@ def validate_ui(manifest, ui, events, now_ms=None):
                 "socket": ["requested missing-socket logs", "native SocketMissing verified"],
                 "recovery": ["requested warning-preserving Refresh", "warning retained after successful Refresh without new logs", "requested explicit Reconnect", "explicit reconnect restored the valid session"],
                 **INSIGHT_STEPS,
+                **OBSERVATION_STEPS,
             }[probe]
             if not all(name in by_name for name in required):
                 raise ValueError("UI probe is missing required evidence: " + probe)
@@ -280,6 +350,8 @@ def validate_ui(manifest, ui, events, now_ms=None):
                     raise ValueError("Worker startup timeout evidence is missing")
             if probe in INSIGHT_STEPS:
                 validate_insights(probe, by_name, attempt, events, start)
+            if probe in OBSERVATION_STEPS:
+                validate_observation(probe, by_name, attempt, steps[:index + 1], events, manifest)
             if probe == "recovery":
                 refreshed = by_name["warning retained after successful Refresh without new logs"]["timeMs"]
                 requested = by_name["requested warning-preserving Refresh"]["timeMs"]
@@ -319,11 +391,9 @@ def serve(root, app, evidence):
     try:
         make_fixture(root)
         owned = True
-        listener = socket.socket(socket.AF_UNIX)
-        listener.bind(str(root / "engine.sock"))
-        listener.listen(4)
         executable = app / "Contents/MacOS/docker2u"
         manifest = {"marker": "NATIVE_SMOKE_HARNESS", "runId": root.name, "fixtureRoot": str(root), "app": str(app), "binarySha256": hashlib.sha256(executable.read_bytes()).hexdigest(), "controllerPid": os.getpid(), "evidenceDirectory": str(evidence), "startedAtMs": time.time_ns() // 1_000_000, "status": "running"}
+        listener = engine_listener(root)
         write_json(root / "launch.json", manifest)
         evidence.mkdir(parents=True, exist_ok=True)
         with (evidence / "app.log").open("wb") as log:
@@ -333,16 +403,16 @@ def serve(root, app, evidence):
             print(json.dumps(manifest), flush=True)
             while not stop and process.poll() is None:
                 if (root / "socket-off").exists():
-                    listener.close()
+                    if listener:
+                        listener.close()
+                    listener = None
                     (root / "engine.sock").unlink(missing_ok=True)
                     (root / "socket-off").unlink()
                     control_event(root, "socket-off")
                     write_json(root / "socket-status.json", {"available": False})
                 if (root / "socket-on").exists():
                     if not (root / "engine.sock").exists():
-                        listener = socket.socket(socket.AF_UNIX)
-                        listener.bind(str(root / "engine.sock"))
-                        listener.listen(4)
+                        listener = engine_listener(root)
                     (root / "socket-on").unlink()
                     control_event(root, "socket-on")
                     write_json(root / "socket-status.json", {"available": True})

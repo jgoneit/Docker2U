@@ -50,13 +50,13 @@ it('invalidates at a mutation or refresh boundary and reloads without needing a 
   expect(read).toHaveBeenCalledTimes(2); expect(result.current.details?.diagnostics.oomKilled).toBe(true); expect(result.current.stale).toBe(false);
 });
 
-it('hides the previous generation immediately and does not read a stale or missing inventory target', async () => {
+it('retains the same container detail during automatic refresh and does not read a stale or missing inventory target', async () => {
   const { result, rerender } = renderHook(useContainerDetails, { initialProps: input() }); await flush();
   rerender(input({ snapshot: { ...snapshot, stale: true } })); await flush();
   expect(result.current.stale).toBe(true); expect(read).toHaveBeenCalledTimes(1);
   const refreshed = { ...snapshot, generation: 2 };
   const pending = deferred<ContainerDetails>(); read.mockReturnValueOnce(pending.promise);
-  rerender(input({ snapshot: refreshed })); expect(result.current.details).toBeNull();
+  rerender(input({ snapshot: refreshed })); expect(result.current.details?.generation).toBe(1); expect(result.current.stale).toBe(true);
   await act(async () => pending.resolve(containerDetailsFixture(container, refreshed)));
   expect(result.current.details?.generation).toBe(2);
   rerender(input({ snapshot: { ...refreshed, containers: [] } })); await flush();

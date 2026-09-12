@@ -9,6 +9,7 @@ import type { ResourceSample } from './useContainerStats';
 import './containerTable.css';
 
 const messages = {
+  projectView: { ko: '프로젝트 보기', en: 'View project' },
   selection: { ko: '작업 대상', en: 'Action selection' },
   name: { ko: '컨테이너', en: 'Container' },
   state: { ko: '상태', en: 'State' },
@@ -28,6 +29,7 @@ export interface ContainerTableProps {
   sampleFor: (container: Container) => ResourceSample | undefined;
   inventoryRef: RefObject<HTMLTableSectionElement | null>;
   onSelect: (container: Container) => void;
+  onProjectView?: (name: string | null) => void;
   onShowConnections?: (container: Container) => void;
   onToggle: (container: Container) => void;
   onRowKeyDown: (event: KeyboardEvent<HTMLButtonElement>, index: number) => void;
@@ -35,7 +37,7 @@ export interface ContainerTableProps {
 }
 
 export function ContainerTable({ groups, selectedId, checkedHandles, checkboxDisabled, sampleFor,
-  inventoryRef, onSelect, onShowConnections, onToggle, onRowKeyDown, busy }: ContainerTableProps) {
+  inventoryRef, onSelect, onShowConnections, onProjectView, onToggle, onRowKeyDown, busy }: ContainerTableProps) {
   const t = useI18n(messages);
   const app = useI18n(appMessages);
   const id = useId();
@@ -59,6 +61,7 @@ export function ContainerTable({ groups, selectedId, checkedHandles, checkboxDis
           <tr className="container-project-header"><td colSpan={6}><div>
             <h3 title={group.name ?? app('noProject')}>{group.name ?? app('noProject')}</h3>
             <span className="container-project-count" aria-label={t('count', { count: group.containers.length })}>{group.containers.length}</span>
+            {onProjectView && <button type="button" className="text-button project-view-button" disabled={busy} onClick={() => onProjectView(group.name)}>{t('projectView')}</button>}
           </div></td></tr>
           {group.containers.map(container => {
             const index = indexes.get(container.fullId)!;

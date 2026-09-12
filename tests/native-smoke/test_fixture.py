@@ -223,7 +223,7 @@ class FixtureIsolationTests(unittest.TestCase):
 
     def test_early_setup_error_removes_only_new_owned_directory(self):
         new_root = self.root.parent / "new-owned"
-        # A missing binary fails after socket creation, before app launch.
+        # Validate the binary before allocating a listening socket or launching.
         with self.assertRaises(FileNotFoundError):
             fixture.serve(new_root, self.root / "absent.app", self.root / "evidence")
         self.assertFalse(new_root.exists())

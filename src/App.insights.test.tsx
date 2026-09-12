@@ -19,7 +19,7 @@ beforeEach(() => {
 it('groups visible rows and scopes project filtering, service search, checkboxes and hidden detail selection', async () => {
   const user = userEvent.setup(); render(<App />); await screen.findByRole('button', { name: 'api 상세' });
   const table = screen.getByRole('table', { name: '컨테이너 목록' });
-  expect(within(table).getAllByRole('heading').map(heading => heading.closest('tr')?.textContent)).toEqual(['alpha2', 'beta1', '프로젝트 없음1']);
+  expect(within(table).getAllByRole('heading').map(heading => heading.closest('tr')?.textContent)).toEqual(['alpha2프로젝트 보기', 'beta1프로젝트 보기', '프로젝트 없음1프로젝트 보기']);
   await user.click(screen.getByRole('button', { name: 'zulu 상세' }));
   await user.click(screen.getByRole('checkbox', { name: '보이는 컨테이너 전체 선택' }));
   await user.selectOptions(screen.getByRole('combobox', { name: '프로젝트' }), JSON.stringify(['project', 'alpha']));
@@ -94,12 +94,12 @@ it('keeps keyboard navigation in the grouped visual order', async () => {
   await user.keyboard('{ArrowDown}'); expect(screen.getByRole('button', { name: 'redis 상세' })).toHaveFocus();
   await user.keyboard('{End}'); expect(screen.getByRole('button', { name: 'single 상세' })).toHaveFocus();
 });
-it.each([JSON.stringify(['project', 'beta']), 'none'])('resets a disappeared project filter %s when accepting the next inventory', async value => {
+it.each([JSON.stringify(['project', 'beta']), 'none'])('retains an empty project scope %s when accepting the next inventory', async value => {
   const user = userEvent.setup(); render(<App />); await screen.findByRole('button', { name: 'api 상세' });
   const project = screen.getByRole('combobox', { name: '프로젝트' }); await user.selectOptions(project, value);
   mock.listContainers.mockResolvedValueOnce({ sessionId: 'one', generation: 2, containers: rows.filter(item => item.composeProject === 'alpha'), refreshedAt: '2026-09-07T00:00:01Z', stale: false });
   await user.click(screen.getByRole('button', { name: '새로고침' }));
-  await waitFor(() => expect(project).toHaveValue('all'));
-  expect(screen.getByRole('button', { name: 'api 상세' })).toBeVisible();
-  expect(screen.getByRole('button', { name: 'redis 상세' })).toBeVisible();
+  await waitFor(() => expect(project).toHaveValue(value));
+  expect(screen.queryByRole('button', { name: 'api 상세' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'redis 상세' })).not.toBeInTheDocument();
 });

@@ -542,6 +542,10 @@ test('uses manual keyboard tabs while preserving a paused live log search and it
   await expectStatusbarFits(page);
   await diagnosticsTab.focus();
   await page.keyboard.press('End');
+  const historyTab = page.getByRole('tab', { name: lang === 'ko' ? '이력' : 'History', exact: true });
+  await expect(historyTab).toBeFocused();
+  await expect(historyTab).toHaveAttribute('aria-selected', 'false');
+  await page.keyboard.press('ArrowLeft');
   await expect(connectionsTab).toBeFocused();
   await expect(connectionsTab).toHaveAttribute('aria-selected', 'false');
   await page.keyboard.press('Space');

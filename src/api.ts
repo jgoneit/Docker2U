@@ -33,6 +33,7 @@ export interface Container {
   health: string | null;
   ports: string[];
   createdAt: string;
+  startedAt?: string | null;
   composeProject: string | null;
   composeService: string | null;
 }
@@ -44,6 +45,7 @@ export interface LogStreamRead {
 export interface ContainerStatsItem {
   handle: string; fullId: string; cpuPercent: number | null;
   memoryUsage: string | null; memoryPercent: number | null; available: boolean;
+  memoryUsageBytes?: number | null; memoryLimitBytes?: number | null;
 }
 export interface ContainerStats {
   sessionId: string; generation: number; sampledAt: string;

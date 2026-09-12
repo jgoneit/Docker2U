@@ -31,7 +31,7 @@ export type Operation = MutationResult & ConnectionTarget & { fullId: string; na
 export type Confirmation = ConnectionTarget & { action: 'stop' | 'restart'; sessionId: string; generation: number; returnFocus?: HTMLElement }
   & ({ container: Container; containers?: never } | { containers: Container[]; container?: never });
 export type CopyLabel = 'logs' | 'fullId' | 'diagnostics' | 'command' | 'address' | 'healthOutput';
-export type DetailTab = 'logs' | 'diagnostics' | 'connectivity';
+export type DetailTab = 'logs' | 'diagnostics' | 'connectivity' | 'history';
 export type CopyText = (text: string, label: CopyLabel) => Promise<void>;
 
 export function formatTime(value?: string, language: Language = 'ko') {
@@ -173,17 +173,17 @@ export function ContainerSummary({ container, snapshot, copy, mutationBlocked, m
     {snapshot.stale && <p className="operation-warning">{t('staleActions')}</p>}
   </div>;
 }
-export function ContainerDetail({ container, snapshot, logs, logsError, loadingLogs, logRequestPending = false, refreshing, mutating, mutationBlocked, mutationAllowed, loadLogs, clearLogs, requestAction, copy, copyFeedback, copyFeedbackTone, copyFeedbackId, copyFeedbackHighlighted, copyFeedbackHighlightUntil, logsExpanded, onLogsExpandedChange, liveStatus, activeTab = 'logs', onTabChange, insights, operationFeedback }: {
+export function ContainerDetail({ container, snapshot, logs, logsError, loadingLogs, logRequestPending = false, refreshing, mutating, mutationBlocked, mutationAllowed, loadLogs, clearLogs, requestAction, copy, copyFeedback, copyFeedbackTone, copyFeedbackId, copyFeedbackHighlighted, copyFeedbackHighlightUntil, logsExpanded, onLogsExpandedChange, liveStatus, activeTab = 'logs', onTabChange, insights, operationFeedback, logContent, historyEnabled = false }: {
   container: Container; snapshot: ContainerList; logs: LogSnapshot | null; logsError: CoreError | null;
   loadingLogs: boolean; logRequestPending?: boolean; refreshing: boolean; mutating: boolean; mutationBlocked: boolean; mutationAllowed: boolean;
   loadLogs: () => void; clearLogs: () => void; requestAction: (action: Action, returnFocus?: HTMLElement) => void; copy: CopyText;
   liveStatus?: LiveLogStatus; copyFeedback?: string; copyFeedbackTone?: CopyFeedbackTone; copyFeedbackId?: number; copyFeedbackHighlighted?: boolean; copyFeedbackHighlightUntil?: number; logsExpanded?: boolean; onLogsExpandedChange?: (expanded: boolean) => void;
-  activeTab?: DetailTab; onTabChange?: (tab: DetailTab) => void; insights?: ReactNode; operationFeedback?: ReactNode;
+  historyEnabled?: boolean; logContent?: ReactNode; activeTab?: DetailTab; onTabChange?: (tab: DetailTab) => void; insights?: ReactNode; operationFeedback?: ReactNode;
 }) {
   const t = useI18n(componentMessages);
   const tabId = useId();
-  const tabs = ['logs', 'diagnostics', 'connectivity'] as const;
-  const tabLabels = { logs: 'tabLogs', diagnostics: 'tabDiagnostics', connectivity: 'tabConnectivity' } as const;
+  const tabs: DetailTab[] = historyEnabled ? ['logs', 'diagnostics', 'connectivity', 'history'] : ['logs', 'diagnostics', 'connectivity'];
+  const tabLabels = { logs: 'tabLogs', diagnostics: 'tabDiagnostics', connectivity: 'tabConnectivity', history: 'tabHistory' } as const;
   function tabKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
     const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : null;
     if (next === null) return;
@@ -205,7 +205,7 @@ export function ContainerDetail({ container, snapshot, logs, logsError, loadingL
       <div className="recovery-actions"><button className="action-button action-start" disabled={actionsDisabled || !['created', 'exited'].includes(container.state)} onClick={() => requestAction('start')}><Play size={14} aria-hidden="true" />{t('start')}</button><button className="action-button action-stop" disabled={actionsDisabled || container.state !== 'running'} onClick={event => requestConfirmation(event, 'stop')}><Square size={13} aria-hidden="true" />{t('stop')}</button><button className="action-button action-restart" disabled={actionsDisabled || container.state !== 'running'} onClick={event => requestConfirmation(event, 'restart')}><RefreshCw size={14} aria-hidden="true" />{t('restart')}</button></div>
     </section>
     <div className="detail-tab-panel" id={`${tabId}-logs-panel`} role="tabpanel" aria-labelledby={`${tabId}-logs-tab`} hidden={activeTab !== 'logs'}>
-      <LogPanel visible={activeTab === 'logs'} operationFeedback={operationFeedback} liveStatus={liveStatus} container={container} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} loadLogs={loadLogs} clearLogs={clearLogs} copy={copy} copyFeedback={copyFeedback} copyFeedbackTone={copyFeedbackTone} copyFeedbackId={copyFeedbackId} copyFeedbackHighlighted={copyFeedbackHighlighted} copyFeedbackHighlightUntil={copyFeedbackHighlightUntil} expanded={expanded} onExpandedChange={setExpanded} />
+      {logContent ?? <LogPanel visible={activeTab === 'logs'} operationFeedback={operationFeedback} liveStatus={liveStatus} container={container} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} loadLogs={loadLogs} clearLogs={clearLogs} copy={copy} copyFeedback={copyFeedback} copyFeedbackTone={copyFeedbackTone} copyFeedbackId={copyFeedbackId} copyFeedbackHighlighted={copyFeedbackHighlighted} copyFeedbackHighlightUntil={copyFeedbackHighlightUntil} expanded={expanded} onExpandedChange={setExpanded} />}
     </div>
     {tabs.filter(tab => tab !== 'logs').map(tab => <div key={tab} className="detail-tab-panel" id={`${tabId}-${tab}-panel`} role="tabpanel" aria-labelledby={`${tabId}-${tab}-tab`} hidden={activeTab !== tab}>{activeTab === tab && insights}</div>)}
   </div>;

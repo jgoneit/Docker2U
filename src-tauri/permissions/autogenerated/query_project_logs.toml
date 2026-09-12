@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-query-project-logs"
+description = "Enables the query_project_logs command without any pre-configured scope."
+commands.allow = ["query_project_logs"]
+
+[[permission]]
+identifier = "deny-query-project-logs"
+description = "Denies the query_project_logs command without any pre-configured scope."
+commands.deny = ["query_project_logs"]
