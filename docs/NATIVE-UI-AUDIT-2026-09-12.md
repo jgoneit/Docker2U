@@ -372,3 +372,65 @@ Computer Use로 정확한 설치 경로를 재실행했다. `desktop-linux`가 �
 설치 롤백은 Docker2U를 종료한 뒤 위 백업의 `Docker2U.app`를 설치 경로로 복원하고,
 교체 전 SHA-256 및 코드 서명을 대조한 다음 다시 실행한다. 이번에는 GitHub 브랜치
 푸시까지 진행하며 PR·Release 생성과 main 병합은 포함하지 않는다.
+
+## 설정·관찰 컨트롤 스타일 후속 수정 — 2026-09-12
+
+설치 화면에서 설정의 테마·언어 선택 상자에 브라우저 기본 외형이 남아 있었고,
+이력 행·그래프와 통합 로그 조작부에 밝은 테두리가 반복됐다. 기존 프로젝트 선택기와
+같은 색상 토큰과 둥근 모서리를 적용하고, 상시 외곽선을 배경색 구분으로 대체했다.
+키보드로 조작할 때의 포커스 표시는 유지한다.
+
+- 설정: 네이티브 `select`와 레이블을 유지하고 40px 높이, 10px 모서리, 선택 아이콘을 적용했다.
+- 통합 로그: 검색·서비스 필터에 34px 컨트롤과 선택 상태 색상을 적용하고 버튼·구분선의 대비를 조정했다.
+- 이력: 서비스 행에 펼침 아이콘과 선택 배경을 적용하고 그래프를 낮은 대비의 배경으로 구분했다.
+- 수집·재시도·스크롤 로직, 공개 IPC·응답 타입과 저장 형식은 변경하지 않았다.
+
+### 검증
+
+| 검사 | 결과 |
+| --- | --- |
+| `observation`, `App.observation`, `preferences`, `App.preferences` Vitest | 4개 파일, 63개 통과 |
+| 기존 `tests/browser/observation.spec.ts` | 9개 테마·언어·화면 크기 조합, 54개 통과, 재시도 없음 |
+| TypeScript·Vite production·fixture 혼입 검사 | 통과 |
+| locked production ARM64 앱 빌드 | 통과 |
+| 번들 ad-hoc 서명·`codesign --verify --deep --strict`·ARM64 검사 | 통과 |
+
+브라우저 검사는 3,000행 이상 로그가 실제 viewport 안에 있는지, 필터·일시정지,
+테마·언어 전환, 최소 분할 높이와 과거 위치·부분 행 스크롤 보존을 확인한다.
+이번 스타일 변경에서는 Rust 소스를 변경하지 않았고 Rust 전체 검사를 다시 실행하지 않았다.
+앞선 전체 회귀 결과와 이번 집중 검사 결과를 구분한다.
+
+Computer Use로 교체한 `/Applications/Docker2U.app`를 실행해 다크·라이트 설정의
+선택 상자와 포커스 표시를 직접 확인했다. 네이티브 메뉴에서 키보드로 영어를 선택해
+문구 전환을 확인한 뒤 한국어와 시스템 테마로 복원했다. 서비스 필터를 펼쳐
+체크박스·메뉴 외형을 확인하고, 프로젝트 이력에서 Redis를 펼쳐 CPU·메모리 그래프와
+선택 행이 실제 화면에 보이는지 확인했다. 검사 후 기존 memcached-1 개별 이력과
+220px 분할 높이로 복원했다.
+
+실제 Engine은 `desktop-linux`, 기존 컨테이너 4개가 연결되고 로그 소스 4개가 수집 중이다.
+최근 로그는 0행이었다. 실제 컨테이너를 변경하거나 합성 출력을 생성하지 않았다.
+이번 검사는 설치 앱의 외형·선택 동작·자원 그래프 검증이며, 로그 본문은 브라우저
+fixture와 앞선 Native Smoke 검증으로 구분한다.
+
+- [수정 전 설정](../.cache/control-polish-20260912/settings-before.png)
+- [수정 후 다크 설정](../.cache/control-polish-20260912/settings-dark-rest.png)
+- [수정 후 라이트 설정](../.cache/control-polish-20260912/settings-light-rest.png)
+- [키보드 포커스 표시](../.cache/control-polish-20260912/settings-light.png)
+- [통합 로그 조작부](../.cache/control-polish-20260912/project-toolbar-dark.png)
+- [서비스 필터 펼침](../.cache/control-polish-20260912/service-filter-dark.png)
+- [이력 선택 행과 그래프](../.cache/control-polish-20260912/history-dark.png)
+
+### 설치 교체와 복구
+
+| 항목 | 확인 값 |
+| --- | --- |
+| 교체 전 바이너리 SHA-256 | `913c27096be496b4582b604dce2a09f817db422c88f2930e55911e13db2e151b` |
+| 교체 후 바이너리 SHA-256 | `95a42296a4bbab05652588b87b8034201d3b1a45b5d4168574600d47f7b45a25` |
+| 복구용 백업 | `/Users/jgoneit/project/Docker2U/.local-apps/backups/20260912-133041-b0924ba8/Docker2U.app` |
+| 설치 경로·Bundle ID·버전 | `/Applications/Docker2U.app` · `io.github.jgoneit.docker2u` · `0.1.0-alpha.1` |
+
+기존 앱을 정상 종료한 뒤 staging 번들로 교체했다. 백업은 교체 전 전체 파일 digest와,
+설치 앱은 서명된 새 빌드의 전체 파일 digest와 일치한다. 같은 백업 디렉터리의
+`installation.json`에 대조 결과와 설치 상태를 보존했다. 롤백은 앱을 종료하고
+이 백업을 설치 경로로 복원한 다음 이전 digest와 코드 서명을 확인해 실행한다.
+앱은 로컬 ad-hoc 서명이며 공증·Gatekeeper 검증은 수행하지 않았다.
