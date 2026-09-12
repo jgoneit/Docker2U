@@ -15,7 +15,7 @@ function assert(value: unknown, message: string): asserts value { if (!value) th
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 // DOM presence alone does not prove that the virtualized tail is inside its
 // viewport. Include every clipping ancestor and the visible window in this check.
-function visibleLogTimes(): HTMLTimeElement[] {
+export function visibleLogTimes(): HTMLTimeElement[] {
   return [...document.querySelectorAll<HTMLTimeElement>('.project-log-row time[datetime]')].filter(time => {
     const row = time.closest<HTMLElement>('.project-log-row');
     if (!row) return false;

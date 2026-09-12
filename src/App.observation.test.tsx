@@ -105,3 +105,25 @@ it('keeps the project view and collection scope when its last selected container
   expect(screen.getByRole('tab', { name: '통합 로그' })).toBeVisible();
   expect(screen.getByRole('heading', { name: '프로젝트 · demo' })).toBeVisible();
 });
+
+it.each(['events', 'configure', 'query'] as const)('requires Reconnect immediately for an unsupported observation endpoint reported by %s', async source => {
+  const failure = { code: 'UnsupportedObservationEndpoint', message: 'Engine observation requires a Unix socket' };
+  if (source === 'events') vi.mocked(observationApi.configure).mockResolvedValueOnce({ ...observation(), eventError: failure, eventStatus: 'error' });
+  else if (source === 'configure') vi.mocked(projectLogApi.configure).mockRejectedValueOnce(failure);
+  else vi.mocked(projectLogApi.query).mockRejectedValueOnce(failure);
+  render(<App />); await ready();
+  await waitFor(() => expect(document.querySelector('.connection-status')).toHaveTextContent('연결 재확인 필요'));
+  const recovery = within(screen.getByRole('region', { name: '서비스 복구' }));
+  expect(recovery.getByRole('button', { name: '중지' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('checkbox', { name: 'web 작업 대상으로 선택' }));
+  expect(screen.getByRole('button', { name: '중지 (1)' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: '재시작 (1)' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: '새로고침' }));
+  await waitFor(() => expect(screen.getByRole('button', { name: '새로고침' })).toBeEnabled());
+  expect(document.querySelector('.connection-status')).toHaveTextContent('연결 재확인 필요');
+  expect(recovery.getByRole('button', { name: '중지' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: '다시 연결' }));
+  await waitFor(() => expect(within(screen.getByRole('region', { name: '서비스 복구' })).getByRole('button', { name: '중지' })).toBeEnabled());
+  expect(document.querySelector('.connection-status')).toHaveTextContent('연결됨');
+  expect(mock.mutateContainer).not.toHaveBeenCalled(); expect(mock.mutateContainers).not.toHaveBeenCalled();
+});

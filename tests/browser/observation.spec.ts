@@ -85,6 +85,26 @@ test('combined log controls fit, filter literal text, and preserve a frozen view
   if (process.env.DOCKER2U_BROWSER_FIXTURE_DIR) await page.screenshot({ path: info.outputPath('project-logs.png') });
 });
 
+test('resuming an initial collection failure publishes logs in the viewport without resetting the filter', async ({ page }, info) => {
+  const en = info.project.metadata.language === 'en';
+  await page.goto('/src/test/visual.html?toolbar=hidden&scenario=observation&projectConfigureFailure=1');
+  await expect(page.locator('.container-row')).toHaveCount(4);
+  await page.getByRole('treeitem', { name: en ? 'orders project' : 'orders 프로젝트', exact: true }).locator('.project-tree-name').click();
+  await page.locator('.project-logs [role="alert"] summary').click();
+  await expect(page.getByText('Synthetic initial collection failure.', { exact: true })).toBeVisible();
+  await expect(page.locator('.project-log-row')).toHaveCount(0);
+  await page.getByRole('searchbox', { name: en ? 'Search log text' : '로그 키워드 검색', exact: true }).fill('request=');
+  await page.getByRole('button', { name: en ? 'Resume collection' : '수집 재개', exact: true }).click();
+  await expectVisibleLogs(page);
+  await expect(page.getByText('Synthetic initial collection failure.', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('searchbox', { name: en ? 'Search log text' : '로그 키워드 검색', exact: true })).toHaveValue('request=');
+  expect((await visibleRows(page)).every(row => row?.includes('request='))).toBe(true);
+  expect(await page.evaluate(() => (window as unknown as { __docker2uObservationCalls: Record<string, number> }).__docker2uObservationCalls.retryLogs)).toBe(1);
+  await page.locator('.container-row').first().click();
+  await expectVisibleLogs(page);
+  expect(await page.evaluate(() => (window as unknown as { __docker2uObservationCalls: Record<string, number> }).__docker2uObservationCalls.retryLogs)).toBe(1);
+});
+
 test('Core refresh preserves checked identities and project history shows CPU above 100 with gaps', async ({ page }, info) => {
   const en = info.project.metadata.language === 'en';
   const checkbox = page.locator('.container-checkbox').first();

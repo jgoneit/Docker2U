@@ -16,6 +16,21 @@ IDS = [format(value, "064x") for value in (1, 2)]
 
 
 class ObservationEvidenceTests(unittest.TestCase):
+    def test_project_recovery_requires_explicit_response_fault_and_visible_native_result(self):
+        report = {**shared.clear_report(), "steps": [shared.step("started project-recovery", 1100),
+            shared.step("injected project configure response failure", 1200, {"sessionId": "native-session", "project": "native-smoke-project", "nativeConfigureCompleted": True, "responseFaultOnly": True}),
+            shared.step("native project retry restored visible logs", 1500, {"nativeRetries": 1, "visibleLogRows": 2, "errorCleared": True}),
+            shared.step("passed project-recovery", 1600)]}
+        self.assertTrue(fixture.validate_ui(shared.identity(), report, [], now_ms=2000)["accepted"])
+        for key, value in [("nativeRetries", 0), ("nativeRetries", 2), ("visibleLogRows", 0), ("visibleLogRows", True), ("errorCleared", False)]:
+            invalid = copy.deepcopy(report)
+            invalid["steps"][2]["detail"][key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                fixture.validate_ui(shared.identity(), invalid, [], now_ms=2000)
+        report["steps"][1]["detail"]["responseFaultOnly"] = False
+        with self.assertRaises(ValueError):
+            fixture.validate_ui(shared.identity(), report, [], now_ms=2000)
+
     def evidence(self):
         binding = shared.identity()
         baseline = {"binding": binding, "engineId": "native-smoke-engine", "contextName": "native-smoke-local", "endpoint": "unix:///owned/engine.sock",

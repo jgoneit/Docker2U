@@ -345,7 +345,7 @@ def validate_ui(manifest, ui, events, now_ms=None):
             pending = (name.removeprefix("started "), index)
         elif name.startswith("passed "):
             probe = name.removeprefix("passed ")
-            if pending is None or pending[0] != probe or probe not in ["search", "connection-clear", "socket", "recovery", *INSIGHT_STEPS, *OBSERVATION_STEPS]:
+            if pending is None or pending[0] != probe or probe not in ["search", "connection-clear", "socket", "recovery", "project-recovery", *INSIGHT_STEPS, *OBSERVATION_STEPS]:
                 raise ValueError("UI completion has no matching probe start")
             attempt = steps[pending[1]:index + 1]
             by_name = {row["name"]: row for row in attempt}
@@ -354,11 +354,21 @@ def validate_ui(manifest, ui, events, now_ms=None):
                 "connection-clear": ["requested pending logs", "cleared pending logs", "native connection warning preserved after Clear"],
                 "socket": ["requested missing-socket logs", "native SocketMissing verified"],
                 "recovery": ["requested warning-preserving Refresh", "warning retained after NeedsValidation rejected Refresh without new logs", "requested explicit Reconnect", "explicit reconnect restored the valid session"],
+                "project-recovery": ["injected project configure response failure", "native project retry restored visible logs"],
                 **INSIGHT_STEPS,
                 **OBSERVATION_STEPS,
             }[probe]
             if not all(name in by_name for name in required):
                 raise ValueError("UI probe is missing required evidence: " + probe)
+            if probe == "project-recovery":
+                injected = by_name[required[0]].get("detail", {})
+                recovered = by_name[required[1]].get("detail", {})
+                visible = recovered.get("visibleLogRows")
+                if (injected.get("nativeConfigureCompleted") is not True or injected.get("responseFaultOnly") is not True
+                        or not injected.get("sessionId") or injected.get("project") != "native-smoke-project"
+                        or type(recovered.get("nativeRetries")) is not int or recovered["nativeRetries"] != 1
+                        or type(visible) is not int or visible <= 0 or recovered.get("errorCleared") is not True):
+                    raise ValueError("Project response recovery lacks real IPC and visible viewport evidence")
             if probe == "connection-clear":
                 requested = by_name["requested pending logs"]["timeMs"]
                 cleared = by_name["cleared pending logs"]["timeMs"]

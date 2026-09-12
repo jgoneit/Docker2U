@@ -13,6 +13,7 @@ export function installObservationFixture() {
   let sequence = 0;
   const started = Date.now();
   const calls: Record<string, number> = {};
+  let failConfigure = new URLSearchParams(location.search).get('projectConfigureFailure') === '1';
   Object.assign(window, { __docker2uObservationCalls: calls });
   const count = (name: string) => { calls[name] = (calls[name] ?? 0) + 1; };
   async function observation(sessionId: string, cursor = 0): Promise<ObservationRead> {
@@ -41,7 +42,12 @@ export function installObservationFixture() {
     release: async () => { count('release'); held = false; },
   } satisfies typeof observationApi);
   Object.assign(projectLogApi, {
-    configure: async (sessionId: string, project: string, handles: string[] | null) => { count('configureLogs'); configuredProject = project; selected = handles === null ? null : new Set(snapshot?.containers.filter(item => handles.includes(item.handle)).map(item => item.fullId)); const result = await logs(sessionId, project); return { ...result, offset: Math.max(0, result.rows.length - 160), rows: result.rows.slice(-160) }; },
+    configure: async (sessionId: string, project: string, handles: string[] | null) => {
+      count('configureLogs'); configuredProject = project; selected = handles === null ? null : new Set(snapshot?.containers.filter(item => handles.includes(item.handle)).map(item => item.fullId));
+      const result = await logs(sessionId, project);
+      if (failConfigure) { failConfigure = false; return { ...result, rows: [], totalRows: 0, error: { code: 'EngineTransportError', message: 'Synthetic initial collection failure.' } }; }
+      return { ...result, offset: Math.max(0, result.rows.length - 160), rows: result.rows.slice(-160) };
+    },
     query: async (sessionId, project, query) => {
       count('queryLogs'); const result = await logs(sessionId, project);
       const rows = result.rows.filter(row => (!query.sourceIds.length || query.sourceIds.includes(row.sourceId)) && row.text.toLowerCase().includes(query.keyword.toLowerCase()) && (query.throughSequence === null || row.sequence <= query.throughSequence) && (query.afterSequence == null || row.sequence > query.afterSequence));

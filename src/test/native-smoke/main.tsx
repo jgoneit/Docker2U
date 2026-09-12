@@ -2,11 +2,11 @@ import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from '../../App';
 import { api, coreError, type ContainerDetails } from '../../api';
-import { observationApi, type ObservationRead } from '../../observationApi';
+import { observationApi, projectLogApi, type ObservationRead } from '../../observationApi';
 import '../../styles.css';
 import { initializePreferences } from '../../preferences';
 import { nativeCheckpoint, nativePaneSize, readyNativeInventory, readyNativeLogs, type NativeCheckpoint } from './readiness';
-import { captureObservationBaseline, verifyObservationRestore } from './observationProbes';
+import { captureObservationBaseline, verifyObservationRestore, visibleLogTimes } from './observationProbes';
 
 const marker = 'NATIVE_SMOKE_HARNESS';
 type Mode = 'worker' | 'constructor-fail' | 'never-ready';
@@ -106,6 +106,23 @@ const nativeStop = api.stopLogStream;
 api.stopLogStream = async (...args) => { await nativeStop(...args); ++streamEvidence.stops; changed(); };
 const nativeDetails = api.getContainerDetails;
 api.getContainerDetails = async (...args) => { const details = await nativeDetails(...args); ++detailsReads; lastDetails = details; return details; };
+
+// An explicitly armed, test-only response fault. Both configure and retry still
+// execute real Rust IPC; this proves UI recovery, not a native reader failure.
+let failProjectConfigureReply = false;
+let projectRetries = 0;
+const nativeProjectConfigure = projectLogApi.configure;
+projectLogApi.configure = async (...args) => {
+  const injectThisReply = failProjectConfigureReply;
+  if (injectThisReply) failProjectConfigureReply = false;
+  const result = await nativeProjectConfigure(...args);
+  if (!injectThisReply) return result;
+  assert(!result.error, 'Native configure failed before the response fault was injected');
+  record('injected project configure response failure', { sessionId: result.sessionId, project: result.project, nativeConfigureCompleted: true, responseFaultOnly: true });
+  return { ...result, rows: [], totalRows: 0, error: { code: 'EngineTransportError', message: 'NATIVE_SMOKE_INITIAL_CONFIGURE_FAILURE' } };
+};
+const nativeProjectRetry = projectLogApi.retry;
+projectLogApi.retry = async (...args) => { const result = await nativeProjectRetry(...args); ++projectRetries; return result; };
 
 localStorage.setItem('docker2u.preferences.v1', JSON.stringify({ theme: 'light', language: 'ko' }));
 initializePreferences();
@@ -489,6 +506,32 @@ async function detailTabsProbe() {
   record('restored logs after all three tabs', { ...identity, starts: streamEvidence.starts, preservedView, detailsReads: detailsReads - previousDetailsReads, maximumActiveReads: streamEvidence.maximumActiveReads });
 }
 
+async function projectRecoveryProbe() {
+  await ready();
+  const previous = nativeCheckpoint(document);
+  // Keep this response-recovery probe independent of the existing Busy guard
+  // for an automatic inventory refresh racing its setup Reconnect.
+  const setupSession = lastInventoryReply?.sessionId;
+  assert(setupSession, 'Native setup session is missing');
+  const hold = await observationApi.hold(setupSession);
+  try {
+    click('다시 연결');
+    await waitFor(() => readyNativeInventory(document, previous), 'new native inventory after Reconnect', 20_000);
+  } finally { await observationApi.release(setupSession, hold.holdId); }
+  await selectStandalone();
+  failProjectConfigureReply = true;
+  const projectNode = document.querySelector<HTMLElement>('.project-tree-item .project-tree-name');
+  assert(projectNode?.textContent === 'native-smoke-project', 'Owned project row is missing');
+  projectNode.click();
+  await waitFor(() => document.querySelector('.project-logs')?.textContent?.includes('NATIVE_SMOKE_INITIAL_CONFIGURE_FAILURE'), 'initial configure error displayed');
+  assert(document.querySelectorAll('.project-log-row').length === 0, 'Initial failure reused an earlier session page');
+  const retriesBefore = projectRetries;
+  click('수집 재개');
+  await waitFor(() => projectRetries === retriesBefore + 1 && visibleLogTimes().length > 0, 'native retry logs in visible viewport', 20_000);
+  assert(!document.querySelector('.project-logs')?.textContent?.includes('NATIVE_SMOKE_INITIAL_CONFIGURE_FAILURE'), 'Collection error remained after retry');
+  record('native project retry restored visible logs', { nativeRetries: projectRetries - retriesBefore, visibleLogRows: visibleLogTimes().length, errorCleared: true });
+}
+
 function Harness() {
   const [, update] = useState(0);
   const [open, setOpen] = useState(true);
@@ -507,6 +550,7 @@ function Harness() {
     {open && <><h2 style={{ fontSize: 16 }}>Native smoke · isolated real IPC</h2><p>Arm the next Engine failure, or remove/restore the fixture socket using the runner before its corresponding probe. No real Docker is used. Legacy probes select the projectless native-smoke-3. Bind its ready stream before arming faults or enabling live-on; keep live-off for dense search.</p>
       <label>Worker mode <select disabled={running} value={mode} onChange={event => { sessionStorage.setItem(marker, event.target.value); location.reload(); }}><option value="worker">Real Worker</option><option value="constructor-fail">Injected constructor failure</option><option value="never-ready">Suppress ready for timeout</option></select></label>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, margin: '8px 0' }}>
+        <button disabled={running} onClick={() => void run('project-recovery', projectRecoveryProbe)}>Run project initial-response recovery</button>
         <button disabled={running} onClick={() => void run('observation-baseline', async () => { const binding = await captureObservationBaseline(record); assert(!report.binding || JSON.stringify(report.binding) === JSON.stringify(binding), 'Native fixture changed during this page run'); report.binding = binding; })}>Capture project observation baseline</button>
         <button disabled={running} onClick={() => void run('observation-restore', () => verifyObservationRestore(record))}>Verify minimized collection / restore</button>
         <button disabled={running} onClick={() => void run('detail-tabs', detailTabsProbe)}>Run native diagnostics / connection tabs</button>
