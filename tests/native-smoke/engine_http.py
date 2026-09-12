@@ -15,6 +15,11 @@ def launch_binding(root):
     return {key: manifest[key] for key in ("runId", "binarySha256", "startedAtMs")}
 
 
+def compose_containers(root):
+    path = root / "compose-state.json"
+    return {row["Id"]: row for row in json.loads(path.read_text()).get("containers", [])} if path.exists() else {}
+
+
 def record(root, **event):
     event.update(pid=os.getpid(), timeMs=time.time_ns() // 1_000_000)
     descriptor = os.open(root / "trace.jsonl", os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
@@ -95,7 +100,8 @@ class EngineHandler(BaseHTTPRequestHandler):
         prefix = "/v1.47/containers/"
         identifier = path[len(prefix):-len("/logs")] if path.startswith(prefix) and path.endswith("/logs") else None
         events = path == "/v1.47/events"
-        if not events and identifier not in [format(value, "064x") for value in (1, 2, 3)]:
+        baseline_ids = [format(value, "064x") for value in (1, 2, 3)]
+        if not events and identifier not in [*baseline_ids, *compose_containers(self.server.root)]:
             self.send_error(404)
             return
         self.send_response(200)
@@ -104,6 +110,14 @@ class EngineHandler(BaseHTTPRequestHandler):
         self.end_headers()
         sequence = 0
         while not self.server.stopping.is_set():
+            if not events and identifier not in baseline_ids:
+                row = compose_containers(self.server.root).get(identifier)
+                if row is None or (sequence > 0 and row["State"] != "running"):
+                    self.wfile.write(b"0\r\n\r\n")
+                    self.wfile.flush()
+                    self.close_connection = True
+                    record(self.server.root, phase="api-compose-log-ended", fullId=identifier)
+                    return
             if sequence == 0 or (self.server.root / "follow-live").exists():
                 sequence += 1
                 now = time.time_ns()

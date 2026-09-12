@@ -1,12 +1,17 @@
 #!/usr/bin/python3
-"""Read-only Docker protocol fixture. Never discovers or invokes a real CLI."""
+"""Synthetic Docker protocol fixture. Never discovers or invokes a real CLI."""
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import signal
 import sys
 import time
+
+_compose_spec = importlib.util.spec_from_file_location("native_compose", Path(__file__).with_name("compose_fixture.py"))
+compose = importlib.util.module_from_spec(_compose_spec)
+_compose_spec.loader.exec_module(compose)
 
 LIMIT = 2 * 1024 * 1024
 END = b"\nNATIVE_SMOKE_END\n"
@@ -75,6 +80,11 @@ def run(root, arguments):
     if arguments[:2] != ["--host", "unix://" + str(root / "engine.sock")]:
         raise ValueError("fixture rejected a foreign endpoint or implicit host")
     args = arguments[2:]
+    compose_result = compose.dispatch(root, args, record, lambda: STOP_REQUESTED)
+    if compose_result is not None:
+        return compose_result
+    compose_rows = compose.rows(root)
+    identifiers = [*IDS, *(row["Id"] for row in compose_rows)]
     if args == ["info", "--format", "{{json .}}"]:
         claimed = root / ("claimed-info-" + str(os.getpid()))
         changed = False
@@ -93,8 +103,32 @@ def run(root, arguments):
         print(json.dumps({"Client": {"Version": "29.8.0", "ApiVersion": "1.54"}, "Server": {"Version": "29.8.0", "ApiVersion": "1.54"}}))
         return 0
     if args == ["container", "ls", "--all", "--no-trunc", "--format", "{{json .}}"]:
-        for identifier in IDS:
+        for identifier in identifiers:
             print(json.dumps({"ID": identifier}))
+        return 0
+    if len(args) == 8 and args[:5] == ["container", "ls", "--all", "--no-trunc", "--filter"] and args[6:] == ["--format", "{{.ID}}"] and args[5].startswith("label=com.docker.compose.project="):
+        name = args[5].split("=", 2)[2]
+        selected = [row["Id"] for row in compose_rows if row["ComposeProject"] == name]
+        if name == "native-smoke-project":
+            selected = [*IDS[:2], *selected]
+        record(root, phase="compose-provenance-list", project=name, fullIds=selected)
+        for identifier in selected:
+            print(identifier)
+        return 0
+    if len(args) >= 5 and args[:4] == ["container", "inspect", "--format", compose.PROVENANCE_FORMAT]:
+        if len(set(args[4:])) != len(args[4:]) or any(identifier not in identifiers for identifier in args[4:]):
+            raise ValueError("fixture rejected unknown or duplicate provenance targets")
+        for identifier in args[4:]:
+            row = next((row for row in compose_rows if row["Id"] == identifier), {})
+            print(json.dumps({"Id": identifier, "Project": row.get("ComposeProject", "native-smoke-project" if identifier in IDS[:2] else None), "WorkingDirectory": row.get("WorkingDirectory"), "ConfigFiles": row.get("ConfigFiles")}))
+        record(root, phase="compose-provenance-inspect", fullIds=args[4:])
+        return 0
+    if len(args) == 5 and args[:4] == ["container", "inspect", "--format", DETAILS_FORMAT] and args[4] in identifiers and args[4] not in IDS:
+        row = next(row for row in compose_rows if row["Id"] == args[4])
+        configured = row["ComposeService"] == "api"
+        running = row["State"] == "running"
+        print(json.dumps({"Id": row["Id"], "State": row["State"], "ExitCode": 0, "StartedAt": row["StartedAt"], "FinishedAt": "0001-01-01T00:00:00Z" if running else "2026-09-13T00:01:00Z", "OOMKilled": False, "RestartCount": 0, "HealthConfigured": configured, "Health": {"Status": row["Health"], "FailingStreak": 0, "Log": []} if configured and running else None, "NetworkMode": "bridge", "Ports": row["Ports"], "Networks": {row["ComposeProject"] + "_default": {"Aliases": [row["ComposeService"]], "IPAddress": "172.19.0.2", "GlobalIPv6Address": ""}}}))
+        record(root, phase="details-payload", fullId=row["Id"], exitCode=0, oomKilled=False, healthConfigured=configured)
         return 0
     if len(args) == 5 and args[:4] == ["container", "inspect", "--format", DETAILS_FORMAT] and args[4] in IDS:
         identifier = args[4]
@@ -111,32 +145,35 @@ def run(root, arguments):
         return 0
     if len(args) >= 5 and args[:4] == ["container", "inspect", "--format", INSPECT_FORMAT]:
         for identifier in args[4:]:
-            if identifier not in IDS:
+            if identifier not in identifiers:
                 raise ValueError("fixture rejected an unknown container")
+            if identifier not in IDS:
+                print(json.dumps(next(row for row in compose_rows if row["Id"] == identifier)))
+                continue
             number = int(identifier, 16)
             print(json.dumps({"Id": identifier, "Name": "/native-smoke-" + str(number), "Image": "native-smoke:synthetic", "Created": "2026-09-06T00:00:00Z", "StartedAt": "2026-09-08T00:00:00Z", "Tty": number == 2, "State": "running", "Health": "healthy", "Ports": None,
                               "ComposeProject": "native-smoke-project" if number < 3 else None, "ComposeService": {1: "api", 2: "redis"}.get(number)}))
         return 0
     if len(args) >= 7 and args[:6] == ["container", "stats", "--no-stream", "--no-trunc", "--format", "{{json .}}"]:
-        identifiers = args[6:]
-        if len(set(identifiers)) != len(identifiers) or any(identifier not in IDS for identifier in identifiers):
+        targets = args[6:]
+        if len(set(targets)) != len(targets) or any(identifier not in identifiers for identifier in targets):
             raise ValueError("fixture rejected unknown or duplicate stats targets")
         rows = []
-        for identifier in identifiers:
+        for identifier in targets:
             number = int(identifier, 16)
-            rows.append({"ID": identifier, "CPUPerc": {1: "125.50%", 2: "2.50%", 3: "0.50%"}[number],
-                         "MemUsage": f"{ {1: 64, 2: 32, 3: 8}[number]}MiB / 2GiB", "MemPerc": {1: "3.125%", 2: "1.5625%", 3: "0.390625%"}[number]})
-        record(root, phase="stats-payload", fullIds=identifiers, count=len(rows))
+            rows.append({"ID": identifier, "CPUPerc": {1: "125.50%", 2: "2.50%", 3: "0.50%"}.get(number, "1.25%"),
+                         "MemUsage": f"{ {1: 64, 2: 32, 3: 8}.get(number, 16)}MiB / 2GiB", "MemPerc": {1: "3.125%", 2: "1.5625%", 3: "0.390625%"}.get(number, "0.78125%")})
+        record(root, phase="stats-payload", fullIds=targets, count=len(rows))
         for row in rows:
             print(json.dumps(row))
         return 0
-    if len(args) == 7 and args[:6] == ["container", "logs", "--follow", "--tail", "300", "--timestamps"] and args[6] in IDS:
+    if len(args) == 7 and args[:6] == ["container", "logs", "--follow", "--tail", "300", "--timestamps"] and args[6] in identifiers:
         return follow_logs(root, args[6])
-    if len(args) == 6 and args[:5] == ["container", "logs", "--tail", "300", "--timestamps"] and args[5] in IDS:
+    if len(args) == 6 and args[:5] == ["container", "logs", "--tail", "300", "--timestamps"] and args[5] in identifiers:
         write_logs(root, json.loads((root / "launch.json").read_text()))
         return 0
     record(root, phase="rejected-command", args=arguments)
-    raise ValueError("fixture only accepts its explicit read-only command allowlist")
+    raise ValueError("fixture only accepts its explicit synthetic command allowlist")
 
 
 def main():

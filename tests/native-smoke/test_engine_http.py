@@ -8,6 +8,7 @@ import tempfile
 import unittest
 
 from engine_http import EngineServer
+from compose_fixture import save_rows
 
 
 class UnixHTTPConnection(http.client.HTTPConnection):
@@ -79,6 +80,48 @@ class NativeEngineHTTPTests(unittest.TestCase):
         response = client.getresponse()
         self.assertEqual(response.status, 501)
         response.read()
+
+    def test_registered_compose_logs_follow_new_full_ids_and_end_after_recreation(self):
+        first, second = (format(value, "064x") for value in (101, 102))
+        row = {"Id": first, "State": "running", "ComposeProject": "native-compose", "ComposeService": "api"}
+        save_rows(self.root, [row])
+        client = self.connection()
+        client.request("GET", "/v1.47/containers/" + first + "/logs?follow=1")
+        response = client.getresponse()
+        self.assertEqual(response.status, 200)
+        pipe, length = struct.unpack(">BxxxI", response.read(8))
+        self.assertEqual(pipe, 1)
+        self.assertEqual(json.loads(response.read(length).decode().split("NATIVE_PROJECT_RUN ", 1)[1]), self.binding)
+        pipe, length = struct.unpack(">BxxxI", response.read(8))
+        self.assertIn("fullId=" + first, response.read(length).decode())
+        save_rows(self.root, [{**row, "Id": second}])
+        self.assertEqual(response.read(), b"", "replaced container stream must end normally")
+        stale = self.connection()
+        stale.request("GET", "/v1.47/containers/" + first + "/logs?follow=1")
+        rejected = stale.getresponse()
+        self.assertEqual(rejected.status, 404)
+        rejected.read()
+        fresh = self.connection()
+        fresh.request("GET", "/v1.47/containers/" + second + "/logs?follow=1")
+        resumed = fresh.getresponse()
+        self.assertEqual(resumed.status, 200)
+        _, length = struct.unpack(">BxxxI", resumed.read(8))
+        resumed.read(length)
+        _, length = struct.unpack(">BxxxI", resumed.read(8))
+        self.assertIn("fullId=" + second, resumed.read(length).decode())
+        save_rows(self.root, [{**row, "Id": second, "State": "exited"}])
+        self.assertEqual(resumed.read(), b"", "stopped container stream must end normally")
+
+    def test_stopped_compose_container_has_finite_retained_logs(self):
+        identifier = format(101, "064x")
+        save_rows(self.root, [{"Id": identifier, "State": "exited", "ComposeProject": "native-compose", "ComposeService": "worker"}])
+        client = self.connection()
+        client.request("GET", "/v1.47/containers/" + identifier + "/logs?follow=1")
+        response = client.getresponse()
+        self.assertEqual(response.status, 200)
+        payload = response.read()
+        self.assertIn(b"NATIVE_PROJECT_RUN", payload)
+        self.assertIn(("fullId=" + identifier).encode(), payload)
 
 
 if __name__ == "__main__":
