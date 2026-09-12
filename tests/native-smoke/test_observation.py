@@ -33,7 +33,7 @@ class ObservationEvidenceTests(unittest.TestCase):
         for words, at, pid in [(["container", "ls"], 16000, 41), (["container", "stats"], 7900, 42)]:
             trace.extend([{"phase": "start", "timeMs": at, "pid": pid, "args": ["--host", "unix:///owned/engine.sock", *words]},
                           {"phase": "end", "timeMs": at + 100, "pid": pid, "exitCode": 0}])
-        trace += [{"phase": "stats-payload", "timeMs": 7950, "fullIds": IDS}, {"phase": "api-log-output", "timeMs": 8900, "producedAtMs": 8850, "fullId": IDS[0]},
+        trace += [{"phase": "stats-payload", "timeMs": 7950, "fullIds": IDS + [format(3, "064x")]}, {"phase": "api-log-output", "timeMs": 8900, "producedAtMs": 8850, "fullId": IDS[0]},
                   {"phase": "api-health-event", "timeMs": 9900, "producedAtMs": 9850, "fullId": IDS[0]}]
         return {**binding, "fixtureRoot": "/owned"}, report, trace
 

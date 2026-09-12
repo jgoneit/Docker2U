@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from '../../App';
-import { api, type ContainerDetails } from '../../api';
+import { api, coreError, type ContainerDetails } from '../../api';
+import { observationApi, type ObservationRead } from '../../observationApi';
 import '../../styles.css';
 import { initializePreferences } from '../../preferences';
 import { nativeCheckpoint, nativePaneSize, readyNativeInventory, readyNativeLogs, type NativeCheckpoint } from './readiness';
@@ -13,9 +14,15 @@ type Evidence = { name: string; timeMs: number; detail?: Record<string, unknown>
 type Binding = { runId: string; binarySha256: string; startedAtMs: number };
 const storedMode = sessionStorage.getItem(marker);
 const mode: Mode = storedMode === 'constructor-fail' || storedMode === 'never-ready' ? storedMode : 'worker';
-const streamEvidence = { starts: 0, reads: 0, stops: 0, activeReads: 0, maximumActiveReads: 0, nonEmptyReads: 0, receivedBytes: 0, streamId: '', fullId: '', statsReads: 0, lastStatsCount: 0, stdoutTick: 0, stderrTick: 0 };
+const streamEvidence = { startRequests: 0, starts: 0, reads: 0, stops: 0, activeReads: 0, maximumActiveReads: 0, nonEmptyReads: 0, receivedBytes: 0, streamId: '', fullId: '', statsReads: 0, lastStatsCount: 0, stdoutTick: 0, stderrTick: 0 };
+type InventoryReply = { request: number; sessionId: string; requestedAtMs: number; repliedAtMs: number; errorCode: string | null; responseSessionId: string | null };
+let inventoryRequests = 0;
+let lastInventoryReply: InventoryReply | null = null;
 let detailsReads = 0;
 let lastDetails: ContainerDetails | null = null;
+let lastObservation: ObservationRead | null = null;
+const standaloneName = 'native-smoke-3';
+const fixtureIds = [1, 2, 3].map(number => number.toString(16).padStart(64, '0'));
 const report = { marker, mode, streamEvidence, nativeIpc: '__TAURI_INTERNALS__' in window, status: 'ready', binding: null as Binding | null, steps: [] as Evidence[], workerEvents: [] as Evidence[], failures: [] as string[] };
 let changed = () => {};
 function record(name: string, detail?: Record<string, unknown>) {
@@ -52,8 +59,21 @@ window.Worker = new Proxy(NativeWorker, {
 });
 
 // Observe the actual IPC replies, without replacing native behavior or storing raw logs.
+const nativeInventory = api.listContainers;
+api.listContainers = async (...args) => {
+  const request = ++inventoryRequests; const requestedAtMs = Date.now();
+  try {
+    const result = await nativeInventory(...args);
+    lastInventoryReply = { request, sessionId: args[0], requestedAtMs, repliedAtMs: Date.now(), errorCode: null, responseSessionId: result.sessionId };
+    return result;
+  } catch (error) {
+    lastInventoryReply = { request, sessionId: args[0], requestedAtMs, repliedAtMs: Date.now(), errorCode: coreError(error).code, responseSessionId: null };
+    throw error;
+  }
+};
 const nativeStart = api.startLogStream;
 api.startLogStream = async (...args) => {
+  ++streamEvidence.startRequests;
   const stream = await nativeStart(...args);
   ++streamEvidence.starts; streamEvidence.streamId = stream.streamId; streamEvidence.fullId = stream.fullId;
   streamEvidence.stdoutTick = 0; streamEvidence.stderrTick = 0; changed();
@@ -78,6 +98,10 @@ api.readLogStream = async (...args) => {
 };
 const nativeStats = api.getContainerStats;
 api.getContainerStats = async (...args) => { const sample = await nativeStats(...args); ++streamEvidence.statsReads; streamEvidence.lastStatsCount = sample.items.length; changed(); return sample; };
+const nativeObservationConfigure = observationApi.configure;
+observationApi.configure = async (...args) => { const result = await nativeObservationConfigure(...args); lastObservation = result; return result; };
+const nativeObservationRead = observationApi.read;
+observationApi.read = async (...args) => { const result = await nativeObservationRead(...args); lastObservation = result; return result; };
 const nativeStop = api.stopLogStream;
 api.stopLogStream = async (...args) => { await nativeStop(...args); ++streamEvidence.stops; changed(); };
 const nativeDetails = api.getContainerDetails;
@@ -109,14 +133,26 @@ function content() {
   return value;
 }
 function button(name: string, scope: ParentNode = document.querySelector('.app-shell')!) {
-  const value = Array.from(scope.querySelectorAll<HTMLButtonElement>('button')).find(element => !element.closest('[hidden]') && (element.getAttribute('aria-label') === name || element.textContent?.trim() === name));
-  assert(value, `Button missing: ${name}`);
+  const value = Array.from(scope.querySelectorAll<HTMLElement>('button, [role="treeitem"]')).find(element => !element.closest('[hidden]') && (element.getAttribute('aria-label') === name || element.textContent?.trim() === name));
+  assert(value, `Control missing: ${name}`);
   return value;
 }
+function disabled(target: HTMLElement) { return target instanceof HTMLButtonElement ? target.disabled : target.getAttribute('aria-disabled') === 'true'; }
 function click(name: string, scope?: ParentNode) {
   const target = button(name, scope);
-  assert(!target.disabled, `Button disabled: ${name}`);
+  assert(!disabled(target), `Control disabled: ${name}`);
   target.click();
+}
+async function selectStandalone(previous?: NativeCheckpoint) {
+  await waitFor(() => readyNativeInventory(document, previous), 'settled owned fixture inventory');
+  const group = button('프로젝트 없음');
+  if (group.getAttribute('aria-expanded') === 'false') click('프로젝트 없음 펼치기', group);
+  const target = button(`${standaloneName} 상세`);
+  if (target.getAttribute('aria-selected') !== 'true') target.click();
+  await waitFor(() => button(`${standaloneName} 상세`).getAttribute('aria-selected') === 'true', 'projectless fixture selected for legacy log IPC');
+  const logs = button('로그');
+  if (logs.getAttribute('aria-selected') !== 'true') logs.click();
+  await waitFor(() => document.querySelector('.logs-panel:not([hidden]) .log-content'), 'projectless native log panel mounted');
 }
 function warned() { return document.querySelector('.connection-status')?.textContent?.includes('연결 재확인 필요'); }
 function blocked() {
@@ -126,6 +162,7 @@ function blocked() {
 }
 async function ready(previous?: NativeCheckpoint, dense = false) {
   assert(report.nativeIpc, 'This entry must run inside the packaged native validation app');
+  await selectStandalone(previous);
   let acceptedText = '';
   await waitFor(() => {
     const accepted = readyNativeLogs(document, previous, dense || !report.binding);
@@ -208,12 +245,12 @@ async function clearProbe() {
   await waitFor(() => content().getAttribute('aria-busy') === 'false', 'Clear to remove the loading view', 1000);
   assert(performance.now() - started < 1000, 'UI sequence exceeded its 1s timing budget; do not accept this run');
   record('cleared pending logs');
-  assert(button('로그 조회', panel()).disabled, 'Clear released the native IPC slot too early');
+  assert(disabled(button('로그 조회', panel())), 'Clear released the native IPC slot too early');
   await waitFor(warned, 'the delayed native Engine identity failure');
   assert(blocked(), 'Recovery actions remained available after a native session failure');
   assert(!panel().querySelector('.log-error'), 'An invalidated error replaced the cleared log view');
   assert(!panel().querySelector('.log-fetched-at'), 'Clear left a stale log timestamp');
-  assert(button('표시된 로그 복사', panel()).disabled, 'Cleared logs are still copyable');
+  assert(disabled(button('표시된 로그 복사', panel())), 'Cleared logs are still copyable');
   record('native connection warning preserved after Clear');
 }
 
@@ -230,58 +267,75 @@ async function socketProbe() {
 async function recoveryProbe() {
   assert(warned(), 'Run a connection failure probe first; restore the fixture socket if removed');
   const beforeRefresh = nativeCheckpoint(document);
-  record('requested warning-preserving Refresh');
+  assert(beforeRefresh.listCheckedAt && lastInventoryReply?.sessionId, 'Recovery requires the last good native inventory');
+  const sessionId = lastInventoryReply.sessionId;
+  const starts = streamEvidence.starts; const startRequests = streamEvidence.startRequests;
+  const beforeRequest = inventoryRequests;
+  const visibleInventory = () => Array.from(document.querySelectorAll('.container-list-item')).map(row => row.getAttribute('aria-label')).join('\n');
+  const inventoryBefore = visibleInventory();
+  assert(inventoryBefore, 'Recovery requires retained inventory rows');
+  record('requested warning-preserving Refresh', { sessionId, starts, startRequests, listCheckedAt: beforeRefresh.listCheckedAt });
   click('새로고침');
-  const starts = streamEvidence.starts;
-  await waitFor(() => readyNativeInventory(document, beforeRefresh), 'new inventory while logs remain blocked');
-  assert(warned() && blocked(), 'A successful Refresh cleared the session warning');
-  assert(streamEvidence.starts === starts, 'Refresh opened logs before reconnecting the invalid session');
-  record('warning retained after successful Refresh without new logs');
+  await waitFor(() => lastInventoryReply && lastInventoryReply.request > beforeRequest && !disabled(button('새로고침'))
+    && document.querySelector('.inline-error')?.textContent?.includes('NeedsValidation'), 'native NeedsValidation reply and settled blocked Refresh');
+  const rejected = lastInventoryReply;
+  assert(rejected?.request === beforeRequest + 1 && rejected.sessionId === sessionId && rejected.errorCode === 'NeedsValidation', 'Refresh did not reject the current session with native NeedsValidation');
+  assert(warned() && blocked(), 'Rejected Refresh cleared the session warning or enabled recovery');
+  assert(nativeCheckpoint(document).listCheckedAt === beforeRefresh.listCheckedAt && visibleInventory() === inventoryBefore, 'Rejected Refresh replaced the last good inventory');
+  assert(streamEvidence.starts === starts && streamEvidence.startRequests === startRequests, 'Refresh requested logs before reconnecting the invalid session');
+  record('warning retained after NeedsValidation rejected Refresh without new logs', { ...rejected, starts, startRequests, listCheckedAt: beforeRefresh.listCheckedAt, inventoryPreserved: true, warningVisible: true, recoveryBlocked: true, renderedErrorCode: 'NeedsValidation' });
   const beforeReconnect = nativeCheckpoint(document);
-  record('requested explicit Reconnect');
+  const oldStream = streamEvidence.streamId;
+  record('requested explicit Reconnect', { sessionId, starts: streamEvidence.starts, startRequests: streamEvidence.startRequests });
   click('다시 연결');
   await ready(beforeReconnect);
   await waitFor(() => !warned(), 'a fresh valid session');
-  assert(!button('중지', document.querySelector('.recovery-actions')!).disabled, 'Fresh session did not restore recovery availability');
-  record('explicit reconnect restored the valid session');
+  const restored = lastInventoryReply;
+  assert(restored && !restored.errorCode && restored.sessionId !== sessionId && restored.responseSessionId === restored.sessionId, 'Reconnect did not return inventory for a fresh native session');
+  assert(streamEvidence.starts > starts && streamEvidence.streamId !== oldStream, 'Reconnect did not open a fresh log stream');
+  assert(!disabled(button('중지', document.querySelector('.recovery-actions')!)), 'Fresh session did not restore recovery availability');
+  record('explicit reconnect restored the valid session', { ...restored, starts: streamEvidence.starts, streamId: streamEvidence.streamId, fullId: streamEvidence.fullId, warningVisible: false, recoveryAvailable: true });
 }
 
-function changeSelect(select: HTMLSelectElement, value: string) {
-  Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(select, value);
-  select.dispatchEvent(new Event('change', { bubbles: true }));
-}
 function closeLogSearch() {
   if (panel().querySelector('.log-search-toggle')?.getAttribute('aria-expanded') === 'true') click('로그 검색 닫기', panel());
 }
 async function projectStatsProbe() {
   await ready();
-  const filter = document.querySelector<HTMLSelectElement>('select[aria-label="프로젝트"]');
-  assert(filter, 'Project filter missing');
-  const project = Array.from(filter.options).find(option => option.textContent === 'native-smoke-project');
-  const standalone = Array.from(filter.options).find(option => option.textContent === '프로젝트 없음');
-  assert(project && standalone, 'Fixture Compose/standalone options are missing');
-  const beforeStats = streamEvidence.statsReads;
-  changeSelect(filter, project.value);
-  await waitFor(() => document.querySelectorAll('.container-row').length === 2, 'two Compose services');
-  const information = document.querySelector<HTMLDetailsElement>('.summary-information');
-  const informationToggle = information?.querySelector('summary');
-  assert(information && informationToggle, 'Container information disclosure missing');
+  const requestedAt = Date.now();
+  const project = button('native-smoke-project 프로젝트');
+  if (project.getAttribute('aria-expanded') === 'false') click('native-smoke-project 펼치기', project);
+  project.click();
+  await waitFor(() => project.getAttribute('aria-selected') === 'true' && project.querySelectorAll('.container-row').length === 2, 'project tree opens its two Compose services');
+  assert(document.querySelectorAll('.container-row').length === 3, 'Selecting a project unexpectedly filtered the inventory');
+  await waitFor(() => lastObservation?.scope.kind === 'all' && fixtureIds.every(fullId => lastObservation!.resources.some(point => point.fullId === fullId && point.available && Date.parse(point.sampledAt) >= requestedAt)), 'fresh real observation samples for all fixture containers', 15000);
+  const observation = lastObservation!;
+  const sample = [...observation.resources].reverse().find(point => point.fullId === fixtureIds[0] && point.available && Date.parse(point.sampledAt) >= requestedAt)!;
+  assert(sample.cpuPercent === 125.5 && sample.memoryUsageBytes === 64 * 1024 * 1024 && sample.memoryLimitBytes === 2 * 1024 * 1024 * 1024, 'Native observation values do not match the fixture');
+  const apiRow = button('native-smoke-1 상세');
+  await waitFor(() => apiRow.querySelector('.container-cpu-value')?.textContent === '125.50%', 'observation sample displayed in the project tree');
+  assert(apiRow.querySelector('.container-memory-value')?.textContent === '64.0 MiB', 'Tree memory sample missing');
+  apiRow.click();
+  await waitFor(() => apiRow.getAttribute('aria-selected') === 'true' && document.querySelector('.summary-information'), 'Compose container selected');
+  const information = document.querySelector<HTMLDetailsElement>('.summary-information')!;
+  const informationToggle = information.querySelector('summary');
+  assert(informationToggle, 'Container information disclosure missing');
   if (!information.open) informationToggle.click();
-  await waitFor(() => information.open, 'container information opened');
-  await waitFor(() => streamEvidence.statsReads > beforeStats && streamEvidence.lastStatsCount === 2 && information.querySelector('.resource-summary')?.textContent?.includes('125.50%'), 'the real batched CPU sample');
-  assert(information.querySelector('.resource-summary')?.textContent?.includes('64MiB / 2GiB'), 'Fixture memory sample missing');
+  await waitFor(() => information.open && information.querySelector('.resource-summary')?.textContent?.includes('125.50%'), 'real resource sample in container details');
+  assert(information.querySelector('.resource-summary')?.textContent?.includes('64.0 MiB / 2.0 GiB'), 'Fixture memory sample missing');
   assert(information.querySelector('.resource-summary')!.getBoundingClientRect().height > 0, 'Resource sample is not displayed');
   assert(information.querySelector('.summary-facts')?.textContent?.includes('api'), 'Compose service metadata missing');
   assert(information.querySelector('.summary-facts')!.getBoundingClientRect().height > 0, 'Compose metadata is not displayed');
   informationToggle.click();
   await waitFor(() => !information.open, 'container information closed');
-  record('Compose grouping and real stats visible', { projectRows: 2, cpuPercent: 125.5, memory: '64MiB / 2GiB' });
-  changeSelect(filter, standalone.value);
-  await waitFor(() => document.querySelectorAll('.container-row').length === 1 && document.querySelector('.container-row')?.textContent?.includes('native-smoke-3'), 'standalone group');
-  record('standalone project filter verified', { standaloneRows: 1 });
-  changeSelect(filter, filter.options[0]!.value);
-  await waitFor(() => document.querySelectorAll('.container-row').length === 3, 'all fixture groups');
-  click('native-smoke-1 상세'); await ready();
+  record('Compose grouping and real stats visible', { projectRows: 2, observedSources: 3, cpuPercent: sample.cpuPercent,
+    memoryUsageBytes: sample.memoryUsageBytes, memoryLimitBytes: sample.memoryLimitBytes, sessionId: observation.sessionId,
+    observationSequence: observation.sequence, sampledAt: sample.sampledAt, fullIds: fixtureIds });
+  await ready();
+  const standalone = button('프로젝트 없음');
+  assert(standalone.querySelectorAll('.container-row').length === 1 && button(`${standaloneName} 상세`).getAttribute('aria-selected') === 'true', 'Standalone tree selection did not open its own log panel');
+  assert(document.querySelectorAll('.container-row').length === 3, 'Standalone selection unexpectedly filtered other projects');
+  record('standalone tree navigation verified', { standaloneRows: 1, inventoryRows: 3, fullId: fixtureIds[2] });
 }
 async function liveDisplayProbe() {
   const searchClosed = () => panel().querySelector('.log-search-toggle')?.getAttribute('aria-expanded') === 'false' && panel().querySelector<HTMLElement>('.log-search')?.hidden === true;
@@ -351,14 +405,14 @@ async function paneResizeProbe() {
   const starts = streamEvidence.starts;
   const beforeTick = Math.max(streamEvidence.stdoutTick, streamEvidence.stderrTick);
   const readCount = streamEvidence.reads;
-  const geometry = () => ({ detailHeight: document.querySelector('#detail-pane')!.getBoundingClientRect().height, listHeight: document.querySelector('#inventory-pane')!.getBoundingClientRect().height });
+  const geometry = () => ({ detailWidth: document.querySelector('#detail-pane')!.getBoundingClientRect().width, listWidth: document.querySelector('#inventory-pane')!.getBoundingClientRect().width });
   record('captured live pane before keyboard resize', { ...identity, ...initial, ...geometry(), beforeTick, readCount });
-  assert(initial.max - initial.height >= 20 || initial.height - initial.min >= 20, 'Pane bounds leave no complete keyboard resize step');
-  const key = initial.max - initial.height >= 20 ? 'ArrowUp' : 'ArrowDown';
-  const expected = Math.max(initial.min, Math.min(initial.max, initial.height + (key === 'ArrowUp' ? 20 : -20)));
-  assert(expected !== initial.height, 'No pane space available for keyboard resizing');
+  assert(initial.max - initial.width >= 20 || initial.width - initial.min >= 20, 'Pane bounds leave no complete keyboard resize step');
+  const key = initial.max - initial.width >= 20 ? 'ArrowRight' : 'ArrowLeft';
+  const expected = Math.max(initial.min, Math.min(initial.max, initial.width + (key === 'ArrowRight' ? 20 : -20)));
+  assert(expected !== initial.width, 'No pane space available for keyboard resizing');
   separator.focus(); separator.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
-  await waitFor(() => nativePaneSize(document)?.height === expected, 'keyboard changes announced pane height');
+  await waitFor(() => nativePaneSize(document)?.width === expected, 'keyboard changes announced navigation width');
   await waitFor(() => streamEvidence.stdoutTick >= beforeTick + 3 && streamEvidence.stderrTick >= beforeTick + 3 && streamEvidence.reads > readCount + 2, 'same native follow continues during pane resizing');
   const preserved = () => content() === log && log.textContent === frozenText && Math.abs(log.scrollTop - scrollTop) <= 1
     && panel().querySelector('.log-fetched-at time') === receipt && receipt?.getAttribute('datetime') === receivedAt
@@ -366,11 +420,11 @@ async function paneResizeProbe() {
     && button('재개', panel()).getAttribute('aria-pressed') === 'true';
   assert(preserved(), 'Resizing reset the paused search, receipt, scroll, or log DOM');
   const resized = nativePaneSize(document)!;
-  assert(Math.abs(geometry().detailHeight - resized.height) <= 1, 'Announced pane height does not match the actual pane');
+  assert(Math.abs(geometry().listWidth - resized.width) <= 1, 'Announced navigation width does not match the actual pane');
   record('resized live pane with keyboard while receiving', { ...identity, ...resized, ...geometry(), key, afterTick: Math.min(streamEvidence.stdoutTick, streamEvidence.stderrTick), newReads: streamEvidence.reads - readCount, preservedView: true });
-  separator.dispatchEvent(new KeyboardEvent('keydown', { key: key === 'ArrowUp' ? 'ArrowDown' : 'ArrowUp', bubbles: true }));
-  await waitFor(() => nativePaneSize(document)?.height === initial.height, 'keyboard restores original pane height');
-  assert(preserved() && streamEvidence.streamId === identity.streamId && streamEvidence.starts === starts && streamEvidence.maximumActiveReads === 1, 'Restoring pane height replaced the stream or display');
+  separator.dispatchEvent(new KeyboardEvent('keydown', { key: key === 'ArrowRight' ? 'ArrowLeft' : 'ArrowRight', bubbles: true }));
+  await waitFor(() => nativePaneSize(document)?.width === initial.width, 'keyboard restores original navigation width');
+  assert(preserved() && streamEvidence.streamId === identity.streamId && streamEvidence.starts === starts && streamEvidence.maximumActiveReads === 1, 'Restoring navigation width replaced the stream or display');
   record('restored live pane without replacing the stream', { ...identity, ...nativePaneSize(document), ...geometry(), preservedView: true, maximumActiveReads: streamEvidence.maximumActiveReads });
   closeLogSearch(); click('재개', panel());
 }
@@ -390,8 +444,6 @@ async function clearCancelProbe() {
 }
 
 async function detailTabsProbe() {
-  click('로그');
-  click('native-smoke-1 상세');
   await ready(); closeLogSearch();
   const beforeRefresh = nativeCheckpoint(document);
   click('새로고침');
@@ -454,7 +506,7 @@ function Harness() {
   }
   return <aside aria-label="Native smoke harness" style={{ position: 'fixed', zIndex: 10000, top: 4, left: 4, width: open ? 410 : 'auto', maxHeight: '96vh', overflow: 'auto', padding: 10, background: '#fff', color: '#172b3a', border: '2px solid #2764a6', borderRadius: 8, font: '12px/1.5 system-ui' }}>
     <button onClick={() => setOpen(value => !value)}>{open ? 'Hide native smoke controls' : 'Show native smoke controls'}</button>
-    {open && <><h2 style={{ fontSize: 16 }}>Native smoke · isolated real IPC</h2><p>Arm the next Engine failure, or remove/restore the fixture socket using the runner before its corresponding probe. No real Docker is used. Keep live-off for dense search; bind a ready stream before enabling live-on for the live display probe.</p>
+    {open && <><h2 style={{ fontSize: 16 }}>Native smoke · isolated real IPC</h2><p>Arm the next Engine failure, or remove/restore the fixture socket using the runner before its corresponding probe. No real Docker is used. Legacy probes select the projectless native-smoke-3. Bind its ready stream before arming faults or enabling live-on; keep live-off for dense search.</p>
       <label>Worker mode <select disabled={running} value={mode} onChange={event => { sessionStorage.setItem(marker, event.target.value); location.reload(); }}><option value="worker">Real Worker</option><option value="constructor-fail">Injected constructor failure</option><option value="never-ready">Suppress ready for timeout</option></select></label>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, margin: '8px 0' }}>
         <button disabled={running} onClick={() => void run('observation-baseline', async () => { const binding = await captureObservationBaseline(record); assert(!report.binding || JSON.stringify(report.binding) === JSON.stringify(binding), 'Native fixture changed during this page run'); report.binding = binding; })}>Capture project observation baseline</button>

@@ -45,7 +45,7 @@ async function ready() {
   while (Date.now() < deadline) {
     try {
       const data = await collected();
-      if (data.observation.scope.kind === 'project' && data.observation.scope.name === project
+      if (data.observation.scope.kind === 'all'
         && data.observation.eventStatus === 'following' && data.logs.sources.filter(source => source.selected && source.status === 'following').length === 2
         && data.observation.resources.some(point => point.available) && data.logs.rows.length >= 2) return data;
     } catch { /* Core and App complete their initial inventory/configuration. */ }
@@ -55,12 +55,9 @@ async function ready() {
 }
 
 export async function captureObservationBaseline(record: RecordStep) {
-  const select = document.querySelector<HTMLSelectElement>('.project-select-control select');
-  assert(select, 'Project selector is unavailable');
-  const value = JSON.stringify(['project', project]);
-  assert([...select.options].some(option => option.value === value), 'Owned fixture project is missing');
-  Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(select, value);
-  select.dispatchEvent(new Event('change', { bubbles: true }));
+  const projectNode = [...document.querySelectorAll<HTMLElement>('.project-tree-item')].find(node => node.querySelector('.project-tree-name')?.textContent === project);
+  assert(projectNode, 'Owned fixture project is missing');
+  projectNode.click();
   const { observation, logs } = await ready();
   assert(observation.inventory && !observation.inventory.stale, 'Latest native inventory must be actionable');
   const pipes = new Set(logs.rows.map(row => row.pipe));

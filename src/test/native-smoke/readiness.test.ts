@@ -70,11 +70,11 @@ it('allows warning-preserving Refresh readiness without a new log receipt', () =
 });
 
 it('reads the announced pane size only when it is within the controlled pane bounds', () => {
-  document.body.insertAdjacentHTML('beforeend', '<button role="separator" aria-orientation="horizontal" aria-controls="inventory-pane detail-pane" aria-valuenow="260" aria-valuemin="220" aria-valuemax="430"></button>');
-  expect(nativePaneSize(document)).toEqual({ height: 260, min: 220, max: 430 });
+  document.body.insertAdjacentHTML('beforeend', '<button role="separator" aria-orientation="vertical" aria-controls="inventory-pane detail-pane" aria-valuenow="260" aria-valuemin="220" aria-valuemax="430"></button>');
+  expect(nativePaneSize(document)).toEqual({ width: 260, min: 220, max: 430 });
   const separator = document.querySelector('[role="separator"]')!;
-  for (const height of ['219', '431', '', 'NaN']) {
-    separator.setAttribute('aria-valuenow', height);
+  for (const width of ['219', '431', '', 'NaN']) {
+    separator.setAttribute('aria-valuenow', width);
     expect(nativePaneSize(document)).toBeNull();
   }
   separator.removeAttribute('aria-valuenow');
@@ -82,10 +82,10 @@ it('reads the announced pane size only when it is within the controlled pane bou
 });
 
 it('does not accept a separator for another orientation or pane pair', () => {
-  document.body.insertAdjacentHTML('beforeend', '<button role="separator" aria-orientation="vertical" aria-controls="inventory-pane detail-pane" aria-valuenow="260" aria-valuemin="220" aria-valuemax="430"></button>');
+  document.body.insertAdjacentHTML('beforeend', '<button role="separator" aria-orientation="horizontal" aria-controls="inventory-pane detail-pane" aria-valuenow="260" aria-valuemin="220" aria-valuemax="430"></button>');
   const separator = document.querySelector('[role="separator"]')!;
   expect(nativePaneSize(document)).toBeNull();
-  separator.setAttribute('aria-orientation', 'horizontal');
+  separator.setAttribute('aria-orientation', 'vertical');
   separator.setAttribute('aria-controls', 'unrelated-pane');
   expect(nativePaneSize(document)).toBeNull();
 });
