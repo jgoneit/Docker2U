@@ -106,13 +106,13 @@ describe('appearance preferences', () => {
     const save = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('denied', 'SecurityError'); });
     render(<PreferencesProvider><Harness /></PreferencesProvider>);
     await user.click(screen.getByRole('button', { name: 'settings' }));
-    await user.selectOptions(screen.getByRole('combobox', { name: '테마' }), 'light');
+    await user.click(screen.getByRole('radio', { name: '라이트' }));
     await user.selectOptions(screen.getByRole('combobox', { name: '언어' }), 'en');
     expect(document.documentElement).toHaveAttribute('data-theme', 'light');
     expect(screen.getByRole('alert')).toHaveTextContent('Settings could not be saved');
     expect(screen.getByTestId('preferences')).toHaveTextContent('light/en/true');
     save.mockRestore();
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Theme' }), 'dark');
+    await user.click(screen.getByRole('radio', { name: 'Dark' }));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(JSON.parse(localStorage.getItem(PREFERENCES_KEY)!)).toEqual({ theme: 'dark', language: 'en' });
   });
@@ -128,9 +128,13 @@ describe('appearance preferences', () => {
     render(<PreferencesProvider><Harness /></PreferencesProvider>);
     const trigger = screen.getByRole('button', { name: 'settings' });
     await user.click(trigger);
-    const theme = screen.getByRole('combobox', { name: '테마' });
+    const theme = screen.getByRole('radio', { name: '시스템' });
     expect(theme).toHaveFocus();
+    await user.tab();
     const language = screen.getByRole('combobox', { name: '언어' });
+    expect(language).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(theme).toHaveFocus();
     await user.selectOptions(language, 'en');
     expect(language).toHaveFocus();
     const closes = screen.getAllByRole('button', { name: 'Close' });
@@ -142,6 +146,29 @@ describe('appearance preferences', () => {
     fireEvent.keyDown(language, { key: 'Escape' });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
+  });
+
+  it('selects one theme with arrow keys and restores the selected radio when reopened', async () => {
+    const user = userEvent.setup();
+    render(<PreferencesProvider><Harness /></PreferencesProvider>);
+    await user.click(screen.getByRole('button', { name: 'settings' }));
+    expect(screen.getByRole('group', { name: '테마' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: '시스템' })).toBeChecked();
+    await user.keyboard('{ArrowRight}');
+    expect(screen.getByRole('radio', { name: '라이트' })).toBeChecked();
+    expect(screen.getByRole('radio', { name: '라이트' })).toHaveFocus();
+    expect(document.documentElement).toHaveAttribute('data-theme', 'light');
+    await user.keyboard('{ArrowRight}');
+    expect(screen.getByRole('radio', { name: '다크' })).toBeChecked();
+    expect(screen.getAllByRole('radio').filter(radio => (radio as HTMLInputElement).checked)).toHaveLength(1);
+    expect(JSON.parse(localStorage.getItem(PREFERENCES_KEY)!)).toEqual({ theme: 'dark', language: 'ko' });
+    await user.keyboard('{Escape}');
+    await user.click(screen.getByRole('button', { name: 'settings' }));
+    expect(screen.getByRole('radio', { name: '다크' })).toBeChecked();
+    expect(screen.getByRole('radio', { name: '다크' })).toHaveFocus();
+    await user.keyboard('{ArrowRight}');
+    expect(screen.getByRole('radio', { name: '시스템' })).toBeChecked();
+    expect(screen.getByTestId('preferences')).toHaveTextContent('system/ko/false');
   });
 
   it('bootstraps the same saved language/theme before React renders', () => {

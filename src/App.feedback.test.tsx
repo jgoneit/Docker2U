@@ -103,7 +103,7 @@ it.each(['success', 'error'])('keeps the original %s highlight deadline across l
   const glow = feedback.querySelector<HTMLElement>('.copy-feedback-glow')!, delay = glow.style.animationDelay;
   await advance(1_000);
   await click(screen.getByRole('button', { name: '설정' }));
-  await change(screen.getByRole('combobox', { name: '테마' }), 'light');
+  await click(screen.getByRole('radio', { name: '라이트' }));
   await change(screen.getByRole('combobox', { name: '언어' }), 'en');
   fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
   expect(feedback.querySelector('.copy-feedback-text')).toBe(notification);
@@ -117,7 +117,7 @@ it.each(['success', 'error'])('keeps the original %s highlight deadline across l
   expect(feedback.querySelector('.copy-feedback-glow')).toBeNull();
   expect(feedback.querySelector('.copy-feedback-text')).toBe(notification);
   await click(screen.getByRole('button', { name: 'Settings' }));
-  await change(screen.getByRole('combobox', { name: 'Theme' }), 'dark');
+  await click(screen.getByRole('radio', { name: 'Dark' }));
   await change(screen.getByRole('combobox', { name: 'Language' }), 'ko');
   fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
   expect(feedback).toHaveTextContent(outcome === 'success' ? '표시된 로그 복사됨' : '클립보드에 복사하지 못했습니다.');

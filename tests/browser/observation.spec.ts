@@ -71,7 +71,7 @@ test('combined log controls fit, filter literal text, and preserve a frozen view
   await expect(page.getByRole('button', { name: en ? 'Expand logs' : '로그 확대', exact: true })).toBeFocused();
   await page.getByRole('button', { name: en ? 'Settings' : '설정', exact: true }).click();
   const nextLanguage = en ? 'ko' : 'en', nextTheme = info.project.metadata.theme === 'light' ? 'dark' : 'light';
-  await page.locator('#theme-preference').selectOption(nextTheme);
+  await page.locator(`input[name="theme-preference"][value="${nextTheme}"]`).check();
   await page.locator('#language-preference').selectOption(nextLanguage);
   await page.keyboard.press('Escape');
   await expect(page.locator('html')).toHaveAttribute('lang', nextLanguage);

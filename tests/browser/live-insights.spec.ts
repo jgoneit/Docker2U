@@ -198,7 +198,7 @@ test('preserves frozen search across preferences and Clear stops reads until exp
   await page.getByRole('button', { name: t.settings, exact: true }).click();
   const nextLanguage = initialLanguage === 'ko' ? 'en' : 'ko';
   const nextTheme = info.project.metadata.theme === 'light' ? 'dark' : 'light';
-  await page.locator('#theme-preference').selectOption(nextTheme);
+  await page.locator(`input[name="theme-preference"][value="${nextTheme}"]`).check();
   await page.locator('#language-preference').selectOption(nextLanguage);
   await page.keyboard.press('Escape');
   await expect(page.locator('html')).toHaveAttribute('lang', nextLanguage);
@@ -302,7 +302,7 @@ test('resizes the lower log pane with pointer and keyboard while retaining the l
 
   await page.getByRole('button', { name: t.settings, exact: true }).click();
   const nextLanguage = lang === 'ko' ? 'en' : 'ko', next = words[nextLanguage];
-  await page.locator('#theme-preference').selectOption(info.project.metadata.theme === 'light' ? 'dark' : 'light');
+  await page.locator(`input[name="theme-preference"][value="${info.project.metadata.theme === 'light' ? 'dark' : 'light'}"]`).check();
   await page.locator('#language-preference').selectOption(nextLanguage);
   await page.keyboard.press('Escape');
   const renamedSeparator = page.getByRole('separator', { name: next.resize, exact: true });

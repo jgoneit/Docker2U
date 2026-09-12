@@ -32,7 +32,7 @@ async function settings(user: ReturnType<typeof userEvent.setup>) {
 }
 async function toEnglishAndLight(user: ReturnType<typeof userEvent.setup>) {
   const dialog = await settings(user);
-  await user.selectOptions(dialog.getByRole('combobox', { name: '테마' }), 'light');
+  await user.click(dialog.getByRole('radio', { name: '라이트' }));
   await user.selectOptions(dialog.getByRole('combobox', { name: '언어' }), 'en');
   fireEvent.keyDown(screen.getByRole('dialog', { name: 'Settings' }), { key: 'Escape' });
 }
@@ -191,7 +191,7 @@ describe('appearance and language preserve the active Docker session', () => {
     await screen.findByText(/LAST_LINE/);
     const dialog = await settings(user);
     expect(document.querySelector('.main-content')).toHaveAttribute('inert');
-    expect(dialog.getByRole('combobox', { name: '테마' })).toHaveFocus();
+    expect(dialog.getByRole('radio', { name: '다크' })).toHaveFocus();
     expect(screen.getAllByRole('dialog')).toHaveLength(1);
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
     await user.click(screen.getByRole('button', { name: '로그 확대 보기' }));
