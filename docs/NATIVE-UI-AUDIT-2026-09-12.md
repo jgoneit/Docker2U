@@ -537,3 +537,209 @@ PostgreSQL 개별 로그는 **128행**이었다. 임의의 불일치 키워드�
 로컬 ad-hoc 코드 서명과 ARM64 검사는 통과했다. 공증·Gatekeeper 검증은 수행하지 않았다.
 같은 백업 디렉터리의 `installation.json`에 교체·검증 상태를 보존했다.
 롤백은 앱을 종료하고 위 백업을 설치 경로로 복원한 뒤 이전 digest·서명을 확인해 실행한다.
+
+## 탐색 트리와 로그 상태 복구 — 2026-09-12
+
+이번 변경의 기준은 같은 작업본의 `1951d6ec69195faa0061d015833a747d3b3999ee`다.
+위·아래 분할을 왼쪽 프로젝트·컨테이너 트리와 오른쪽 상세로 바꾸고, 프로젝트
+드롭다운과 별도의 프로젝트 복귀 버튼을 제거했다. 프로젝트 이름은 통합 로그·이력,
+하위 행은 해당 전체 ID의 상세를 선택한다. 트리에는 상태·CPU·메모리를 유지한다.
+
+탐색 너비는 기본 320px이며 280–440px 범위 안에서 오른쪽 최소 600px에 맞춰
+제한된다. 포인터, 좌우 방향키, Home/End, 더블클릭 복원을 제공한다. 선택과
+키보드 포커스, 접기, 작업 체크, 검색·상태 필터를 분리했다. 검색에 가려진 상세는
+안내와 함께 유지하고 삭제된 컨테이너는 원래 프로젝트로 이동한다. 같은 이름의
+새 전체 ID를 이전 대상으로 취급하지 않는다. 자원 수집은 전체 트리를 대상으로
+유지하며 이력 표시만 선택한 프로젝트·ID로 필터링한다.
+
+Compose 통합·개별 화면은 같은 수집을 재사용한다. 대상별 마지막 탭과 검색,
+서비스 필터, 일시정지, 기준 행, 마지막 성공 페이지를 세션 동안 유지한다.
+프로젝트 없는 컨테이너도 기존 개별 수집 경로에서 검색·일시정지·스크롤과 마지막
+표시를 복원한다. 재연결에서는 두 화면 캐시와 대기 요청을 폐기한다.
+
+초기 configure의 `0행/starting`은 현재 조회 결과와 분리했다. 조회 순서와 세션·
+프로젝트를 검증하고 10초 넘게 응답하지 않으면 기존 본문과 명시적 재조회 동작을
+남긴다. 오래된 응답과 중복 자동 조회는 폐기한다. configure/stop은 순서대로
+실행하며 적용에 실패한 수집 대상 편집은 열린 상태와 선택을 유지한다.
+
+Core는 수집 시작 예약 token과 등록된 reader를 구분한다. recoverable manager
+오류를 해제한 뒤 명시적 재개가 정체된 시작을 취소·재등록하도록 수정했다.
+시작 실패·재개·같은 프로젝트 configure, 시작 취소와 reader 등록 경합은
+제어 가능한 Rust fixture로 검사한다. 조용한 연결에는 무출력 timeout을 넣지
+않았다. 기존 generation·전체 ID·최신 handle 검증과 시작 오류의 제한된 재시도는
+유지한다. 공개 IPC·응답 타입·저장 형식은 변경하지 않았다.
+
+### 최종 소스의 회귀 검사
+
+| 검사 | 결과와 근거 |
+| --- | --- |
+| 전체 프런트엔드 | 37개 파일, 622개 통과 — `.cache/standalone-frontend-full.log` |
+| Rust 형식·전체 테스트 | 형식 검사 통과, 139개 통과·opt-in 6개 제외 — `.cache/navigation-rust-regression.log` |
+| 전체 브라우저 회귀 | 테마·언어·창 크기 9개 구성에서 270개 통과 — `.cache/navigation-browser-accepted.log` |
+| Native Smoke Python fixture | 33개 통과 — `.cache/navigation-native-fixtures-final.log` |
+| TypeScript·웹 production·fixture 격리·locked ARM64 빌드 | 통과, production fixture 격리는 5개 파일 검사 — `.cache/navigation-production-build.log` |
+| diff 공백 검사 | 통과 |
+
+프로젝트와 하위 행 선택, 키보드 이동·접기, 선택 강조, 검색으로 가려진 상세,
+삭제·재생성, 작업 체크와 최신 handle 연결을 검사했다. 통합·개별 왕복과 다른
+프로젝트 왕복, 검색·서비스 필터·일시정지·과거 위치, 폭 조절·확대·테마·언어
+전환도 회귀 범위에 포함한다. 초기 `0행/starting` 뒤 정상 응답, 재진입, 미완료
+조회와 늦은 응답 폐기를 제어 가능한 fixture로 재현했다.
+
+3,000행 이상의 로그는 최소 1024×680 및 기본·큰 창에서 viewport와 조상 clipping
+영역을 교차 계산해 실제 보이는 본문을 검사한다. DOM 행 개수만으로 통과시키지
+않는다. 일시정지 안내가 생길 때 viewport 밖 overscan 행 하나가 달라지는 검사는
+화면에 보이는 행을 기준으로 고쳤으며 제품 동작을 우회하지 않았다.
+
+프로젝트 없는 컨테이너의 캐시를 추가한 첫 전체 프런트엔드 검사에서는 기존
+회귀 11개가 실패했다. Clear·명시적 재조회·정상 빈 응답의 기존 의미를 보존하고,
+같은 전체 ID에서 갱신 전 handle로 도착한 첫 프레임을 처리하도록 제품 코드를
+보완했다. 기존 검증 조건을 약화하지 않고 집중 검사 257개와 최종 전체 622개를
+통과했다. 최초 실패 기록은 `.cache/navigation-frontend-final.log`, 집중 검사는
+`.cache/standalone-regressions.log`에 남겼다.
+
+### 최종 Native Smoke 번들의 화면 검증
+
+Computer Use로 다음 번들을 조작했다. 합성 Engine·로그는 fixture 전용 소켓과
+프로세스에서 생성했으며 실제 Docker 컨테이너 Start·Stop·Restart는 하지 않았다.
+
+| 항목 | 값 |
+| --- | --- |
+| Native Smoke Run | `d2u-smoke-22f689b4da` |
+| 번들 | `.cache/native-smoke/bundles/2dac858b42334d0c970d5ed57a566e29/Docker2U Native Smoke.app` |
+| 바이너리 SHA-256 | `2f9b6054cf423446be0a07140db97f64720104c4ccd7efafb6914fd204d1969e` |
+| 정상 Worker 보고서 | `.cache/native-smoke/runs/d2u-smoke-22f689b4da/ui-navigation-worker.json` |
+| 검증기 결과 | `.cache/navigation-native-worker-report.log`의 제출 보고서 `accepted: true`, `observationCoverageComplete: true` |
+
+정상 Worker에서는 전체 트리의 자원 관찰, 프로젝트 없는 컨테이너 탐색, 2 MiB
+밀집 로그 검색, 상세 탭 왕복, 실제 stdout·stderr 수신 중 일시정지·재개,
+키보드 너비 320→340→320px 변경과 목록 갱신 중 동일 스트림 유지가 통과했다.
+밀집 검색은 2,096,983개 일치 항목과 마지막 일치 본문이 실제 viewport 안에
+있는지 확인했다. 폭 변경 중 표시 상태를 유지했고 최대 동시 read는 1이었다.
+
+Worker 생성 실패와 ready 신호 억제를 각각 주입한 검색 복구도 통과했다.
+각 보고서는 `ui-constructor-fail.json`, `ui-never-ready.json`이며 검증 결과는
+`.cache/navigation-native-constructor-report.log`,
+`.cache/navigation-native-timeout-report.log`에 보존했다. 두 제출 보고서 모두
+`accepted: true`이며 명시적으로 주입한 실패 뒤 fallback 검색 화면을 확인했다.
+
+최소화 검증은 숨김 상태에서 합성 출력을 생성한 뒤 **복원 전에 출력을 멈췄다**.
+따라서 복원 후 새 출력만 보고 숨김 구간이 보존됐다고 판단하지 않았다.
+
+| 최소화·복원 관찰 | 결과 |
+| --- | --- |
+| 숨김 구간 | 47.464초 (`1789194049905` → `1789194097369` ms) |
+| 숨김 중 보존 자원 표본 | 54개 |
+| 숨김 중 보존 로그 | 160행 |
+| 숨김 중 보존 이벤트 | 145개 |
+| 목록 generation | 49 → 76 |
+| 로그 sequence | 12 → 431 |
+| 복원 후 본문 | DOM 43행 중 실제 viewport 안에 완전히 보이는 18행 |
+
+[복원 화면](../.cache/native-smoke/runs/d2u-smoke-22f689b4da/navigation-restored.png)과
+보고서의 수신 시각·전체 ID·sequence를 함께 확인했다.
+
+실패한 시도도 보존했다. 같은 최종 바이너리의 앞선 Run
+`d2u-smoke-2ad19292cc`에서는 pane-resize 검사가 시간 초과했다. 해당 보고서는
+그 Run의 `ui-failed-resize.json`이다. 이후 전경 앱에서 합성 출력 구간을 충분히
+확보하고 실행 중 접근성 상태 조회를 하지 않는 절차로 같은 바이너리를 재검사해
+통과했다. 원인은 확정하지 않았으며, 시간 초과 뒤 수집한
+`.cache/navigation-webkit-sample.txt`만으로 실행 중 병목을 단정하지 않는다.
+
+현재 Run에서도 Clear로 수집을 중단한 뒤 명시적 로그 조회 없이 검색·live 검사를
+이어 실행한 시도는 필요한 2 MiB 입력이 없어 시간 초과했다. 그 원본은
+`ui-sequence-failed.json`에 보존했다. 새 화면에서 입력을 준비한 뒤 위의 정상·
+장애 주입 검사를 실행했다. 실패 보고서를 성공 보고서로 바꾸거나 집계하지 않았다.
+
+### Production 번들과 Seal 검사 범위
+
+최종 production 번들은 `src-tauri/target/release/bundle/macos/Docker2U.app`이다.
+ARM64 바이너리 SHA-256은
+`44cd7e57a88fcf23a12790863fe5ca7acc6000e54050712f5325fad8a752abd7`이다.
+로컬 ad-hoc 재서명 뒤 strict·deep 코드 서명 검사를 통과했다. 이 결과는
+Apple 공증이나 Gatekeeper 허용 여부를 증명하지 않는다. 설치 경로에서의 확인은
+아래 설치 기록과 구분한다.
+
+구현 전에 Seal Basic Task를 만들었다. Native Smoke 검증 스크립트를 범위에
+포함하도록 최초 Task를 대체한 현재 Task는
+`docker2u-navigation-log-recovery-20260912-v2`다. 필수 검사로 프런트엔드 테스트,
+프런트엔드 빌드, Rust 형식, Rust 테스트를 선택했다. 이 감사 본문은 완료 후보의
+입력이므로 정확한 Run 검증·Completion 전에 작성했다. 브라우저·네이티브·설치
+확인은 위의 독립 증거로 기록하며 Seal의 기계적 검사 결과와 혼동하지 않는다.
+
+### 설치 앱 교체와 실환경 Computer Use
+
+기존 `/Applications/Docker2U.app`를 정상 종료한 뒤 다음 백업을 만들고 새 번들로
+교체했다. 백업·스테이징의 전체 파일 해시와 심볼릭 링크를 원본에 비교했으며,
+설치 후 바이너리 해시와 strict·deep 서명을 다시 확인했다.
+
+- 백업: `/Users/jgoneit/project/Docker2U/.local-apps/backups/20260912-152617-navigation/Docker2U.app`
+- 이전 바이너리 SHA-256: `3e7221bef897015ec2d277a7073a2980241501ca1970fdf5be56687e3fc661ae`
+- 설치 바이너리 SHA-256: `44cd7e57a88fcf23a12790863fe5ca7acc6000e54050712f5325fad8a752abd7`
+- 실행 확인: PID `3339`, `/Applications/Docker2U.app/Contents/MacOS/docker2u`
+- 교체 기록: `.cache/navigation-installation.json`
+
+실제 설치 앱의 `desktop-linux` Engine에서 프로젝트 통합 로그 428행과
+PostgreSQL 개별 로그 128행을 확인했다. 스크린샷에서 로그 본문이 오른쪽
+viewport 안에 표시된다. 프로젝트에 `Ready` 필터와 일시정지를 설정한 뒤
+PostgreSQL로 이동했다가 돌아오면 필터와 일시정지, 13행 조회 구간이 유지됐다.
+프로젝트 없는 신규 통합 수집이나 실제 컨테이너 작업은 수행하지 않았다.
+
+화면 증거는 `.cache/navigation-installed-20260912/project-combined.png`,
+`postgresql.png`, `project-return.txt`에 보존했다. 롤백은 실행 앱을 정상 종료하고
+위 백업을 `/Applications/Docker2U.app`로 복원한 뒤 재실행하는 단위다.
+
+memcached-2는 0행이어도 `수집 중` 상태와 새 로그 대기 설명을 유지했다.
+최소화·복원 뒤에도 같은 대상과 수집 상태를 확인했고, 프로젝트에 돌아왔을 때
+`Ready`·일시정지도 유지됐다. 마지막에는 검사 필터와 일시정지를 해제하여
+428행 통합 화면으로 복원했다. `quiet-before.txt`, `quiet-restored.txt`,
+`quiet-memcached.png`, `restored-project.png`에 기록했다. 실환경 컨테이너는
+새 로그를 주입하지 않았으며, 숨김 구간의 신규 표본 보존 증거는 앞의 합성
+Native Smoke Run으로 한정한다.
+
+### Native 복구 하네스 계약 보완
+
+추가 지연 오류 검사에서 자동 조회가 주입된 다음 `info` 오류를 먼저 소비한
+시도는 `ui-fault-consumed-by-refresh.json`,
+`ui-fault-consumed-before-probe.json`으로 보존했다. 오류 주입·클릭을 같은
+예약 시각에 맞춘 시도에서는 `held-info` → Clear → 오류 응답 순서를 실제
+trace로 확인했고 Clear 뒤 연결 경고와 작업 차단을 유지했다.
+
+이후 기존 복구 하네스가 오류 뒤 Refresh의 성공 목록을 요구해 실패했다.
+실제 Core 계약은 세션 검증 실패 뒤 `NeedsValidation`을 반환하고 이전 정상
+목록을 보존하며 명시적 Reconnect를 요구한다. 제품 코드는 바꾸지 않고,
+하네스가 실제 목록 IPC 거절·동일 세션·기존 목록 보존·로그 시작 없음과
+Reconnect 뒤 새 세션·새 로그 스트림을 검증하도록 수정했다. trace 검증기도
+거절된 Refresh 구간의 CLI 목록·follow 시작을 거부한다. Python fixture
+33개(복구 부정 조건 22개 subcase 포함), readiness 9개, TypeScript 검사를
+통과했다. 원래 계약 불일치 보고서는 `ui-recovery-contract-mismatch.json`에
+보존했다. 빠른 Worker 모드 전환 중 연결 Busy가 난 별도 시도도
+`ui-mode-reset-busy.json`으로 보존했으며 연결 완료 후 다시 실행했다.
+
+보완된 하네스로 별도 번들을 다시 빌드하고 전체 네이티브 회귀를 통과했다.
+이 추가 변경은 검증 전용이며 설치한 production 제품 소스는 동일하다.
+
+| 최종 Native Smoke | 결과 |
+| --- | --- |
+| Run | `d2u-smoke-9cc8d9c780` |
+| 번들 경로 | `.cache/native-smoke/bundles/9ed04f0eeb8e4a27853695c68bc3e073/Docker2U Native Smoke.app` |
+| 바이너리 SHA-256 | `a2366f769be25a33635c327720c02e95d87d84293cc5d1d5babefb5683b4e3bc` |
+| 필수 네이티브 회귀 | `requiredCoverageComplete: true` |
+| 프로젝트 관찰 회귀 | `observationCoverageComplete: true` |
+| 제출 보고서 | 생성 실패·준비 신호 지연·정상 Worker 모두 `accepted: true` |
+| 허용되지 않은 fixture 명령 | 0개 |
+| 숨김 구간 | 47.154초 |
+| 숨김 중 보존 표본 | 자원 54개·로그 160행·이벤트 125개 |
+| 복원 목록 generation | 5 → 30 |
+| 복원 로그 sequence | 8 → 258 |
+| 복원 본문 | DOM 43행 중 실제 viewport 안에 완전히 보이는 18행 |
+
+정상 Worker의 프로젝트·자원, 검색, 상세 탭, 고정 스트림 Refresh, 실시간 표시,
+폭 변경, Clear/Engine 오류 순서, NeedsValidation/재연결, SocketMissing/재연결,
+Clear 후 갱신, 최소화 표본·복원을 검증했다. 생성 실패와 준비 신호 지연에서의
+검색 fallback도 별도로 통과했다. 이번에도 합성 출력은 **복원 전에 중단**했다.
+
+검증기 결과는 `.cache/navigation-native-recovery-final-report.log`, 원본은
+`.cache/native-smoke/runs/d2u-smoke-9cc8d9c780/ui-worker-final.json`, 화면은
+같은 폴더의 `navigation-restored.png`다. fixture 실행을 정상 종료하고 trace를
+보관했다. 이 최종 통과가 앞서 기록한 실패 시도를 삭제하거나 성공으로 바꾸지는 않는다.
