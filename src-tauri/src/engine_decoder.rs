@@ -16,19 +16,40 @@ enum Escape {
     Csi,
     Osc,
     OscEnd,
+    DiscardLine,
 }
 #[derive(Default)]
 struct LineDecoder {
     bytes: Vec<u8>,
     truncated: bool,
     escape: Escape,
+    escape_bytes: usize,
 }
 impl LineDecoder {
     fn push(&mut self, bytes: &[u8], stream: LogStreamKind, emit: &mut impl FnMut(LogRecord)) {
         for &byte in bytes {
+            // This is a line-oriented log viewer. A malformed control string
+            // must not swallow the next Docker timestamp and later log lines.
+            if byte == b'\n' {
+                self.escape = Escape::Text;
+                self.escape_bytes = 0;
+                self.emit(stream, emit);
+                continue;
+            }
+            if !matches!(self.escape, Escape::Text | Escape::DiscardLine) {
+                self.escape_bytes += 1;
+                if self.escape_bytes > LINE_LIMIT {
+                    self.truncated = true;
+                    // Do not expose the remainder of an oversized OSC payload
+                    // by switching back to text before the next line boundary.
+                    self.escape = Escape::DiscardLine;
+                }
+            }
             match self.escape {
-                Escape::Text if byte == 0x1b => self.escape = Escape::Start,
-                Escape::Text if byte == b'\n' => self.emit(stream, emit),
+                Escape::Text if byte == 0x1b => {
+                    self.escape = Escape::Start;
+                    self.escape_bytes = 1;
+                }
                 Escape::Text if byte == b'\t' || (byte >= 0x20 && byte != 0x7f) => {
                     if self.bytes.len() < LINE_LIMIT {
                         self.bytes.push(byte);
@@ -66,6 +87,10 @@ impl LineDecoder {
                         _ => Escape::Osc,
                     }
                 }
+                Escape::DiscardLine => {}
+            }
+            if matches!(self.escape, Escape::Text) {
+                self.escape_bytes = 0;
             }
         }
     }
@@ -379,6 +404,121 @@ mod tests {
         assert_eq!(rows[1].text.len(), LINE_LIMIT);
         assert!(rows[1].truncated);
         assert_eq!(rows[2].text, "last");
+    }
+    #[test]
+    fn incomplete_escape_sequences_end_at_newlines_across_chunks_and_frames() {
+        for suffix in [
+            b"\x1b]secret".as_slice(),
+            b"\x1b]secret\x1b",
+            b"\x1b[12;",
+            b"\x1b",
+        ] {
+            for tty in [false, true] {
+                let mut first = b"2026-09-11T10:00:00.000000001Z before".to_vec();
+                first.extend_from_slice(suffix);
+                let next = b"\n2026-09-11T10:00:00.000000002Z next\n";
+                let bytes = if tty {
+                    [first, next.to_vec()].concat()
+                } else {
+                    [frame(1, &first), frame(1, next)].concat()
+                };
+                let mut decoder = LogDecoder::new(tty);
+                let mut rows = Vec::new();
+                for byte in bytes {
+                    decoder
+                        .push(&[byte], false, &mut |row| rows.push(row))
+                        .unwrap();
+                }
+                decoder.push(&[], true, &mut |row| rows.push(row)).unwrap();
+                assert_eq!(rows.len(), 2);
+                assert_eq!(rows[0].text, "before");
+                assert_eq!(rows[1].text, "next");
+                assert_eq!(
+                    rows[1].timestamp.as_deref(),
+                    Some("2026-09-11T10:00:00.000000002Z")
+                );
+                assert!(rows.iter().all(|row| !row.truncated));
+            }
+        }
+    }
+
+    #[test]
+    fn terminated_escapes_and_pipe_isolation_survive_fragmented_frames() {
+        let mut bytes = frame(1, b"one\x1b]hidden");
+        bytes.extend(frame(2, b"stderr\x1b[31m red\x1b[0m\n"));
+        bytes.extend(frame(1, b"\x1b"));
+        bytes.extend(frame(1, b"\\ two\x1b]also hidden"));
+        bytes.extend(frame(1, b"\x07 three\n"));
+        let mut decoder = LogDecoder::new(false);
+        let mut rows = Vec::new();
+        for byte in bytes {
+            decoder
+                .push(&[byte], false, &mut |row| rows.push(row))
+                .unwrap();
+        }
+        decoder.push(&[], true, &mut |row| rows.push(row)).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].stream, LogStreamKind::Stderr);
+        assert_eq!(rows[0].text, "stderr red");
+        assert_eq!(rows[1].stream, LogStreamKind::Stdout);
+        assert_eq!(rows[1].text, "one two three");
+    }
+
+    #[test]
+    fn oversized_escapes_hide_the_remainder_of_the_line_then_recover() {
+        for ending in [b"\nnext\n".as_slice(), b""] {
+            let mut decoder = LogDecoder::new(true);
+            let mut rows = Vec::new();
+            decoder
+                .push(b"visible\x1b]", false, &mut |row| rows.push(row))
+                .unwrap();
+            // Repeated ESC bytes must not reset the per-sequence byte budget.
+            for bytes in vec![0x1b; LINE_LIMIT].chunks(127) {
+                decoder
+                    .push(bytes, false, &mut |row| rows.push(row))
+                    .unwrap();
+            }
+            decoder
+                .push(b"\\secret payload\x07still hidden", false, &mut |row| {
+                    rows.push(row)
+                })
+                .unwrap();
+            assert!(rows.is_empty());
+            assert!(decoder.stdout.bytes.len() <= LINE_LIMIT);
+            assert!(decoder.stdout.escape_bytes <= LINE_LIMIT + 1);
+            decoder
+                .push(ending, true, &mut |row| rows.push(row))
+                .unwrap();
+            assert_eq!(rows[0].text, "visible");
+            assert!(rows[0].truncated);
+            if ending.is_empty() {
+                assert_eq!(rows.len(), 1);
+            } else {
+                assert_eq!(rows.len(), 2);
+                assert_eq!(rows[1].text, "next");
+                assert!(!rows[1].truncated);
+            }
+        }
+    }
+
+    #[test]
+    fn escape_limit_accepts_a_terminator_at_the_boundary() {
+        let mut decoder = LogDecoder::new(true);
+        let mut rows = Vec::new();
+        decoder
+            .push(b"\x1b]", false, &mut |row| rows.push(row))
+            .unwrap();
+        decoder
+            .push(&vec![b'x'; LINE_LIMIT - 3], false, &mut |row| {
+                rows.push(row)
+            })
+            .unwrap();
+        decoder
+            .push(b"\x07visible\n", true, &mut |row| rows.push(row))
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].text, "visible");
+        assert!(!rows[0].truncated);
     }
     #[test]
     fn rejects_invalid_or_incomplete_mux_without_large_allocation() {
