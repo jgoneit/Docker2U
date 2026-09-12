@@ -62,7 +62,10 @@ export function ProjectLogs({ sessionId, project, containers, initialPage, fullI
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [copyStatus, setCopyStatus] = useState<'copied' | 'copyFailed' | null>(null);
   const savedScroll = useRef(0);
-  const previousExpanded = useRef(false);
+  const restoredScroll = useRef<{ node: HTMLDivElement; top: number } | null>(null);
+  const viewportGeometry = useRef<{ node: HTMLDivElement; height: number } | null>(null);
+  const anchorInset = useRef(0);
+  const scrollToLatest = useRef(false);
   const [queryRevision, setQueryRevision] = useState(0);
   const frozenSequence = useRef<number | null>(null);
   const pauseTransition = useRef(false);
@@ -100,16 +103,47 @@ export function ProjectLogs({ sessionId, project, containers, initialPage, fullI
     if (pauseTransition.current) pauseTransition.current = false; else void read();
     return () => { live = false; clearTimeout(timer); document.removeEventListener('visibilitychange', visibility); };
   }, [sessionId, project, filterKey, paused, visible, queryRevision, !!initialPage]);
+  const restoreScroll = useCallback(() => {
+    const node = viewport.current; const current = pageRef.current;
+    if (!node || !current || !inputRef.current.visible) return;
+    let top = savedScroll.current;
+    if (following.current && (!inputRef.current.paused || scrollToLatest.current)) top = Math.max(0, current.totalRows * ROW_HEIGHT - node.clientHeight);
+    else if (anchor.current) {
+      const index = current.rows.findIndex(row => row.rowId === anchor.current);
+      if (index >= 0) top = (current.offset + index) * ROW_HEIGHT + anchorInset.current;
+    }
+    // Keep the intended position even when a taller viewport clamps the DOM
+    // offset. Closing the expanded view can then restore the same frozen row.
+    node.scrollTop = top; savedScroll.current = top;
+    viewportGeometry.current = { node, height: node.clientHeight };
+    restoredScroll.current = { node, top: node.scrollTop }; scrollToLatest.current = false;
+  }, []);
+  useLayoutEffect(restoreScroll, [page, paused, expanded, visible, restoreScroll]);
   useLayoutEffect(() => {
-    if (!viewport.current || !page || paused) return;
-    if (following.current) viewport.current.scrollTop = Math.max(0, page.totalRows * ROW_HEIGHT - viewport.current.clientHeight);
-    else if (anchor.current) { const index = page.rows.findIndex(row => row.rowId === anchor.current); if (index >= 0) viewport.current.scrollTop = (page.offset + index) * ROW_HEIGHT; }
-  }, [page, paused]);
-  useLayoutEffect(() => {
-    if (previousExpanded.current !== expanded && viewport.current) viewport.current.scrollTop = savedScroll.current;
-    previousExpanded.current = expanded;
-  }, [expanded]);
-  function toggleExpanded() { savedScroll.current = viewport.current?.scrollTop ?? 0; setExpanded(value => !value); }
+    const node = viewport.current;
+    if (!node || !visible || typeof ResizeObserver === 'undefined') return;
+    let height = 0;
+    const observer = new ResizeObserver(() => {
+      if (node.clientHeight <= 0 || node.clientHeight === height) return;
+      height = node.clientHeight;
+      restoreScroll();
+      // A larger viewport needs a larger loaded window even while paused.
+      // throughSequence keeps this display read inside the frozen collection.
+      setQueryRevision(value => value + 1);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [expanded, visible, restoreScroll]);
+  function toggleExpanded() { setExpanded(value => !value); }
+  function togglePaused() {
+    if (!paused) {
+      const top = viewport.current?.scrollTop ?? 0; const index = Math.floor(top / ROW_HEIGHT);
+      savedScroll.current = top; anchorInset.current = top - index * ROW_HEIGHT;
+      anchor.current = page?.rows[index - page.offset]?.rowId ?? null;
+    }
+    frozenSequence.current = paused ? null : page?.maxSequence ?? 0;
+    pauseTransition.current = !paused; setPaused(value => !value);
+  }
   useEffect(() => {
     if (!expanded) return;
     const background = document.querySelector<HTMLElement>('.main-content');
@@ -117,7 +151,7 @@ export function ProjectLogs({ sessionId, project, containers, initialPage, fullI
     expandedClose.current?.focus();
     return () => { if (background) background.inert = wasInert ?? false; expandButton.current?.focus(); };
   }, [expanded]);
-  function resetFilter() { offset.current = null; anchor.current = null; following.current = true; }
+  function resetFilter() { offset.current = null; anchor.current = null; anchorInset.current = 0; following.current = true; scrollToLatest.current = true; }
   function selectSources() { setSelectedIds(new Set(sources.filter(source => source.selected && source.status !== 'removed').map(source => source.fullId))); setSelecting(true); }
   const serviceOptions = [...new Set(sources.map(source => source.serviceName ?? source.containerName))].sort();
   const needSelection = page?.needsSelection || initialPage?.needsSelection;
@@ -126,7 +160,7 @@ export function ProjectLogs({ sessionId, project, containers, initialPage, fullI
     <div className="project-log-toolbar">
       {!fullId && <details className="project-service-filter"><summary>{t('serviceFilter')}{services !== null ? ` (${services.length})` : ''}</summary><div><button onClick={() => { setServices(null); resetFilter(); }}>{t('allServices')}</button>{serviceOptions.map(service => <label key={service}><input type="checkbox" checked={services === null || services.includes(service)} disabled={(services ?? serviceOptions).length === 1 && (services === null || services.includes(service))} onChange={event => { const base = services ?? serviceOptions; setServices(event.target.checked ? [...new Set([...base, service])] : base.filter(item => item !== service)); resetFilter(); }} />{service}</label>)}</div></details>}
       <label className="project-keyword"><Search size={14} aria-hidden="true" /><input type="search" aria-label={t('keyword')} placeholder={t('keywordHint')} value={keyword} onChange={event => { setKeyword(event.target.value); resetFilter(); }} /></label>
-      <button onClick={() => { frozenSequence.current = paused ? null : page?.maxSequence ?? 0; pauseTransition.current = !paused; setPaused(value => !value); }} aria-pressed={paused}>{paused ? <Play size={14} aria-hidden="true" /> : <Pause size={14} aria-hidden="true" />}{t(paused ? 'resume' : 'pause')}</button>
+      <button onClick={togglePaused} aria-pressed={paused}>{paused ? <Play size={14} aria-hidden="true" /> : <Pause size={14} aria-hidden="true" />}{t(paused ? 'resume' : 'pause')}</button>
       <button onClick={() => { resetFilter(); frozenSequence.current = null; setPaused(false); setQueryRevision(value => value + 1); }}>{t('latest')}</button>
       <button disabled={!page?.rows.length} aria-label={t('copy')} title={t('copy')} onClick={() => void navigator.clipboard.writeText(logRowsText(page?.rows ?? [])).then(() => setCopyStatus('copied'), () => setCopyStatus('copyFailed'))}><Copy size={14} aria-hidden="true" /></button>
       <button ref={expanded ? expandedClose : expandButton} aria-label={t(expanded ? 'collapse' : 'expand')} onClick={toggleExpanded}>{expanded ? <Minimize2 size={14} aria-hidden="true" /> : <Maximize2 size={14} aria-hidden="true" />}</button>
@@ -140,12 +174,19 @@ export function ProjectLogs({ sessionId, project, containers, initialPage, fullI
     <div className="project-log-meta"><span>{t('selectionCount', { selected: sources.filter(source => source.selected && source.status !== 'removed').length, total: sources.filter(source => source.status !== 'removed').length })} · {t('count', { count: page?.totalRows ?? 0 })}</span>{!!page?.coverageGaps && <span className="observation-warning">{t('gap')} · {page.coverageGaps}</span>}{page?.anchorLost && <span className="observation-warning">{t('anchorLost')}</span>}{page?.retainedFrom && <span>{t('coverage')} (UTC): {page.retainedFrom.slice(11, 19)}–{page.retainedTo?.slice(11, 19) ?? '—'}</span>}{!!page?.droppedRows && <span className="observation-warning">{t('trimmed', { count: page.droppedRows })}</span>}</div>
     <div className="project-log-header" aria-hidden="true"><span>{t('utcTime')}</span><span>{t('service')}</span><span>{t('container')}</span><span>{t('message')}</span></div>
     <div ref={viewport} className="project-log-viewport" tabIndex={0} role="log" aria-label={t('logs')} aria-live="off" onScroll={event => {
-      const node = event.currentTarget; const atEnd = node.scrollHeight - node.scrollTop - node.clientHeight < ROW_HEIGHT * 2;
-      if (following.current && atEnd) return;
+      const node = event.currentTarget;
+      // Resize can clamp scrollTop before ResizeObserver is delivered.
+      const geometry = viewportGeometry.current;
+      if (geometry?.node === node && geometry.height !== node.clientHeight) { restoreScroll(); return; }
+      const restored = restoredScroll.current; restoredScroll.current = null;
+      if (restored?.node === node && restored.top === node.scrollTop) return;
+      savedScroll.current = node.scrollTop; const atEnd = node.scrollHeight - node.scrollTop - node.clientHeight < ROW_HEIGHT * 2;
+      if (following.current && atEnd && !inputRef.current.paused) return;
       following.current = atEnd;
       const index = Math.floor(node.scrollTop / ROW_HEIGHT);
       const current = pageRef.current;
       anchor.current = current?.rows[index - current.offset]?.rowId ?? null;
+      anchorInset.current = node.scrollTop - index * ROW_HEIGHT;
       offset.current = Math.max(0, index - 20);
       if (!current || index < current.offset + 10 || index + Math.ceil(node.clientHeight / ROW_HEIGHT) > current.offset + current.rows.length - 10) setQueryRevision(value => value + 1);
     }}>

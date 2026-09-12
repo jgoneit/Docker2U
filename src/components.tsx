@@ -199,12 +199,12 @@ export function ContainerDetail({ container, snapshot, logs, logsError, loadingL
     event.currentTarget.focus();
     requestAction(action, event.currentTarget);
   }
-  return <div className="container-detail">
+  return <div className={`container-detail${logContent && activeTab === 'logs' ? ' project-log-detail' : ''}`}>
     <section className="recovery-panel detail-toolbar" aria-label={t('recovery')}>
       <div className="detail-tabs" role="tablist" aria-label={t('detailTabs')}>{tabs.map((tab, index) => <button key={tab} type="button" role="tab" id={`${tabId}-${tab}-tab`} aria-selected={activeTab === tab} aria-controls={`${tabId}-${tab}-panel`} tabIndex={activeTab === tab ? 0 : -1} onClick={() => onTabChange?.(tab)} onKeyDown={event => tabKeyDown(event, index)}>{t(tabLabels[tab])}</button>)}</div>
       <div className="recovery-actions"><button className="action-button action-start" disabled={actionsDisabled || !['created', 'exited'].includes(container.state)} onClick={() => requestAction('start')}><Play size={14} aria-hidden="true" />{t('start')}</button><button className="action-button action-stop" disabled={actionsDisabled || container.state !== 'running'} onClick={event => requestConfirmation(event, 'stop')}><Square size={13} aria-hidden="true" />{t('stop')}</button><button className="action-button action-restart" disabled={actionsDisabled || container.state !== 'running'} onClick={event => requestConfirmation(event, 'restart')}><RefreshCw size={14} aria-hidden="true" />{t('restart')}</button></div>
     </section>
-    <div className="detail-tab-panel" id={`${tabId}-logs-panel`} role="tabpanel" aria-labelledby={`${tabId}-logs-tab`} hidden={activeTab !== 'logs'}>
+    <div className={`detail-tab-panel${logContent ? ' project-log-panel' : ''}`} id={`${tabId}-logs-panel`} role="tabpanel" aria-labelledby={`${tabId}-logs-tab`} hidden={activeTab !== 'logs'}>
       {logContent ?? <LogPanel visible={activeTab === 'logs'} operationFeedback={operationFeedback} liveStatus={liveStatus} container={container} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} loadLogs={loadLogs} clearLogs={clearLogs} copy={copy} copyFeedback={copyFeedback} copyFeedbackTone={copyFeedbackTone} copyFeedbackId={copyFeedbackId} copyFeedbackHighlighted={copyFeedbackHighlighted} copyFeedbackHighlightUntil={copyFeedbackHighlightUntil} expanded={expanded} onExpandedChange={setExpanded} />}
     </div>
     {tabs.filter(tab => tab !== 'logs').map(tab => <div key={tab} className="detail-tab-panel" id={`${tabId}-${tab}-panel`} role="tabpanel" aria-labelledby={`${tabId}-${tab}-tab`} hidden={activeTab !== tab}>{activeTab === tab && insights}</div>)}

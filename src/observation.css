@@ -2,7 +2,12 @@
 .project-tabs { display: flex; padding: 7px 12px; gap: 6px; border-bottom: 1px solid var(--border); }
 .project-back { margin-top: 4px; font-size: 12px; }
 .container-project-header .project-view-button { margin-left: auto; font-size: 11px; min-height: 24px; }
-.project-logs { display: flex; flex: 1; min-height: 200px; min-width: 0; flex-direction: column; overflow: hidden; background: var(--surface); }
+/* Keep the virtual spacer out of ancestor intrinsic sizing. The outer detail
+   pane still scrolls at small split heights, preserving access to controls. */
+.project-detail.project-log-detail, .container-detail.project-log-detail { flex: 1 0 0px; min-height: 260px; }
+.detail-tab-panel.project-log-panel { flex: 1 1 0px; }
+.project-logs { display: flex; flex: 1 1 0px; min-height: 0; min-width: 0; flex-direction: column; overflow: auto; background: var(--surface); }
+.project-logs > :not(.project-log-viewport) { flex-shrink: 0; }
 .project-log-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
 .project-log-toolbar button { font-size: 11px; min-height: 28px; padding: 5px 8px; }
 .project-keyword { display: flex; gap: 6px; align-items: center; min-width: 130px; max-width: 300px; flex: 1; color: var(--text-muted); }
@@ -17,7 +22,7 @@
 .project-log-sources [data-status="error"], .project-log-sources [data-status="retrying"] { color: var(--warning); }
 .project-log-header, .project-log-row { display: grid; grid-template-columns: 108px 120px 170px minmax(200px, 1fr); gap: 12px; padding: 0 12px; white-space: pre; width: max-content; min-width: 100%; }
 .project-log-header { font-size: 10px; color: var(--text-muted); padding-block: 5px; border-bottom: 1px solid var(--border); }
-.project-log-viewport { min-height: 160px; height: 250px; flex: 1; min-width: 0; overflow: auto; font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace); font-size: 11px; line-height: 26px; overscroll-behavior: contain; }
+.project-log-viewport { min-height: 80px; height: 0; flex: 1 0 80px; min-width: 0; overflow: auto; font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace); font-size: 11px; line-height: 26px; overscroll-behavior: contain; }
 .project-log-spacer { position: relative; min-width: 100%; width: max-content; }
 .project-log-window { position: absolute; min-width: 100%; width: max-content; }
 .project-log-row { align-items: center; }
