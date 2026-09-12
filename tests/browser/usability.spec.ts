@@ -150,7 +150,8 @@ test('shows inventory age without selection and advances it without inventory or
   await page.clock.fastForward(120_000);
   await expect(age).toContainText(lang === 'ko' ? '4분 전' : '4 minutes ago');
   await page.getByRole('textbox', { name: words[lang].containerSearch, exact: true }).fill('no matching fixture');
-  await expect(page.locator('.log-content')).toHaveCount(0);
+  await expect(page.locator('.log-content')).toContainText('LAST_LINE_300');
+  await expect(page.locator('.selection-hidden-notice')).toBeVisible();
   await expect(age).toBeVisible();
   expect(nonSamplingCalls(await readCalls())).toEqual(nonSamplingCalls(before));
   await expectNoHorizontalOverflow(page);
@@ -220,7 +221,7 @@ async function expectLogFits(page: Page, minimumLines = 0) {
   const boundary = { top: Math.max(0, metrics.detail.top), bottom: Math.min(metrics.detail.bottom, metrics.footer.top, metrics.viewport.height) };
   expect(metrics.panel.height).toBeGreaterThan(0);
   expect(metrics.content.height, `log viewport retains its minimum height: ${JSON.stringify(metrics)}`).toBeGreaterThanOrEqual(80);
-  expect(metrics.content.top, 'log viewport is reachable inside the lower pane').toBeGreaterThanOrEqual(Math.max(boundary.top, metrics.panel.top) - 1);
+  expect(metrics.content.top, 'log viewport is reachable inside the detail pane').toBeGreaterThanOrEqual(Math.max(boundary.top, metrics.panel.top) - 1);
   expect(metrics.content.bottom, 'log viewport fits above the footer after pane scrolling').toBeLessThanOrEqual(Math.min(boundary.bottom, metrics.panel.bottom) + 1);
   for (const rect of [metrics.panel, metrics.content]) {
     expect(rect.left).toBeGreaterThanOrEqual(metrics.detail.left - 1);
@@ -270,13 +271,14 @@ test('fits the complete log viewport before interaction and while toggling searc
   await testInfo.attach('log-layout', { body: JSON.stringify({ closed, opened }), contentType: 'application/json' });
   if (viewportHeight === 1000) {
     const separator = page.getByRole('separator');
-    const originalHeight = Number(await separator.getAttribute('aria-valuenow'));
+    await expect(separator).toHaveAttribute('aria-orientation', 'vertical');
+    const originalWidth = Number(await separator.getAttribute('aria-valuenow'));
     await page.setViewportSize({ width: 1280, height: 800 });
     await expectLogFits(page, 1);
-    const smallerHeight = Number(await separator.getAttribute('aria-valuenow'));
-    expect(smallerHeight).toBeLessThanOrEqual(originalHeight);
-    expect(smallerHeight).toBeGreaterThanOrEqual(Number(await separator.getAttribute('aria-valuemin')));
-    expect(smallerHeight).toBeLessThanOrEqual(Number(await separator.getAttribute('aria-valuemax')));
+    const smallerWidth = Number(await separator.getAttribute('aria-valuenow'));
+    expect(smallerWidth).toBeLessThanOrEqual(originalWidth);
+    expect(smallerWidth).toBeGreaterThanOrEqual(Number(await separator.getAttribute('aria-valuemin')));
+    expect(smallerWidth).toBeLessThanOrEqual(Number(await separator.getAttribute('aria-valuemax')));
     await page.setViewportSize({ width: 1600, height: 1000 });
     await expectLogFits(page, 1);
   }
@@ -463,7 +465,7 @@ test('opens completed results from the statusbar and retains their target after 
   await page.getByRole('button', { name: t.closeResult, exact: true }).click();
   await expect(result).toHaveCount(0);
   await expect(recent).toBeFocused();
-  await page.getByRole('button', { name: `${redis} ${t.details}`, exact: true }).click();
+  await page.getByRole('treeitem', { name: `${redis} ${t.details}`, exact: true }).click();
   await recent.click();
   await expect(result).toContainText(backend);
   await expect(recent).toBeInViewport();
@@ -489,7 +491,7 @@ test('allows unknown notices and result details to close independently while ret
   await expect(result.getByRole('button', { name: t.showResult, exact: true })).toHaveCount(0);
   await expect(result.getByRole('button', { name: t.hideResult, exact: true })).toHaveCount(0);
   await expectLogFits(page);
-  await page.getByRole('button', { name: `${redis} ${t.details}`, exact: true }).click();
+  await page.getByRole('treeitem', { name: `${redis} ${t.details}`, exact: true }).click();
   await expect(result).toContainText(backend);
   await page.getByRole('button', { name: t.closeResult, exact: true }).click();
   await expect(result).toHaveCount(0);
@@ -542,6 +544,10 @@ test('uses manual keyboard tabs while preserving a paused live log search and it
   await expectStatusbarFits(page);
   await diagnosticsTab.focus();
   await page.keyboard.press('End');
+  const historyTab = page.getByRole('tab', { name: lang === 'ko' ? '이력' : 'History', exact: true });
+  await expect(historyTab).toBeFocused();
+  await expect(historyTab).toHaveAttribute('aria-selected', 'false');
+  await page.keyboard.press('ArrowLeft');
   await expect(connectionsTab).toBeFocused();
   await expect(connectionsTab).toHaveAttribute('aria-selected', 'false');
   await page.keyboard.press('Space');
@@ -568,7 +574,72 @@ test('uses manual keyboard tabs while preserving a paused live log search and it
   await testInfo.attach('detail-tabs-preserved-logs', { body: await page.screenshot(), contentType: 'image/png' });
 });
 
-test('keeps long IPv6 bindings and the final published port copy reachable in the lower pane', async ({ page }, testInfo) => {
+test('diagnostics hide irrelevant termination facts while retaining reported OOM and failed health checks', async ({ page }, testInfo) => {
+  const lang = language(testInfo), t = words[lang];
+  await openFixture(page);
+  const terminationLabels = lang === 'ko' ? ['종료 코드', '종료 시각', '메모리 부족 종료'] : ['Exit code', 'Finished at', 'OOM termination'];
+  for (const name of [backend, 'scheduler-일시정지-paused', 'worker-상태확인-required']) {
+    await page.getByRole('treeitem', { name: `${name} ${t.details}`, exact: true }).click();
+    await page.getByRole('tab', { name: t.diagnosticsTab, exact: true }).click();
+    const panel = page.getByRole('tabpanel', { name: t.diagnosticsTab, exact: true });
+    await expect(panel.locator('.insights-summary')).toBeVisible();
+    const facts = panel.locator('.insights-body > .insights-facts');
+    for (const label of terminationLabels) await expect(facts.getByText(label, { exact: true })).toHaveCount(0);
+    await expect(panel).not.toContainText(lang === 'ko' ? '종료 코드 137만으로' : 'Exit code 137 alone');
+    if (name === 'worker-상태확인-required') {
+      const failure = panel.locator('.insights-health-failures > li').first();
+      await expect(failure.getByText(terminationLabels[0]!, { exact: true })).toBeVisible();
+      await expect(failure.getByText(terminationLabels[1]!, { exact: true })).toBeVisible();
+      await failure.locator('summary').click();
+      await expect(failure.locator('.insights-health-output')).toContainText('Synthetic healthcheck: connection refused');
+    }
+    await expectNoHorizontalOverflow(page);
+  }
+  await page.getByRole('treeitem', { name: `${redis} ${t.details}`, exact: true }).click();
+  await page.getByRole('tab', { name: t.diagnosticsTab, exact: true }).click();
+  const terminated = page.getByRole('tabpanel', { name: t.diagnosticsTab, exact: true }).locator('.insights-body > .insights-facts');
+  for (const label of terminationLabels) await expect(terminated.getByText(label, { exact: true })).toBeVisible();
+  await expect(terminated).toContainText('137');
+  await expect(terminated).toContainText(lang === 'ko' ? 'Engine에서 OOM 종료를 보고함' : 'Engine reported an OOM termination');
+  const calls = await fixtureCalls(page);
+  expect(calls.mutateContainer).toBe(0); expect(calls.mutateContainers).toBe(0);
+});
+
+test('connection port selector remains keyboard reachable and preserves native choice across theme and language changes', async ({ page }, testInfo) => {
+  const lang = language(testInfo), t = words[lang];
+  await openFixture(page);
+  await page.getByRole('tab', { name: t.connectionsTab, exact: true }).click();
+  const control = page.locator('.insights-port-control'), select = control.locator('select');
+  await select.scrollIntoViewIfNeeded();
+  await expect(control.locator('svg')).toBeVisible();
+  await expect(select).toHaveCSS('appearance', 'none');
+  expect(await select.evaluate(node => node instanceof HTMLSelectElement)).toBe(true);
+  await expect(select.locator('option')).toHaveCount(3);
+  await select.focus(); await select.press('Tab');
+  await expect(select).not.toBeFocused();
+  await page.keyboard.press('Shift+Tab'); await expect(select).toBeFocused();
+  // Native popup key handling is checked in the installed macOS app; Playwright
+  // drives this HTML select's change event and retained selection here.
+  await select.selectOption('8081/udp');
+  await expect(select).toHaveValue('8081/udp');
+  const copyName = lang === 'ko' ? '주소 복사: api:8081' : 'Copy address: api:8081';
+  await expect(page.getByRole('button', { name: copyName, exact: true })).toBeVisible();
+  const before = await fixtureCalls(page);
+  await page.getByRole('button', { name: t.settings, exact: true }).click();
+  const nextTheme = testInfo.project.metadata.theme === 'dark' ? 'light' : 'dark';
+  await page.locator(`input[name="theme-preference"][value="${nextTheme}"]`).check();
+  await page.locator('#language-preference').selectOption(lang === 'ko' ? 'en' : 'ko');
+  await page.keyboard.press('Escape');
+  await expect(select).toHaveValue('8081/udp');
+  await expect(control.locator('svg')).toBeVisible();
+  await select.scrollIntoViewIfNeeded(); await expect(select).toBeInViewport();
+  expect(await control.evaluate(node => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
+  await expectNoHorizontalOverflow(page);
+  const after = await fixtureCalls(page);
+  for (const name of ['getContainerDetails', 'getEnvironment', 'listContainers', 'mutateContainer', 'mutateContainers']) expect(after[name]).toBe(before[name]);
+});
+
+test('keeps long IPv6 bindings and the final published port copy reachable in the detail pane', async ({ page }, testInfo) => {
   const lang = language(testInfo), t = words[lang];
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { (window as unknown as { __copiedInsight: string }).__copiedInsight = text; } } });
@@ -671,7 +742,7 @@ test('opens log search with the platform shortcut and selects the retained query
   }
 });
 
-test('clears container search without resetting its filter or selecting a container', async ({ page }, testInfo) => {
+test('clears container search while retaining its filter and selected detail', async ({ page }, testInfo) => {
   const t = words[language(testInfo)];
   await openFixture(page);
   const input = page.getByRole('textbox', { name: t.containerSearch, exact: true });
@@ -684,8 +755,8 @@ test('clears container search without resetting its filter or selecting a contai
   await expect(input).toBeFocused();
   await expect(filter).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('.container-row')).toHaveCount(2);
-  await expect(page.locator('.container-row[aria-current="true"]')).toHaveCount(0);
-  await expect(page.locator('.log-content')).toHaveCount(0);
+  await expect(page.getByRole('treeitem', { name: `${backend} ${t.details}`, exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.log-content')).toContainText('LAST_LINE_300');
   await expect(page.getByRole('button', { name: t.clearContainerSearch, exact: true })).toHaveCount(0);
 });
 
@@ -738,7 +809,7 @@ test('renders semantic action colors, neutral disabled and cancel states, and ke
     await page.keyboard.press('Escape');
     await expect(button).toBeFocused();
   }
-  await page.getByRole('button', { name: `${redis} ${t.details}`, exact: true }).click();
+  await page.getByRole('treeitem', { name: `${redis} ${t.details}`, exact: true }).click();
   await page.mouse.move(0, 0);
   await expect(start).toBeEnabled();
   await expectButtonPalette(start, 'start-action', 'on-action');

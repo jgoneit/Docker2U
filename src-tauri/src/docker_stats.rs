@@ -2,7 +2,7 @@
 use super::*;
 use std::time::Instant;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct StatsSnapshot {
     pub session_id: String,
@@ -12,7 +12,7 @@ pub struct StatsSnapshot {
     pub error: Option<ApiError>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ContainerStats {
     pub handle: String,
@@ -20,6 +20,8 @@ pub struct ContainerStats {
     pub cpu_percent: Option<f64>,
     pub memory_usage: Option<String>,
     pub memory_percent: Option<f64>,
+    pub memory_usage_bytes: Option<f64>,
+    pub memory_limit_bytes: Option<f64>,
     pub available: bool,
 }
 
@@ -65,6 +67,27 @@ fn memory_quantity(text: &str) -> Option<f64> {
         .filter(|number| number.is_finite() && *number >= 0.0)
 }
 
+// Docker's human-readable CLI quantity is rounded; these are plot values, not
+// a claim that the CLI exposed an exact raw Engine byte counter.
+fn memory_bytes(text: &str) -> Option<f64> {
+    let quantity = memory_quantity(text)?;
+    let split = text.find(|ch: char| !(ch.is_ascii_digit() || ch == '.'))?;
+    let unit = text[split..].trim();
+    let power = match unit {
+        "B" => 0,
+        "kB" | "KB" | "KiB" => 1,
+        "MB" | "MiB" => 2,
+        "GB" | "GiB" => 3,
+        "TB" | "TiB" => 4,
+        "PB" | "PiB" => 5,
+        "EB" | "EiB" => 6,
+        _ => return None,
+    };
+    let base: f64 = if unit.ends_with("iB") { 1024.0 } else { 1000.0 };
+    let bytes = quantity * base.powi(power);
+    (bytes.is_finite() && bytes <= 9_007_199_254_740_991.0).then_some(bytes)
+}
+
 fn parse_stats(
     bytes: &[u8],
     wanted: &[&Container],
@@ -86,8 +109,8 @@ fn parse_stats(
         let (used, limit) = memory
             .split_once(" / ")
             .ok_or_else(|| malformed("Invalid memory usage"))?;
-        memory_quantity(used).ok_or_else(|| malformed("Invalid memory usage"))?;
-        let limit = memory_quantity(limit).ok_or_else(|| malformed("Invalid memory limit"))?;
+        memory_bytes(used).ok_or_else(|| malformed("Invalid memory usage"))?;
+        let limit = memory_bytes(limit).ok_or_else(|| malformed("Invalid memory limit"))?;
         // A stopped-container race can produce a CLI placeholder of 0B / 0B.
         values.insert(id.into(), (cpu, memory.into(), memory_percent, limit > 0.0));
     }
@@ -148,6 +171,8 @@ impl Core {
                 cpu_percent: None,
                 memory_usage: None,
                 memory_percent: None,
+                memory_usage_bytes: None,
+                memory_limit_bytes: None,
                 available: false,
             })
             .collect();
@@ -203,6 +228,10 @@ impl Core {
                                     item.cpu_percent = Some(*cpu);
                                     item.memory_usage = Some(memory.clone());
                                     item.memory_percent = Some(*percent);
+                                    if let Some((used, limit)) = memory.split_once(" / ") {
+                                        item.memory_usage_bytes = memory_bytes(used);
+                                        item.memory_limit_bytes = memory_bytes(limit);
+                                    }
                                     item.available = true;
                                 }
                             }
@@ -256,6 +285,17 @@ impl Core {
 mod tests {
     use super::*;
 
+    #[test]
+    fn converts_cli_memory_units_without_inventing_precise_raw_values() {
+        assert_eq!(memory_bytes("12.5MiB"), Some(13_107_200.0));
+        assert_eq!(memory_bytes("12.5MB"), Some(12_500_000.0));
+        assert_eq!(memory_bytes("2GiB"), Some(2_147_483_648.0));
+        assert_eq!(memory_bytes("0B"), Some(0.0));
+        assert_eq!(memory_bytes("NaNMiB"), None);
+        assert_eq!(memory_bytes("100000000000EiB"), None);
+        assert_eq!(memory_bytes("-1MiB"), None);
+    }
+
     fn target() -> Container {
         Container {
             handle: "opaque".into(),
@@ -267,6 +307,8 @@ mod tests {
             health: None,
             ports: vec![],
             created_at: "2026-09-07T00:00:00Z".into(),
+            started_at: None,
+            tty: false,
             compose_project: None,
             compose_service: None,
         }

@@ -21,7 +21,7 @@ const change = (element: HTMLElement, value: string) => act(async () => { fireEv
 const notification = () => within(screen.getByRole('contentinfo')).getByRole('status', { name: '작업 알림' });
 const recent = () => within(screen.getByRole('contentinfo')).getByRole('button', { name: '최근 작업 결과 상세 보기' });
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (value: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
-async function mount() { userEvent.setup(); render(<App />); await clock(); expect(screen.getByRole('button', { name: 'database 상세' })).toBeVisible(); }
+async function mount() { userEvent.setup(); render(<App />); await clock(); expect(screen.getByRole('treeitem', { name: 'database 상세' })).toBeVisible(); }
 
 beforeEach(() => {
   vi.useFakeTimers(); vi.setSystemTime(new Date('2026-09-08T12:00:00Z')); vi.resetAllMocks();
@@ -47,7 +47,7 @@ it('loads one selected detail lazily, shares it across tabs, and keeps operation
   expect(mock.getContainerDetails).toHaveBeenCalledTimes(1);
   expect(screen.getByRole('button', { name: '주소 복사: 127.0.0.1:15432' })).toBeVisible();
   await click(screen.getByRole('button', { name: 'worker 접속 정보 보기' }));
-  expect(screen.getByRole('button', { name: 'worker 상세' })).toHaveAttribute('aria-current', 'true');
+  expect(screen.getByRole('treeitem', { name: 'worker 상세' })).toHaveAttribute('aria-selected', 'true');
   expect(screen.getByRole('checkbox', { name: 'database 작업 대상으로 선택' })).toBeChecked();
   expect(screen.getByRole('checkbox', { name: 'worker 작업 대상으로 선택' })).not.toBeChecked();
   expect(screen.getByRole('tab', { name: '접속 정보' })).toHaveAttribute('aria-selected', 'true');
@@ -83,7 +83,9 @@ it('discards an old target response and reloads active details after Refresh', a
   mock.getContainerDetails.mockReturnValueOnce(pending.promise);
   await mount();
   await click(screen.getByRole('tab', { name: '접속 정보' }));
-  await click(screen.getByRole('button', { name: 'worker 상세' }));
+  await click(screen.getByRole('treeitem', { name: 'worker 상세' }));
+  expect(screen.getByRole('tab', { name: '로그' })).toHaveAttribute('aria-selected', 'true');
+  await click(screen.getByRole('tab', { name: '접속 정보' }));
   expect(screen.queryByText('127.0.0.1:15432')).not.toBeInTheDocument();
   const old = containerDetailsFixture(database, { sessionId: 'one', generation: 1, containers: rows, stale: false, refreshedAt: '' });
   old.connectivity.ports[0]!.bindings = [{ hostIp: '127.0.0.1', hostPort: 19999 }];
@@ -121,7 +123,7 @@ it('keeps a failed final state check persistent and independent of clipboard fee
   await click(screen.getByRole('button', { name: '시작' }));
   await clock(6000);
   expect(notification()).toHaveTextContent('목록 확인 실패');
-  await click(screen.getByText('컨테이너 정보'));
+  await click(screen.getByRole('tab', { name: '접속 정보' }));
   await click(screen.getByRole('button', { name: '전체 ID 복사' }));
   expect(notification()).toHaveTextContent('목록 확인 실패');
   expect(screen.getByRole('contentinfo').querySelector('.clipboard-feedback')).toHaveTextContent('복사됨');

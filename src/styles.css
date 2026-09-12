@@ -46,6 +46,16 @@
   --success-glow: #11633f18;
   --log-match-bg: #f5ce57;
   --log-match-text: #1d2537;
+  --theme-preview-light-page: #e8edf5;
+  --theme-preview-light-window: #ffffff;
+  --theme-preview-light-bar: #f0f3f8;
+  --theme-preview-light-line: #c2ccdb;
+  --theme-preview-light-accent: #0054ff;
+  --theme-preview-dark-page: #101622;
+  --theme-preview-dark-window: #232c3b;
+  --theme-preview-dark-bar: #303c50;
+  --theme-preview-dark-line: #64758e;
+  --theme-preview-dark-accent: #90b9ff;
 }
 :root[data-theme="dark"] {
   --page: #171b23;
@@ -95,6 +105,16 @@
   --success-glow: #8be7bd18;
   --log-match-bg: #ffe0a6;
   --log-match-text: #1d2537;
+  --theme-preview-light-page: #e8edf5;
+  --theme-preview-light-window: #ffffff;
+  --theme-preview-light-bar: #f0f3f8;
+  --theme-preview-light-line: #c2ccdb;
+  --theme-preview-light-accent: #0054ff;
+  --theme-preview-dark-page: #101622;
+  --theme-preview-dark-window: #232c3b;
+  --theme-preview-dark-bar: #303c50;
+  --theme-preview-dark-line: #64758e;
+  --theme-preview-dark-accent: #90b9ff;
 }
 :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--text); background: var(--page); font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased;  }
 * { box-sizing: border-box; }
@@ -132,7 +152,7 @@ button.text-button { background: transparent; border-color: transparent; color: 
 .connection-help { flex-shrink: 0; padding: 7px 24px; margin: 0; color: var(--text-muted); background: var(--surface); font-size: 12px; }
 .connection-dot, .state-dot, .footer-dot { flex-shrink: 0; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--neutral); }
 .connection-dot.connected { background: var(--success); box-shadow: 0 0 0 3px var(--success-glow); }
-.workspace { display: grid; grid-template-columns: minmax(0, 1fr); flex: 1; min-height: 0; overflow: hidden; }
+.workspace { display: grid; grid-template-columns: 320px 10px minmax(600px, 1fr); grid-template-rows: minmax(0, 1fr); flex: 1; min-height: 0; overflow: hidden; }
 .inventory-panel, .detail-panel { min-height: 0; overflow: auto; overscroll-behavior: contain; }
 .inventory-panel { display: flex; flex-direction: column; overflow: hidden; background: var(--sidebar); min-width: 0; }
 .inventory-body { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
@@ -143,7 +163,11 @@ button.text-button { background: transparent; border-color: transparent; color: 
 .refresh-age { display: flex; flex-direction: column; min-width: 0; max-width: 62%; color: var(--text-muted); font-size: 12px; line-height: 1.3; text-align: right; overflow-wrap: anywhere; }
 .count-badge { border: 1px solid var(--border-subtle); border-radius: 6px; padding: 2px 6px; font-size: 12px; font-weight: 600; color: var(--link); background: var(--selected); }
 .muted { color: var(--text-muted); }.small { font-size: 12px; }
-.inventory-controls { flex-shrink: 0; display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--border-subtle); }
+.inventory-controls { flex-shrink: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px 6px; padding: 12px; border-bottom: 1px solid var(--border-subtle); }
+.inventory-controls .search-field { grid-column: 1 / -1; min-width: 0; width: 100%; }
+.inventory-controls .filter-group { min-width: 0; gap: 1px; }
+.inventory-controls .filter-group button { padding: 6px; font-size: 11px; }
+.inventory-controls .inventory-refresh { padding: 6px; font-size: 11px; }
 .project-filter { display: flex; flex: 0 0 190px; min-width: 0; margin: 0; font-size: 12px; }
 .project-select-control { position: relative; display: flex; width: 100%; height: 34px; border-radius: 10px; background: var(--raised); color: var(--text-muted); }
 .project-filter select { -webkit-appearance: none; appearance: none; min-width: 0; width: 100%; height: 100%; padding: 0 32px; border: 0; border-radius: inherit; color: var(--text); background: transparent; outline: none; font: inherit; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -307,13 +331,31 @@ button:disabled, button.primary-button:disabled, button.danger-button:disabled, 
 .log-copy-feedback { flex-shrink: 0; padding: 10px 16px; font-size: 12px; line-height: 1.6; color: var(--text); background: var(--surface); border-top: 1px solid var(--border-subtle); }
 .logs-modal .logs-panel { flex: 1 1 0; min-height: 0; border: 0; border-radius: 0; }
 .logs-modal .log-content, .logs-modal .log-error { min-height: 0; }
-.settings-dialog { width: 440px; max-height: calc(100vh - 60px); overflow: auto; padding: 24px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: 0 20px 80px var(--shadow); }
+.settings-dialog { width: 440px; max-height: calc(100vh - 60px); overflow: auto; padding: 24px; border: 1px solid var(--border-subtle); border-radius: 12px; background: var(--surface); box-shadow: 0 20px 80px var(--shadow); }
 .settings-heading, .settings-heading h2 { display: flex; align-items: center; gap: 10px; }
 .settings-heading { justify-content: space-between; }
 .settings-heading h2 { font-size: 20px; }
 .settings-dialog > p { color: var(--text-muted); font-size: 12px; line-height: 1.8; margin-top: 14px; }
 .setting-field { display: flex; flex-direction: column; gap: 9px; margin: 24px 0; font-size: 13px; font-weight: 600; }
-.setting-field select { width: 100%; font: inherit; font-weight: 400; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--input); color: var(--text); }
+.setting-theme-field { min-width: 0; padding: 0; border: 0; }
+.setting-theme-field legend { padding: 0; margin-bottom: 10px; }
+.theme-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.theme-choice { min-width: 0; display: flex; flex-direction: column; gap: 10px; padding: 8px; border: 2px solid transparent; border-radius: 11px; background: var(--raised); cursor: pointer; }
+.theme-choice:hover { background: var(--hover); }
+.theme-choice:has(input:checked) { border-color: var(--focus); background: var(--selected); }
+.theme-choice:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 3px; }
+.theme-preview { display: block; width: 100%; height: auto; }
+.theme-preview-light { --preview-page: var(--theme-preview-light-page); --preview-window: var(--theme-preview-light-window); --preview-bar: var(--theme-preview-light-bar); --preview-line: var(--theme-preview-light-line); --preview-accent: var(--theme-preview-light-accent); }
+.theme-preview-dark { --preview-page: var(--theme-preview-dark-page); --preview-window: var(--theme-preview-dark-window); --preview-bar: var(--theme-preview-dark-bar); --preview-line: var(--theme-preview-dark-line); --preview-accent: var(--theme-preview-dark-accent); }
+.theme-choice-label { display: flex; align-items: center; gap: 7px; padding: 0 1px 2px; color: var(--text-muted); font-size: 12px; font-weight: 500; }
+.theme-choice:has(input:checked) .theme-choice-label { color: var(--text); }
+.theme-choice input { -webkit-appearance: none; appearance: none; flex-shrink: 0; width: 14px; height: 14px; margin: 0; border: 1px solid var(--text-muted); border-radius: 50%; background: transparent; outline: none; cursor: pointer; }
+.theme-choice input:checked { border: 4px solid var(--primary); background: var(--on-action); }
+.setting-select-control { position: relative; display: flex; width: 100%; height: 40px; border-radius: 10px; background: var(--raised); color: var(--text-muted); }
+.setting-select-control select { -webkit-appearance: none; appearance: none; min-width: 0; width: 100%; height: 100%; padding: 0 36px 0 12px; border: 0; border-radius: inherit; background: transparent; color: var(--text); outline: none; font: inherit; font-weight: 400; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.setting-select-control > svg { position: absolute; top: 50%; right: 12px; transform: translateY(-50%); pointer-events: none; }
+.setting-select-control:hover { background: var(--hover); }
+.setting-select-control:has(select:focus-visible) { outline: 2px solid var(--focus); outline-offset: 3px; }
 .settings-dialog .settings-storage-error { padding: 12px; margin: 0 0 20px; color: var(--warning); background: var(--warning-bg); border: 1px solid var(--warning-border); border-radius: 6px; }
 
 
@@ -375,29 +417,29 @@ button.action-restart:hover:not(:disabled) { background: var(--restart-action-ho
   .connection-target strong { max-width: 25ch; }
 }
 
-/* The separator only changes the lower pane size; both panes stay mounted. */
-.pane-resizer { display: flex; width: 100%; height: 10px; min-height: 10px; padding: 0; border: 0; border-top: 1px solid var(--border-subtle); border-bottom: 1px solid var(--border-subtle); border-radius: 0; background: var(--page); cursor: row-resize; touch-action: none; }
-.pane-resizer > span { width: 32px; height: 2px; border-radius: 2px; background: var(--border); }
+/* Resizing the navigation never remounts the active log viewer. */
+.pane-resizer { display: flex; width: 10px; height: 100%; min-width: 10px; padding: 0; border: 0; border-inline: 1px solid var(--border-subtle); border-radius: 0; background: var(--page); cursor: col-resize; touch-action: none; }
+.pane-resizer > span { width: 2px; height: 32px; border-radius: 2px; background: var(--border); }
 .pane-resizer:hover, .pane-resizer:focus-visible, .resizing .pane-resizer { background: var(--selected); }
 .pane-resizer:focus-visible { outline-offset: -2px; }
-.resizing { user-select: none; cursor: row-resize; }
+.resizing { user-select: none; cursor: col-resize; }
 @media (max-width: 1100px) {
   .inventory-controls { gap: 8px; }
   .project-filter { flex-basis: 160px; }
   .filter-group button { padding-inline: 6px; }
   .app-header { gap: 14px; }
 }
-/* At a small pane height, keep a usable log viewport and scroll the pane
-   instead of clipping search controls, warnings, or the log body to zero. */
+/* Keep detailed controls reachable while the log viewport owns row scrolling. */
 .detail-panel { overflow: auto; }
 .detail-context { flex-shrink: 0; }
-.container-detail { flex: 1 0 auto; overflow: visible; }
-.container-detail > .logs-panel { flex: 1 0 auto; }
+.container-detail { flex: 1 1 0; min-height: 260px; overflow: visible; }
+.container-detail > .logs-panel { flex: 1 1 0; min-height: 160px; }
 .container-detail .log-content { min-height: 80px; }
 .container-detail .log-error:not(.log-stream-error) { min-height: 80px; }
 .container-table-scroll { scroll-padding-block: 40px 6px; }
 .container-table .container-row { scroll-margin-block: 40px 6px; }
-.container-summary { position: relative; }
-.container-summary .summary-overview { padding-right: 150px; }
-.container-summary .summary-information { margin-top: 0; }
-.container-summary .summary-information > summary { position: absolute; top: 7px; right: 18px; }
+
+.selection-hidden-notice { padding: 8px 18px; color: var(--text-muted); font-size: 12px; border-bottom: 1px solid var(--border-subtle); }
+.selection-hidden-notice button { margin-left: 6px; }
+.inventory-panel .panel-heading { padding-inline: 12px; gap: 8px; }
+.inventory-panel .bulk-selection { padding-inline: 12px; background: transparent; }

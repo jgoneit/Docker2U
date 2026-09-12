@@ -69,4 +69,4 @@ export function sessionDiagnostics(value: FrontendSession): FrontendSession {
   };
 }
 
-export const connectionInvalidatingErrors = new Set(['EnvironmentChanged', 'Disconnected', 'SocketMissing', 'PermissionDenied', 'Configuration', 'EndpointMismatch', 'RemoteEndpoint']);
+export const connectionInvalidatingErrors = new Set(['EnvironmentChanged', 'Disconnected', 'SocketMissing', 'PermissionDenied', 'Configuration', 'EndpointMismatch', 'RemoteEndpoint', 'UnsupportedObservationEndpoint']);

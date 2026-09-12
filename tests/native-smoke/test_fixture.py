@@ -223,7 +223,7 @@ class FixtureIsolationTests(unittest.TestCase):
 
     def test_early_setup_error_removes_only_new_owned_directory(self):
         new_root = self.root.parent / "new-owned"
-        # A missing binary fails after socket creation, before app launch.
+        # Validate the binary before allocating a listening socket or launching.
         with self.assertRaises(FileNotFoundError):
             fixture.serve(new_root, self.root / "absent.app", self.root / "evidence")
         self.assertFalse(new_root.exists())
@@ -350,17 +350,20 @@ class InsightEvidenceTests(unittest.TestCase):
             with self.subTest(fault=fault), self.assertRaises(ValueError): fixture.validate_ui(identity(), ui, trace, now_ms=5000)
 
     def test_project_stats_requires_exact_ui_sample_successful_inspect_and_matching_native_batch(self):
-        report = self.report("project-stats", [step("Compose grouping and real stats visible", 1500, {"projectRows": 2, "cpuPercent": 125.5, "memory": "64MiB / 2GiB"}), step("standalone project filter verified", 1600, {"standaloneRows": 1})])
-        ids = [format(number, "064x") for number in [1, 2]]
+        report = self.report("project-stats", [step("Compose grouping and real stats visible", 1500, {"projectRows": 2, "observedSources": 3, "cpuPercent": 125.5, "memoryUsageBytes": 67108864, "memoryLimitBytes": 2147483648, "sessionId": "native-session", "observationSequence": 1, "sampledAt": "1970-01-01T00:00:01.310Z", "fullIds": [format(n, "064x") for n in [1, 2, 3]]}), step("standalone tree navigation verified", 1600, {"standaloneRows": 1, "inventoryRows": 3, "fullId": format(3, "064x")})])
+        ids = [format(number, "064x") for number in [1, 2, 3]]
         events = self.command(["container", "inspect"], 1050) + self.command(["container", "stats", "--no-stream", "--no-trunc", "--format", "{{json .}}", *ids], 1300, 43)
-        events.append({"phase": "stats-payload", "timeMs": 1305, "pid": 43, "count": 2, "fullIds": ids})
+        events.append({"phase": "stats-payload", "timeMs": 1305, "pid": 43, "count": 3, "fullIds": ids})
         self.assertTrue(fixture.validate_ui(identity(), report, events, now_ms=5000)["accepted"])
-        for fault in ["no-inspect", "no-batch", "wrong-ids", "wrong-ui", "no-command"]:
+        for fault in ["no-inspect", "no-batch", "wrong-ids", "wrong-ui", "no-command", "stale-sample", "missing-session", "wrong-count"]:
             ui, trace = copy.deepcopy(report), copy.deepcopy(events)
             if fault == "no-inspect": trace = trace[2:]
             elif fault == "no-batch": trace.pop()
             elif fault == "wrong-ids": trace[-1]["fullIds"] = [ids[0]]
             elif fault == "wrong-ui": ui["steps"][1]["detail"]["cpuPercent"] = 0
+            elif fault == "stale-sample": ui["steps"][1]["detail"]["sampledAt"] = "1970-01-01T00:00:01.000Z"
+            elif fault == "missing-session": ui["steps"][1]["detail"]["sessionId"] = ""
+            elif fault == "wrong-count": trace[-1]["count"] = 2
             else: trace = [row for row in trace if not (row["phase"] == "start" and row["pid"] == 43)]
             with self.subTest(fault=fault), self.assertRaises(ValueError): fixture.validate_ui(identity(), ui, trace, now_ms=5000)
 
@@ -389,9 +392,9 @@ class InsightEvidenceTests(unittest.TestCase):
             with self.assertRaises(ValueError): fixture.validate_ui(identity(), report, trace, now_ms=5000)
 
     def test_pane_resize_requires_real_geometry_restore_and_native_output_without_replacement(self):
-        before = self.detail(height=260, min=220, max=430, detailHeight=260, listHeight=300, beforeTick=1, readCount=2)
-        resized = self.detail(height=280, min=220, max=430, detailHeight=280, listHeight=280, key="ArrowUp", afterTick=4, newReads=3, preservedView=True)
-        after = self.detail(height=260, min=220, max=430, detailHeight=260, listHeight=300, preservedView=True, maximumActiveReads=1)
+        before = self.detail(width=320, min=280, max=440, detailWidth=800, listWidth=320, beforeTick=1, readCount=2)
+        resized = self.detail(width=340, min=280, max=440, detailWidth=780, listWidth=340, key="ArrowRight", afterTick=4, newReads=3, preservedView=True)
+        after = self.detail(width=320, min=280, max=440, detailWidth=800, listWidth=320, preservedView=True, maximumActiveReads=1)
         report = self.report("pane-resize", [step("captured live pane before keyboard resize", 1200, before), step("resized live pane with keyboard while receiving", 1600, resized), step("restored live pane without replacing the stream", 1800, after)])
         events = [self.ready(), {"phase": "follow-output", "timeMs": 1500, "pid": 41, "fullId": self.full_id, "sequence": 4}]
         self.assertTrue(fixture.validate_ui(identity(), report, events, now_ms=5000)["accepted"])
@@ -401,9 +404,9 @@ class InsightEvidenceTests(unittest.TestCase):
             elif fault == "no-output": trace.pop()
             elif fault == "foreign-pid": trace[-1]["pid"] = 99
             elif fault == "late-output": trace[-1]["timeMs"] = 1700
-            elif fault == "unmoved-geometry": ui["steps"][2]["detail"]["detailHeight"] = 260
+            elif fault == "unmoved-geometry": ui["steps"][2]["detail"]["listWidth"] = 320
             elif fault == "out-of-bounds": ui["steps"][2]["detail"]["max"] = 270
-            elif fault == "not-restored": ui["steps"][3]["detail"]["height"] = 280
+            elif fault == "not-restored": ui["steps"][3]["detail"]["width"] = 340
             elif fault == "view-reset": ui["steps"][2]["detail"]["preservedView"] = False
             elif fault == "read-overlap": ui["steps"][3]["detail"]["maximumActiveReads"] = 2
             else: trace.append({**self.ready(), "timeMs": 1700, "pid": 99})
@@ -421,12 +424,45 @@ class InsightEvidenceTests(unittest.TestCase):
             else: trace[1]["pid"] = 99
             with self.subTest(fault=fault), self.assertRaises(ValueError): fixture.validate_ui(identity(), report, trace, now_ms=5000)
 
-    def test_recovery_requires_inventory_without_logs_then_fresh_follow_after_reconnect(self):
-        report = self.report("recovery", [step("requested warning-preserving Refresh", 1200), step("warning retained after successful Refresh without new logs", 1500), step("requested explicit Reconnect", 1600), step("explicit reconnect restored the valid session", 2000)])
-        events = [*self.command(["container", "ls"]), {**self.ready(), "timeMs": 1900}]
+    def test_recovery_requires_rejected_refresh_then_fresh_session_inventory_and_logs(self):
+        before = {"sessionId": "invalid-session", "starts": 1, "startRequests": 2, "listCheckedAt": "2026-09-12T00:00:00Z"}
+        blocked = {**before, "request": 4, "requestedAtMs": 1210, "repliedAtMs": 1300, "errorCode": "NeedsValidation", "responseSessionId": None,
+                   "renderedErrorCode": "NeedsValidation", "inventoryPreserved": True, "warningVisible": True, "recoveryBlocked": True}
+        fresh = {"sessionId": "fresh-session", "responseSessionId": "fresh-session", "request": 5, "requestedAtMs": 1700, "repliedAtMs": 1800,
+                 "errorCode": None, "starts": 2, "streamId": "fresh-stream", "fullId": format(3, "064x"), "warningVisible": False, "recoveryAvailable": True}
+        report = self.report("recovery", [step("requested warning-preserving Refresh", 1200, before),
+            step("warning retained after NeedsValidation rejected Refresh without new logs", 1500, blocked),
+            step("requested explicit Reconnect", 1600, before), step("explicit reconnect restored the valid session", 2000, fresh)])
+        events = [*self.command(["container", "ls"], 1700), {**self.ready(), "timeMs": 1900, "fullId": format(3, "064x")}]
         self.assertTrue(fixture.validate_ui(identity(), report, events, now_ms=5000)["accepted"])
-        for trace in [events[:-1], events + [{**self.ready(), "timeMs": 1400}]]:
-            with self.assertRaises(ValueError): fixture.validate_ui(identity(), report, trace, now_ms=5000)
+        for fault in ["no-ipc-proof", "wrong-code", "no-rendered-error", "wrong-session", "old-reply", "changed-inventory", "lost-warning", "enabled-recovery", "new-start-request", "late-start",
+                      "early-inventory", "early-logs", "early-follow", "early-api-logs", "no-fresh-inventory", "no-follow", "foreign-follow", "same-session", "old-fresh-reply", "same-start-count", "still-warned", "still-blocked"]:
+            ui, trace = copy.deepcopy(report), copy.deepcopy(events)
+            rejected, restored = ui["steps"][2]["detail"], ui["steps"][4]["detail"]
+            if fault == "no-ipc-proof": rejected.pop("request")
+            elif fault == "wrong-code": rejected["errorCode"] = "Busy"
+            elif fault == "no-rendered-error": rejected.pop("renderedErrorCode")
+            elif fault == "wrong-session": rejected["sessionId"] = "other-session"
+            elif fault == "old-reply": rejected["requestedAtMs"] = 1190
+            elif fault == "changed-inventory": rejected["listCheckedAt"] = "2026-09-12T00:00:01Z"
+            elif fault == "lost-warning": rejected["warningVisible"] = False
+            elif fault == "enabled-recovery": rejected["recoveryBlocked"] = False
+            elif fault == "new-start-request": rejected["startRequests"] += 1
+            elif fault == "late-start": ui["steps"][3]["detail"]["starts"] += 1
+            elif fault == "early-inventory": trace.extend(self.command(["container", "ls"], 1250))
+            elif fault == "early-logs": trace.extend(self.command(["container", "logs"], 1550))
+            elif fault == "early-follow": trace.append({**self.ready(), "timeMs": 1400})
+            elif fault == "early-api-logs": trace.append({"phase": "api-log-binding", "timeMs": 1550})
+            elif fault == "no-fresh-inventory": trace = trace[-1:]
+            elif fault == "no-follow": trace.pop()
+            elif fault == "foreign-follow": trace[-1]["fullId"] = self.full_id
+            elif fault == "same-session": restored["sessionId"] = restored["responseSessionId"] = "invalid-session"
+            elif fault == "old-fresh-reply": restored["requestedAtMs"] = 1590
+            elif fault == "same-start-count": restored["starts"] = 1
+            elif fault == "still-warned": restored["warningVisible"] = True
+            elif fault == "still-blocked": restored["recoveryAvailable"] = False
+            with self.subTest(fault=fault), self.assertRaises(ValueError):
+                fixture.validate_ui(identity(), ui, trace, now_ms=5000)
 
 
 if __name__ == "__main__":

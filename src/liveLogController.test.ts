@@ -309,6 +309,172 @@ describe('live log lifecycle', () => {
   });
 });
 
+describe('live log startup recovery', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+  const inputAt = (generation: number, enabled = true) => {
+    const container = { ...a, handle: `a${generation}` };
+    return { container, snapshot: { ...list, generation, containers: [container, b] }, enabled };
+  };
+  it.each(['Busy', 'StaleHandle'].flatMap(code => ['before', 'after'].map(order => ({ code, order }))))(
+    'recovers a $code startup when newer inventory arrives $order the rejection', async ({ code, order }) => {
+      const { controller, transport, state } = setup();
+      const start = deferred<Awaited<ReturnType<LogTransport['startLogStream']>>>();
+      vi.mocked(transport.startLogStream).mockReturnValueOnce(start.promise);
+      controller.update(inputAt(1));
+      if (order === 'before') controller.update(inputAt(2));
+      start.reject({ code, message: 'inventory changed during startup' }); await flush();
+      if (order === 'after') {
+        expect(transport.startLogStream).toHaveBeenCalledTimes(1);
+        expect(state().liveStatus).toBe('error');
+        controller.update(inputAt(2)); await flush();
+      }
+      expect(transport.startLogStream).toHaveBeenCalledTimes(2);
+      expect(transport.startLogStream).toHaveBeenLastCalledWith('session', 2, 'a2');
+      expect(state()).toMatchObject({ liveStatus: 'following', logsError: null, loadingLogs: false, logRequestPending: false });
+      expect(state().logs).toMatchObject({ handle: 'a2', generation: 2, text: 'first\n' });
+      controller.destroy();
+    },
+  );
+  it('waits for a valid newer generation without timers or retrying a refreshed handle alone', async () => {
+    const { controller, transport } = setup();
+    vi.mocked(transport.startLogStream).mockRejectedValueOnce({ code: 'StaleHandle', message: 'list is changing' });
+    controller.update(inputAt(1)); await flush();
+    controller.update({ ...inputAt(1), container: { ...a, handle: 'replacement' } });
+    controller.update(inputAt(0));
+    controller.update(inputAt(1.5));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(transport.startLogStream).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+    controller.update(inputAt(2)); await flush();
+    expect(transport.startLogStream).toHaveBeenLastCalledWith('session', 2, 'a2');
+    controller.destroy();
+  });
+  it('waits for refresh gating to release and uses the newest available handle', async () => {
+    const { controller, transport, state } = setup();
+    const start = deferred<Awaited<ReturnType<LogTransport['startLogStream']>>>();
+    vi.mocked(transport.startLogStream).mockReturnValueOnce(start.promise);
+    controller.update(inputAt(1));
+    controller.update(inputAt(2, false));
+    start.reject({ code: 'Busy', message: 'list request in flight' }); await flush();
+    controller.update(inputAt(3, false)); await flush();
+    expect(transport.startLogStream).toHaveBeenCalledTimes(1);
+    expect(state().logRequestPending).toBe(false);
+    controller.update(inputAt(3)); await flush();
+    expect(transport.startLogStream).toHaveBeenCalledTimes(2);
+    expect(transport.startLogStream).toHaveBeenLastCalledWith('session', 3, 'a3');
+    controller.destroy();
+  });
+  it('allows two automatic retries per activation and resets the budget on manual reload', async () => {
+    const { controller, transport, state } = setup();
+    vi.mocked(transport.startLogStream).mockRejectedValue({ code: 'Busy', message: 'inventory contention' });
+    controller.update(inputAt(1)); await flush();
+    controller.update(inputAt(2)); await flush();
+    controller.update(inputAt(2)); await flush();
+    expect(transport.startLogStream).toHaveBeenCalledTimes(2);
+    controller.update(inputAt(3)); await flush();
+    controller.update(inputAt(4)); await flush();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(transport.startLogStream).toHaveBeenCalledTimes(3);
+    expect(state().liveStatus).toBe('error');
+    controller.reload(); await flush();
+    expect(transport.startLogStream).toHaveBeenLastCalledWith('session', 4, 'a4');
+    controller.update(inputAt(5)); await flush();
+    controller.update(inputAt(6)); await flush();
+    controller.update(inputAt(7)); await flush();
+    expect(transport.startLogStream).toHaveBeenCalledTimes(6);
+    controller.destroy();
+  });
+  it.each(['before', 'after'])('Clear discards recovery when called %s the startup rejection', async order => {
+    const { controller, transport, state, report } = setup();
+    const start = deferred<Awaited<ReturnType<LogTransport['startLogStream']>>>();
+    vi.mocked(transport.startLogStream).mockReturnValueOnce(start.promise);
+    controller.update(inputAt(1));
+    if (order === 'before') controller.clear();
+    start.reject({ code: 'StaleHandle', message: 'old list' }); await flush();
+    if (order === 'after') controller.clear();
+    controller.update(inputAt(2)); await flush();
+    expect(transport.startLogStream).toHaveBeenCalledTimes(1);
+    expect(state()).toMatchObject({ logs: null, logsError: null, loadingLogs: false, liveStatus: 'idle' });
+    expect(report).toHaveBeenCalledTimes(order === 'before' ? 0 : 1);
+    controller.reload(); await flush();
+    expect(transport.startLogStream).toHaveBeenLastCalledWith('session', 2, 'a2');
+    controller.destroy();
+  });
+  it('discards the previous full identity and starts a newly selected container at its current generation', async () => {
+    const { controller, transport, state } = setup();
+    vi.mocked(transport.startLogStream).mockRejectedValueOnce({ code: 'StaleHandle', message: 'old list' });
+    controller.update(inputAt(1)); await flush();
+    controller.update({ container: b, snapshot: list, enabled: true }); await flush();
+    expect(transport.startLogStream).toHaveBeenCalledTimes(2);
+    expect(transport.startLogStream).toHaveBeenLastCalledWith('session', 1, 'b1');
+    controller.update({ container: { ...b, handle: 'b2' }, snapshot: { ...list, generation: 2 }, enabled: true }); await flush();
+    expect(transport.startLogStream).toHaveBeenCalledTimes(2);
+    expect(state().logs?.handle).toBe('b1');
+    controller.destroy();
+  });
+  it.each(['invalidated', 'stale'])('discards pending recovery on %s inventory and reconnects with a fresh identity', async reason => {
+    const { controller, transport, state } = setup();
+    vi.mocked(transport.startLogStream).mockRejectedValueOnce({ code: 'Busy', message: 'refresh in flight' });
+    controller.update(inputAt(1)); await flush();
+    const input = inputAt(2);
+    controller.update({ ...input, invalidated: reason === 'invalidated', snapshot: { ...input.snapshot, stale: reason === 'stale' } }); await flush();
+    expect(transport.startLogStream).toHaveBeenCalledTimes(1);
+    vi.mocked(transport.startLogStream).mockResolvedValueOnce({ sessionId: 'new-session', streamId: 'new-stream', fullId: a.fullId });
+    vi.mocked(transport.readLogStream).mockResolvedValueOnce({ sessionId: 'new-session', streamId: 'new-stream', sequence: 1, text: 'new session\n', terminal: false, truncated: false, error: null });
+    controller.update({ ...inputAt(1), snapshot: { ...list, sessionId: 'new-session' } }); await flush();
+    expect(transport.startLogStream).toHaveBeenCalledTimes(2);
+    expect(transport.startLogStream).toHaveBeenLastCalledWith('new-session', 1, 'a1');
+    expect(state().logs?.text).toBe('new session\n');
+    controller.destroy();
+  });
+  it.each(['Busy', 'StaleHandle', 'EnvironmentChanged'])('ignores a late %s startup error from a replaced session', async code => {
+    const { controller, transport, report } = setup();
+    const start = deferred<Awaited<ReturnType<LogTransport['startLogStream']>>>();
+    vi.mocked(transport.startLogStream).mockReturnValueOnce(start.promise);
+    controller.update(inputAt(1));
+    controller.update({ ...inputAt(2, false), snapshot: { ...list, generation: 2, sessionId: 'new-session' } });
+    start.reject({ code, message: 'old connection' }); await flush();
+    expect(transport.startLogStream).toHaveBeenCalledTimes(1);
+    expect(report).not.toHaveBeenCalled();
+    controller.destroy();
+  });
+  it.each(['EnvironmentChanged', 'EndpointMismatch', 'SocketMissing', 'CommandFailed'])('does not retry %s startup failures on new inventory', async code => {
+    const { controller, transport, report, state } = setup();
+    vi.mocked(transport.startLogStream).mockRejectedValueOnce({ code, message: 'start failed' });
+    report.mockReturnValue(code !== 'CommandFailed');
+    controller.update(inputAt(1)); await flush();
+    controller.update(inputAt(2)); await flush();
+    expect(transport.startLogStream).toHaveBeenCalledTimes(1);
+    expect(report).toHaveBeenCalledTimes(1);
+    expect(state().logsError?.code).toBe(code);
+    controller.destroy();
+  });
+  it.each(['reject', 'frame', 'terminal'])('does not recover an established stream after a %s outcome', async outcome => {
+    const { controller, transport, state } = setup();
+    controller.update(inputAt(1)); await flush();
+    const error = { code: 'StaleHandle', message: 'subscription ended' };
+    if (outcome === 'reject') vi.mocked(transport.readLogStream).mockRejectedValueOnce(error);
+    else vi.mocked(transport.readLogStream).mockResolvedValueOnce({ sessionId: 'session', streamId: 'stream-a1', sequence: 2,
+      text: '', terminal: true, truncated: false, error: outcome === 'frame' ? error : null });
+    await vi.advanceTimersByTimeAsync(250);
+    controller.update(inputAt(2)); await flush();
+    expect(transport.startLogStream).toHaveBeenCalledTimes(1);
+    expect(state().liveStatus).toBe(outcome === 'terminal' ? 'ended' : 'error');
+    controller.destroy();
+  });
+  it('does not recover a recent-log snapshot failure through live stream retries', async () => {
+    const { controller, transport } = setup();
+    vi.mocked(transport.getRecentLogs).mockRejectedValueOnce({ code: 'StaleHandle', message: 'snapshot outdated' });
+    controller.update({ ...inputAt(1), container: { ...a, state: 'exited' } }); await flush();
+    const input = inputAt(2);
+    controller.update({ ...input, container: { ...input.container, state: 'exited' } }); await flush();
+    expect(transport.getRecentLogs).toHaveBeenCalledTimes(1);
+    expect(transport.startLogStream).not.toHaveBeenCalled();
+    controller.destroy();
+  });
+});
+
 describe('bounded UTF-8 log buffer', () => {
   it('retains a valid tail within 2MiB and reports cumulative append loss', () => {
     const first = appendLogText('', '한'.repeat(LOG_BUFFER_BYTES));

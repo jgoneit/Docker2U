@@ -11,6 +11,15 @@ fn main() {
             "stop_log_stream",
             "mutate_container",
             "mutate_containers",
+            "configure_observation",
+            "read_observation",
+            "hold_observation",
+            "release_observation_hold",
+            "retry_observation_events",
+            "configure_project_logs",
+            "query_project_logs",
+            "retry_project_logs",
+            "stop_project_logs",
         ]),
     ))
     .expect("failed to generate the explicit application permissions");

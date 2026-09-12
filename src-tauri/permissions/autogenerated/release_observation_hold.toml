@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-release-observation-hold"
+description = "Enables the release_observation_hold command without any pre-configured scope."
+commands.allow = ["release_observation_hold"]
+
+[[permission]]
+identifier = "deny-release-observation-hold"
+description = "Denies the release_observation_hold command without any pre-configured scope."
+commands.deny = ["release_observation_hold"]

@@ -10,6 +10,7 @@ import type { Action, ConnectionTarget, Container, ContainerList, CoreError, Env
 import { diagnosticsText } from './api';
 import { displayErrorMessage, type FrontendErrorDescriptor } from './frontendErrors';
 import { LogPanel } from './LogPanel';
+import type { StandaloneLogViewCache } from './standaloneLogViewCache';
 import type { CopyFeedbackTone } from './CopyFeedback';
 import type { LogSnapshot } from './logSnapshot';
 import type { FrontendSession, SessionIssue } from './frontendSession';
@@ -31,7 +32,7 @@ export type Operation = MutationResult & ConnectionTarget & { fullId: string; na
 export type Confirmation = ConnectionTarget & { action: 'stop' | 'restart'; sessionId: string; generation: number; returnFocus?: HTMLElement }
   & ({ container: Container; containers?: never } | { containers: Container[]; container?: never });
 export type CopyLabel = 'logs' | 'fullId' | 'diagnostics' | 'command' | 'address' | 'healthOutput';
-export type DetailTab = 'logs' | 'diagnostics' | 'connectivity';
+export type DetailTab = 'logs' | 'diagnostics' | 'connectivity' | 'history';
 export type CopyText = (text: string, label: CopyLabel) => Promise<void>;
 
 export function formatTime(value?: string, language: Language = 'ko') {
@@ -149,41 +150,46 @@ export function Diagnostics({ environment, frontendSession, close, copy }: { env
     {(environment || frontendSession) && <><button onClick={() => void copy(diagnosticsText(environment, frontendSession), 'diagnostics')}><Copy size={14} aria-hidden="true" />{t('diagnosticsCopy')}</button><p className="muted small">{t('copyAllowlist')}</p></>}
   </section>;
 }
-export function ContainerSummary({ container, snapshot, copy, mutationBlocked, mutationAllowed, resourceSample, onShowConnections }: {
-  container: Container; snapshot: ContainerList; copy: CopyText; mutationBlocked: boolean; mutationAllowed: boolean; resourceSample?: ResourceSample; onShowConnections?: () => void;
+export function ContainerSummary({ container, snapshot, mutationBlocked, mutationAllowed, resourceSample }: {
+  container: Container; snapshot: ContainerList; mutationBlocked: boolean; mutationAllowed: boolean; resourceSample?: ResourceSample;
 }) {
   const t = useI18n(componentMessages);
-  const { language } = usePreferences();
   return <div className="container-summary">
     <div className="summary-overview"><div className="summary-identity"><h3 title={container.name}>{container.name}</h3><div className="summary-status"><State value={container.state} />{container.health && container.health !== 'none' && <span role="group" aria-label={t('health')} title={t('health')}><Health value={container.health} /></span>}{snapshot.stale && <span className="stale-tag">{t('stale')}</span>}{resourceSample?.stale && <span className="resource-stale" role="status">{t('resourceStale')}</span>}</div></div></div>
-    <details className="summary-information"><summary>{t('containerInfo')}</summary>
-      <ResourceUsage sample={resourceSample} />
-      <dl className="summary-facts">
-        <div><dt>{t('image')}</dt><dd>{container.image}</dd></div>
-        <div><dt>{t('containerId')}</dt><dd><code>{container.fullId}</code><button className="icon-button" aria-label={t('copyFullId')} onClick={() => void copy(container.fullId, 'fullId')}><Copy size={13} aria-hidden="true" /></button></dd></div>
-        <div><dt>{t('ports')}</dt><dd>{onShowConnections ? <button className="text-button" onClick={onShowConnections}>{t('viewConnectivity')}</button> : container.ports.length ? container.ports.join(' · ') : t('noPorts')}</dd></div>
-        <div><dt>{t('project')}</dt><dd>{container.composeProject || t('noProject')}</dd></div>
-        <div><dt>{t('service')}</dt><dd>{container.composeService || '—'}</dd></div>
-        {(!container.health || container.health === 'none') && <div><dt>{t('health')}</dt><dd><Health value={container.health} /></dd></div>}
-        <div><dt>{t('updated')}</dt><dd><time dateTime={snapshot.refreshedAt}>{formatTime(snapshot.refreshedAt, language)}</time></dd></div>
-      </dl>
-      <ResourceMetadata sample={resourceSample} />
-    </details>
     {mutationBlocked && mutationAllowed && <div className="operation-warning" role="alert">{t('blocked')}</div>}
     {snapshot.stale && <p className="operation-warning">{t('staleActions')}</p>}
   </div>;
 }
-export function ContainerDetail({ container, snapshot, logs, logsError, loadingLogs, logRequestPending = false, refreshing, mutating, mutationBlocked, mutationAllowed, loadLogs, clearLogs, requestAction, copy, copyFeedback, copyFeedbackTone, copyFeedbackId, copyFeedbackHighlighted, copyFeedbackHighlightUntil, logsExpanded, onLogsExpandedChange, liveStatus, activeTab = 'logs', onTabChange, insights, operationFeedback }: {
+export function ContainerInformation({ container, snapshot, copy, resourceSample }: {
+  container: Container; snapshot: ContainerList; copy: CopyText; resourceSample?: ResourceSample;
+}) {
+  const t = useI18n(componentMessages);
+  const { language } = usePreferences();
+  return <section className="container-information" aria-label={t('containerInfo')}>
+    <h3>{t('containerInfo')}</h3>
+    <ResourceUsage sample={resourceSample} />
+    <dl className="summary-facts">
+      <div><dt>{t('image')}</dt><dd>{container.image}</dd></div>
+      <div><dt>{t('containerId')}</dt><dd><code>{container.fullId}</code><button className="icon-button" aria-label={t('copyFullId')} onClick={() => void copy(container.fullId, 'fullId')}><Copy size={13} aria-hidden="true" /></button></dd></div>
+      <div><dt>{t('project')}</dt><dd>{container.composeProject || t('noProject')}</dd></div>
+      <div><dt>{t('service')}</dt><dd>{container.composeService || '—'}</dd></div>
+      {(!container.health || container.health === 'none') && <div><dt>{t('health')}</dt><dd><Health value={container.health} /></dd></div>}
+      <div><dt>{t('updated')}</dt><dd><time dateTime={snapshot.refreshedAt}>{formatTime(snapshot.refreshedAt, language)}</time></dd></div>
+    </dl>
+    <ResourceMetadata sample={resourceSample} />
+  </section>;
+}
+export function ContainerDetail({ container, snapshot, logs, logsError, loadingLogs, logRequestPending = false, refreshing, mutating, mutationBlocked, mutationAllowed, loadLogs, clearLogs, requestAction, copy, copyFeedback, copyFeedbackTone, copyFeedbackId, copyFeedbackHighlighted, copyFeedbackHighlightUntil, logsExpanded, onLogsExpandedChange, liveStatus, activeTab = 'logs', onTabChange, insights, operationFeedback, logContent, historyEnabled = false, logViewCache }: {
   container: Container; snapshot: ContainerList; logs: LogSnapshot | null; logsError: CoreError | null;
   loadingLogs: boolean; logRequestPending?: boolean; refreshing: boolean; mutating: boolean; mutationBlocked: boolean; mutationAllowed: boolean;
   loadLogs: () => void; clearLogs: () => void; requestAction: (action: Action, returnFocus?: HTMLElement) => void; copy: CopyText;
   liveStatus?: LiveLogStatus; copyFeedback?: string; copyFeedbackTone?: CopyFeedbackTone; copyFeedbackId?: number; copyFeedbackHighlighted?: boolean; copyFeedbackHighlightUntil?: number; logsExpanded?: boolean; onLogsExpandedChange?: (expanded: boolean) => void;
-  activeTab?: DetailTab; onTabChange?: (tab: DetailTab) => void; insights?: ReactNode; operationFeedback?: ReactNode;
+  historyEnabled?: boolean; logContent?: ReactNode; logViewCache?: StandaloneLogViewCache; activeTab?: DetailTab; onTabChange?: (tab: DetailTab) => void; insights?: ReactNode; operationFeedback?: ReactNode;
 }) {
   const t = useI18n(componentMessages);
   const tabId = useId();
-  const tabs = ['logs', 'diagnostics', 'connectivity'] as const;
-  const tabLabels = { logs: 'tabLogs', diagnostics: 'tabDiagnostics', connectivity: 'tabConnectivity' } as const;
+  const tabs: DetailTab[] = historyEnabled ? ['logs', 'diagnostics', 'connectivity', 'history'] : ['logs', 'diagnostics', 'connectivity'];
+  const tabLabels = { logs: 'tabLogs', diagnostics: 'tabDiagnostics', connectivity: 'tabConnectivity', history: 'tabHistory' } as const;
   function tabKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
     const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : null;
     if (next === null) return;
@@ -199,13 +205,13 @@ export function ContainerDetail({ container, snapshot, logs, logsError, loadingL
     event.currentTarget.focus();
     requestAction(action, event.currentTarget);
   }
-  return <div className="container-detail">
+  return <div className={`container-detail${logContent && activeTab === 'logs' ? ' project-log-detail' : ''}`}>
     <section className="recovery-panel detail-toolbar" aria-label={t('recovery')}>
       <div className="detail-tabs" role="tablist" aria-label={t('detailTabs')}>{tabs.map((tab, index) => <button key={tab} type="button" role="tab" id={`${tabId}-${tab}-tab`} aria-selected={activeTab === tab} aria-controls={`${tabId}-${tab}-panel`} tabIndex={activeTab === tab ? 0 : -1} onClick={() => onTabChange?.(tab)} onKeyDown={event => tabKeyDown(event, index)}>{t(tabLabels[tab])}</button>)}</div>
       <div className="recovery-actions"><button className="action-button action-start" disabled={actionsDisabled || !['created', 'exited'].includes(container.state)} onClick={() => requestAction('start')}><Play size={14} aria-hidden="true" />{t('start')}</button><button className="action-button action-stop" disabled={actionsDisabled || container.state !== 'running'} onClick={event => requestConfirmation(event, 'stop')}><Square size={13} aria-hidden="true" />{t('stop')}</button><button className="action-button action-restart" disabled={actionsDisabled || container.state !== 'running'} onClick={event => requestConfirmation(event, 'restart')}><RefreshCw size={14} aria-hidden="true" />{t('restart')}</button></div>
     </section>
-    <div className="detail-tab-panel" id={`${tabId}-logs-panel`} role="tabpanel" aria-labelledby={`${tabId}-logs-tab`} hidden={activeTab !== 'logs'}>
-      <LogPanel visible={activeTab === 'logs'} operationFeedback={operationFeedback} liveStatus={liveStatus} container={container} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} loadLogs={loadLogs} clearLogs={clearLogs} copy={copy} copyFeedback={copyFeedback} copyFeedbackTone={copyFeedbackTone} copyFeedbackId={copyFeedbackId} copyFeedbackHighlighted={copyFeedbackHighlighted} copyFeedbackHighlightUntil={copyFeedbackHighlightUntil} expanded={expanded} onExpandedChange={setExpanded} />
+    <div className={`detail-tab-panel${logContent ? ' project-log-panel' : ''}`} id={`${tabId}-logs-panel`} role="tabpanel" aria-labelledby={`${tabId}-logs-tab`} hidden={activeTab !== 'logs'}>
+      {logContent ?? <LogPanel viewCache={logViewCache} visible={activeTab === 'logs'} operationFeedback={operationFeedback} liveStatus={liveStatus} container={container} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} loadLogs={loadLogs} clearLogs={clearLogs} copy={copy} copyFeedback={copyFeedback} copyFeedbackTone={copyFeedbackTone} copyFeedbackId={copyFeedbackId} copyFeedbackHighlighted={copyFeedbackHighlighted} copyFeedbackHighlightUntil={copyFeedbackHighlightUntil} expanded={expanded} onExpandedChange={setExpanded} />}
     </div>
     {tabs.filter(tab => tab !== 'logs').map(tab => <div key={tab} className="detail-tab-panel" id={`${tabId}-${tab}-panel`} role="tabpanel" aria-labelledby={`${tabId}-${tab}-tab`} hidden={activeTab !== tab}>{activeTab === tab && insights}</div>)}
   </div>;

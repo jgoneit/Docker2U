@@ -5,7 +5,8 @@ mod process_tests;
 
 use docker::{
     Action, ApiError, BulkMutation, ContainerDetails, ContainerList, Core, Environment,
-    LogStreamChunk, LogStreamStarted, Logs, Mutation, StatsSnapshot,
+    LogStreamChunk, LogStreamStarted, Logs, Mutation, ObservationHold, ObservationRead,
+    ObservationScope, ProjectLogPage, ProjectLogQuery, StatsSnapshot,
 };
 use tauri::Manager;
 
@@ -114,6 +115,85 @@ async fn mutate_containers(
     worker(move || core.mutate_containers(&session_id, generation, &handles, action)).await
 }
 
+#[tauri::command]
+async fn configure_observation(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    scope: ObservationScope,
+) -> Result<ObservationRead, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.configure_observation(&session_id, scope)).await
+}
+#[tauri::command]
+async fn read_observation(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    after_sequence: Option<u64>,
+) -> Result<ObservationRead, ApiError> {
+    core.read_observation(&session_id, after_sequence.unwrap_or(0))
+}
+#[tauri::command]
+async fn hold_observation(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+) -> Result<ObservationHold, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.hold_observation(&session_id)).await
+}
+#[tauri::command]
+async fn release_observation_hold(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    hold_id: String,
+) -> Result<(), ApiError> {
+    core.release_observation_hold(&session_id, &hold_id)
+}
+
+#[tauri::command]
+async fn configure_project_logs(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    project: String,
+    handles: Option<Vec<String>>,
+) -> Result<ProjectLogPage, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.configure_project_logs(&session_id, &project, handles)).await
+}
+#[tauri::command]
+async fn query_project_logs(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    query: ProjectLogQuery,
+) -> Result<ProjectLogPage, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.query_project_logs(&session_id, &query)).await
+}
+#[tauri::command]
+async fn retry_project_logs(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+) -> Result<ProjectLogPage, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.retry_project_logs(&session_id)).await
+}
+#[tauri::command]
+async fn stop_project_logs(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+) -> Result<(), ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.stop_project_logs(&session_id)).await
+}
+
+#[tauri::command]
+async fn retry_observation_events(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+) -> Result<ObservationRead, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.retry_observation_events(&session_id)).await
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(Core::default())
@@ -127,7 +207,16 @@ pub fn run() {
             read_log_stream,
             stop_log_stream,
             mutate_container,
-            mutate_containers
+            mutate_containers,
+            configure_observation,
+            read_observation,
+            hold_observation,
+            release_observation_hold,
+            retry_observation_events,
+            configure_project_logs,
+            query_project_logs,
+            retry_project_logs,
+            stop_project_logs,
         ])
         .build(tauri::generate_context!())
         .expect("Docker2U could not start")
@@ -160,7 +249,16 @@ mod ipc_tests {
                 "allow-read-log-stream",
                 "allow-stop-log-stream",
                 "allow-mutate-container",
-                "allow-mutate-containers"
+                "allow-mutate-containers",
+                "allow-configure-observation",
+                "allow-read-observation",
+                "allow-hold-observation",
+                "allow-release-observation-hold",
+                "allow-retry-observation-events",
+                "allow-configure-project-logs",
+                "allow-query-project-logs",
+                "allow-retry-project-logs",
+                "allow-stop-project-logs"
             ])
         );
     }

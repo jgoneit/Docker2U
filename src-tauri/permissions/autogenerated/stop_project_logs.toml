@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-stop-project-logs"
+description = "Enables the stop_project_logs command without any pre-configured scope."
+commands.allow = ["stop_project_logs"]
+
+[[permission]]
+identifier = "deny-stop-project-logs"
+description = "Denies the stop_project_logs command without any pre-configured scope."
+commands.deny = ["stop_project_logs"]

@@ -6,7 +6,7 @@ import App from './App';
 import { api } from './api';
 import type { Container, ContainerList, Environment, RecentLogs } from './api';
 
-vi.mock('./api', async importOriginal => ({ ...await importOriginal<typeof import('./api')>(), api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), startLogStream: vi.fn(), readLogStream: vi.fn(), stopLogStream: vi.fn(), getContainerStats: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() } }));
+vi.mock('./api', async importOriginal => ({ ...await importOriginal<typeof import('./api')>(), api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), startLogStream: vi.fn(), readLogStream: vi.fn(), stopLogStream: vi.fn(), getContainerStats: vi.fn(), getContainerDetails: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() } }));
 const mock = vi.mocked(api);
 const environment: Environment = { status: 'ready', sessionId: 'session-1', contextName: 'local', endpoint: 'unix:///local.sock', dockerPath: '/local/docker', dockerConfigPath: '/local/config', clientVersion: '29', serverVersion: '29', apiVersion: '1.54', engineId: 'engine-1', osType: 'linux', architecture: 'arm64', mutationAllowed: true, error: null, diagnostics: [] };
 const backend: Container = { handle: 'backend', fullId: 'a'.repeat(12) + '0123456789abcdef'.repeat(3) + 'ffab', shortId: 'a'.repeat(12), name: 'backend', image: 'local/api:1', state: 'running', health: 'healthy', ports: ['127.0.0.1:8080->8080/tcp'], composeProject: null, composeService: null, createdAt: '2026-09-06T00:00:00Z' };
@@ -18,6 +18,7 @@ async function connected() { await screen.findByText('raw logs'); }
 function expectConnection(text: string) { expect(within(screen.getByRole('region', { name: '연결 환경' })).getByRole('status')).toHaveTextContent(text); }
 beforeEach(() => {
   vi.resetAllMocks();
+  mock.getContainerDetails.mockReturnValue(new Promise(() => {}));
   installSnapshotStreams(mock);
   localStorage.setItem('docker2u.preferences.v1', JSON.stringify({ theme: 'dark', language: 'ko' }));
   let generation = 0;
@@ -71,7 +72,7 @@ describe('connection and visible selection clarity', () => {
     expectConnection('로컬 · 연결됨');
   });
 
-  it('clears a hidden selection and late logs, preserves search focus, and never reselects when clearing search or refreshing', async () => {
+  it('retains hidden selection and in-flight logs while search, refresh and reconnect preserve their own focus', async () => {
     const user = userEvent.setup();
     const pending = deferred<RecentLogs>();
     mock.getRecentLogs.mockReturnValueOnce(pending.promise);
@@ -80,18 +81,21 @@ describe('connection and visible selection clarity', () => {
     const search = screen.getByRole('textbox', { name: '컨테이너 검색' });
     await user.type(search, 'redis');
     expect(search).toHaveFocus();
-    expect(screen.queryByRole('region', { name: '서비스 복구' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'redis 상세' })).not.toHaveAttribute('aria-current');
-    await act(async () => pending.resolve(log('session-1', 'backend-1', 'late discarded logs')));
-    expect(screen.queryByText('late discarded logs')).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '서비스 복구' })).toBeVisible();
+    expect(screen.getByRole('treeitem', { name: 'redis 상세' })).toHaveAttribute('aria-selected', 'false');
+    await act(async () => pending.resolve(log('session-1', 'backend-1', 'accepted hidden-target logs')));
+    expect(screen.getByLabelText('최근 로그 내용')).toHaveTextContent('accepted hidden-target logs');
+    expect(screen.getByText('현재 대상이 검색 또는 상태 필터에 가려져 있습니다.')).toBeVisible();
+    expect(mock.getRecentLogs).toHaveBeenCalledTimes(1);
     await user.clear(search);
+    expect(screen.getByRole('treeitem', { name: 'backend 상세' })).toHaveAttribute('aria-selected', 'true');
     await user.click(screen.getByRole('button', { name: '새로고침' }));
     await waitFor(() => expect(screen.getByRole('button', { name: '새로고침' })).toBeEnabled());
-    expect(screen.queryByRole('region', { name: '서비스 복구' })).not.toBeInTheDocument();
-    expect(mock.getRecentLogs).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('region', { name: '서비스 복구' })).toBeVisible();
+    expect(mock.getRecentLogs).toHaveBeenCalledTimes(2);
     await user.click(screen.getByRole('button', { name: '다시 연결' }));
     await connected();
-    expect(screen.getByRole('button', { name: 'backend 상세' })).toHaveAttribute('aria-current', 'true');
+    expect(screen.getByRole('treeitem', { name: 'backend 상세' })).toHaveAttribute('aria-selected', 'true');
   });
 
   it('uses the current search when a refresh resolves and preserves a still-visible selection', async () => {
@@ -103,26 +107,27 @@ describe('connection and visible selection clarity', () => {
     await user.click(screen.getByRole('button', { name: '새로고침' }));
     const search = screen.getByRole('textbox', { name: '컨테이너 검색' });
     await user.type(search, 'backend');
-    expect(screen.getByRole('button', { name: 'backend 상세' })).toHaveAttribute('aria-current', 'true');
+    expect(screen.getByRole('treeitem', { name: 'backend 상세' })).toHaveAttribute('aria-selected', 'true');
     await act(async () => pending.resolve(list(2, [{ ...backend, name: 'renamed' }, redis])));
     expect(search).toHaveFocus();
-    expect(screen.queryByRole('region', { name: '서비스 복구' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '서비스 복구' })).toBeVisible();
     expect(screen.getByText('검색 결과가 없습니다.')).toBeVisible();
-    expect(mock.getRecentLogs).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('현재 대상이 검색 또는 상태 필터에 가려져 있습니다.')).toBeVisible();
+    expect(mock.getRecentLogs).toHaveBeenCalledTimes(2);
   });
 
-  it('preserves a visible selection and current filter focus, then clears selection when excluded', async () => {
+  it('preserves the selected details and filter focus when the current target becomes hidden', async () => {
     const user = userEvent.setup();
     render(<App />);
     await connected();
     const running = screen.getByRole('button', { name: '실행 중' });
     await user.click(running);
     expect(running).toHaveFocus();
-    expect(screen.getByRole('button', { name: 'backend 상세' })).toHaveAttribute('aria-current', 'true');
+    expect(screen.getByRole('treeitem', { name: 'backend 상세' })).toHaveAttribute('aria-selected', 'true');
     const stopped = within(screen.getByLabelText('컨테이너 필터')).getByRole('button', { name: '중지' });
     await user.click(stopped);
     expect(stopped).toHaveFocus();
-    expect(screen.queryByRole('region', { name: '서비스 복구' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '서비스 복구' })).toBeVisible();
   });
 
   it('clears only the container query, preserves the state filter and visible selection, and restores search focus', async () => {
@@ -138,20 +143,20 @@ describe('connection and visible selection clarity', () => {
     expect(search).toHaveValue('');
     expect(search).toHaveFocus();
     expect(running).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByRole('button', { name: 'backend 상세' })).toHaveAttribute('aria-current', 'true');
-    expect(screen.queryByRole('button', { name: 'redis 상세' })).not.toBeInTheDocument();
+    expect(screen.getByRole('treeitem', { name: 'backend 상세' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('treeitem', { name: 'redis 상세' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '컨테이너 검색 지우기' })).not.toBeInTheDocument();
     expect(Object.entries(mock).filter(([name]) => name !== 'getContainerStats' && name !== 'readLogStream').map(([, method]) => method.mock.calls.length)).toEqual(before);
   });
 
-  it('does not resurrect a hidden selection when the container query clear button restores visible rows', async () => {
+  it('restores the selected row after clearing a query without restarting its retained log view', async () => {
     const user = userEvent.setup();
     render(<App />);
     await connected();
     await user.click(screen.getByRole('button', { name: '실행 중' }));
     const search = screen.getByRole('textbox', { name: '컨테이너 검색' });
     await user.type(search, 'missing-container');
-    expect(screen.queryByRole('region', { name: '서비스 복구' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '서비스 복구' })).toBeVisible();
     const before = Object.entries(mock).filter(([name]) => name !== 'getContainerStats' && name !== 'readLogStream').map(([, method]) => method.mock.calls.length);
     const clear = screen.getByRole('button', { name: '컨테이너 검색 지우기' });
     clear.focus();
@@ -159,9 +164,10 @@ describe('connection and visible selection clarity', () => {
     expect(search).toHaveFocus();
     expect(search).toHaveValue('');
     expect(screen.getByRole('button', { name: '실행 중' })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByRole('button', { name: 'backend 상세' })).not.toHaveAttribute('aria-current');
-    expect(screen.queryByRole('button', { name: 'redis 상세' })).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('최근 로그 내용')).not.toBeInTheDocument();
+    expect(screen.getByRole('treeitem', { name: 'backend 상세' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('treeitem', { name: 'redis 상세' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('최근 로그 내용')).toHaveTextContent('raw logs');
+    expect(screen.queryByText('현재 대상이 검색 또는 상태 필터에 가려져 있습니다.')).not.toBeInTheDocument();
     expect(Object.entries(mock).filter(([name]) => name !== 'getContainerStats' && name !== 'readLogStream').map(([, method]) => method.mock.calls.length)).toEqual(before);
   });
 
@@ -170,8 +176,8 @@ describe('connection and visible selection clarity', () => {
     render(<App />);
     await connected();
     await user.type(screen.getByRole('textbox', { name: '컨테이너 검색' }), ` ${query} `);
-    expect(screen.getByRole('button', { name: 'backend 상세' })).toHaveAttribute('aria-current', 'true');
-    expect(screen.queryByRole('button', { name: 'redis 상세' })).not.toBeInTheDocument();
+    expect(screen.getByRole('treeitem', { name: 'backend 상세' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('treeitem', { name: 'redis 상세' })).not.toBeInTheDocument();
   });
 
   it.each([true, false])('restores focus only when the refreshed list removes its focused row (remaining=%s)', async remaining => {
@@ -181,9 +187,9 @@ describe('connection and visible selection clarity', () => {
     const pending = deferred<ContainerList>();
     mock.listContainers.mockReturnValueOnce(pending.promise);
     await user.click(screen.getByRole('button', { name: '새로고침' }));
-    screen.getByRole('button', { name: 'backend 상세' }).focus();
+    screen.getByRole('treeitem', { name: 'backend 상세' }).focus();
     await act(async () => pending.resolve(list(2, remaining ? [redis] : [])));
-    expect(remaining ? screen.getByRole('button', { name: 'redis 상세' }) : screen.getByRole('textbox', { name: '컨테이너 검색' })).toHaveFocus();
+    expect(remaining ? screen.getByRole('treeitem', { name: '프로젝트 없음' }) : screen.getByRole('textbox', { name: '컨테이너 검색' })).toHaveFocus();
     expect(screen.queryByRole('region', { name: '서비스 복구' })).not.toBeInTheDocument();
   });
 
@@ -199,9 +205,9 @@ describe('connection and visible selection clarity', () => {
       vi.setSystemTime(new Date('2026-09-06T01:02:03Z'));
       await act(async () => pending.resolve(log('session-1', 'backend-1')));
       expect(document.querySelector('.log-fetched-at time')).toHaveAttribute('datetime', '2026-09-06T01:02:03.000Z');
-      expect(screen.getByText(/목록 갱신 시각/)).not.toBeVisible();
-    fireEvent.click(screen.getByText('컨테이너 정보'));
-    expect(screen.getByText(/목록 갱신 시각/)).toBeVisible();
+      expect(screen.queryByText(/목록 갱신 시각/)).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('tab', { name: '접속 정보' }));
+      expect(screen.getByText(/목록 갱신 시각/)).toBeVisible();
     } finally { vi.useRealTimers(); }
   });
 
@@ -211,7 +217,7 @@ describe('connection and visible selection clarity', () => {
     await connected();
     await user.click(within(screen.getByRole('region', { name: '서비스 복구' })).getByRole('button', { name: '중지' }));
     const confirm = screen.getByRole<HTMLButtonElement>('button', { name: '중지 확인' });
-    const other = screen.getByRole<HTMLButtonElement>('button', { name: 'redis 상세' });
+    const other = screen.getByRole<HTMLDivElement>('treeitem', { name: 'redis 상세' });
     act(() => { fireEvent.click(other); confirm.click(); });
     expect(mock.mutateContainer).not.toHaveBeenCalled();
   });
@@ -242,7 +248,7 @@ describe('logs when a selected container becomes unreadable', () => {
     expect(screen.getByRole('button', { name: '로그 조회' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '표시된 로그 복사' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '로그 화면 비우기' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'backend 상세' })).toHaveAttribute('aria-current', 'true');
+    expect(screen.getByRole('treeitem', { name: 'backend 상세' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('searchbox', { name: '로그 검색' })).toBe(search);
     expect(search).toHaveValue('raw');
     expect(screen.getByRole('button', { name: '로그 검색 닫기' })).toHaveAttribute('aria-expanded', 'true');
@@ -287,7 +293,7 @@ describe('logs when a selected container becomes unreadable', () => {
     expect(await screen.findByText('1 / 2건')).toBeVisible();
     expect(screen.getByLabelText('최근 로그 내용').querySelector('mark')).toHaveTextContent('RAW');
     expect(screen.getByRole('button', { name: '표시된 로그 복사' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'backend 상세' })).toHaveAttribute('aria-current', 'true');
+    expect(screen.getByRole('treeitem', { name: 'backend 상세' })).toHaveAttribute('aria-selected', 'true');
     expect(mock.getRecentLogs).toHaveBeenCalledTimes(2);
     expect(mock.getRecentLogs).toHaveBeenLastCalledWith('session-1', 'backend-3');
   });
@@ -371,7 +377,7 @@ describe('logs when a selected container becomes unreadable', () => {
     expect(document.querySelector('.log-fetched-at time')).toHaveAttribute('datetime', fetchedAt);
     expect(screen.getByText(/로그 앞부분이 잘렸습니다/)).toBeVisible();
     expect(screen.getByRole('button', { name: '표시된 로그 복사' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'backend 상세' })).toHaveAttribute('aria-current', 'true');
+    expect(screen.getByRole('treeitem', { name: 'backend 상세' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('searchbox', { name: '로그 검색' })).toHaveValue('raw');
     expect(screen.getByText('1 / 1건')).toBeVisible();
     expect(mock.getRecentLogs).toHaveBeenCalledTimes(1);

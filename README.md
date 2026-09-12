@@ -47,6 +47,7 @@ Computer Use 권한 허용 후 Finder에서 재빌드한 앱을 실행해 실제
 
 - [Docker2U 개발 정의서](docs/DEVELOPMENT-DEFINITION.md)
 - [macOS 로컬 알파 구현·검증 기준](docs/MACOS-ALPHA.md)
+- [프로젝트 통합 로그·자원 및 상태 이력](docs/PROJECT-OBSERVATION.md)
 
 개발 정의서는 다음 내용을 하나의 기준으로 관리한다.
 

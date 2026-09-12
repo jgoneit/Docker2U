@@ -4,6 +4,7 @@ import type { Action, BulkMutationResult, Container, ContainerList, CoreError, E
 // Do not mount App until every API method has been replaced with an in-memory fake.
 if (import.meta.env.DEV) {
   const scenarios = {
+    observation: 'Project observation — combined logs and resource history',
     live: 'Live — continuous bilingual output',
     normal: 'Normal — 300 bilingual log lines',
     'dense-logs': 'Dense 2 MiB logs — exact search stress case',
@@ -260,6 +261,7 @@ if (import.meta.env.DEV) {
     const original = fixtureApi[name] as (...args: unknown[]) => unknown;
     Object.assign(api, { [name]: (...args: unknown[]) => { ++calls[name]; return original(...args); } });
   }
+  if (scenario === 'observation') { const { installObservationFixture } = await import('./observationFixture'); installObservationFixture(); }
   const { default: App } = await import('../App');
   await import('../styles.css');
   createRoot(root).render(<StrictMode><App /></StrictMode>);

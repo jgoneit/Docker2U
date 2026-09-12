@@ -32,7 +32,7 @@ export const componentMessages = {
   issueStage: { ko: '발생 단계', en: 'Stage' }, issueOrigin: { ko: '출처', en: 'Origin' }, issueCode: { ko: '오류 코드', en: 'Error code' }, issueTime: { ko: '문제 확인 시각', en: 'Issue recorded at' }, noErrorCode: { ko: '코드 없음', en: 'No error code' },
   stageStats: { ko: '자원 조회', en: 'Resource request' },
   stageDetails: { ko: '컨테이너 상세 조회', en: 'Container details request' },
-  tabLogs: { ko: '로그', en: 'Logs' }, tabDiagnostics: { ko: '상태 진단', en: 'Diagnostics' }, tabConnectivity: { ko: '접속 정보', en: 'Connections' },
+  tabHistory: { ko: '이력', en: 'History' }, tabLogs: { ko: '로그', en: 'Logs' }, tabDiagnostics: { ko: '상태 진단', en: 'Diagnostics' }, tabConnectivity: { ko: '접속 정보', en: 'Connections' },
   detailTabs: { ko: '컨테이너 상세 보기', en: 'Container detail views' },
   viewConnectivity: { ko: '접속 정보에서 보기', en: 'View connections' },
   stageConnect: { ko: '연결 확인', en: 'Connection check' }, stageList: { ko: '목록 조회', en: 'List request' }, stageLogs: { ko: '로그 조회', en: 'Log request' }, stageSingleAction: { ko: '단일 작업', en: 'Single action' }, stageBulkAction: { ko: '일괄 작업', en: 'Bulk action' },

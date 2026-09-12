@@ -1,4 +1,4 @@
-import { Copy, RefreshCw } from 'lucide-react';
+import { ChevronDown, Copy, RefreshCw } from 'lucide-react';
 import { useState } from 'react';
 import type { ContainerDetails, ContainerPort } from './containerDetailsTypes';
 import type { ContainerDetailsState } from './useContainerDetails';
@@ -46,22 +46,23 @@ export function ContainerDiagnostics({ details, copy }: { details: ContainerDeta
   const data = details.diagnostics;
   const stateKey = (['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead'] as const).find(value => value === data.state) ?? 'unknown';
   const stateText = translate(componentMessages, language, stateKey);
+  const terminated = data.state === 'exited' || data.state === 'dead';
   const healthKey = data.health?.status === 'healthy' ? 'healthy' : data.health?.status === 'unhealthy' ? 'unhealthy' : data.health?.status === 'starting' ? 'healthStarting' : 'healthUnknown';
   const summary = data.oomKilled === true ? t('summaryOom', { state: stateText })
     : data.healthAvailable && data.health?.status === 'unhealthy' ? t('summaryHealth', { state: stateText })
-    : (data.state === 'exited' || data.state === 'dead') && data.exitCode !== null ? t('summaryExit', { state: stateText, code: data.exitCode })
+    : terminated && data.exitCode !== null ? t('summaryExit', { state: stateText, code: data.exitCode })
     : t('summaryState', { state: stateText });
   return <div className="insights-body">
     <p className="insights-summary">{summary}</p>
     <dl className="insights-facts">
       <div><dt>{t('state')}</dt><dd>{translate(componentMessages, language, stateKey)}</dd></div>
-      <div><dt>{t('exitCode')}</dt><dd>{data.exitCode ?? t('unavailable')}</dd></div>
+      {terminated && <div><dt>{t('exitCode')}</dt><dd>{data.exitCode ?? t('unavailable')}</dd></div>}
       <div><dt>{t('started')}</dt><dd><ObservationTime value={data.startedAt} /></dd></div>
-      <div><dt>{t('finished')}</dt><dd><ObservationTime value={data.finishedAt} /></dd></div>
+      {terminated && <div><dt>{t('finished')}</dt><dd><ObservationTime value={data.finishedAt} /></dd></div>}
       <div><dt>{t('restarts')}</dt><dd>{data.restartCount ?? t('unavailable')}</dd></div>
-      <div><dt>{t('oom')}</dt><dd className={data.oomKilled === true ? 'insights-warning-text' : undefined}>{data.oomKilled === true ? t('oomTrue') : data.oomKilled === false ? t('oomFalse') : t('unavailable')}</dd></div>
+      {data.oomKilled === true && <div><dt>{t('oom')}</dt><dd className="insights-warning-text">{t('oomTrue')}</dd></div>}
     </dl>
-    {data.exitCode === 137 && data.oomKilled !== true && <p className="insights-hint">{t('exit137')}</p>}
+    {terminated && data.exitCode === 137 && data.oomKilled !== true && <p className="insights-hint">{t('exit137')}</p>}
     <section className="insights-section" aria-label={t('health')}><h3>{t('health')}</h3>
       {!data.healthAvailable ? <p className="insights-hint">{t('healthUnavailable')}</p>
         : data.healthConfigured === false ? <p className="insights-hint">{t('healthNotConfigured')}</p>
@@ -135,9 +136,12 @@ export function ContainerConnectivity({ details, copy }: { details: ContainerDet
     <section className="insights-section" aria-label={t('networks')}><h3>{t('networks')}</h3>
       <p className="insights-hint">{t('aliasHint')}</p>
       {data.networksAvailable && data.networks.length > 0 && ordinaryMode && <label className="insights-port-choice">{t('internalPort')}
-        <select value={selectedPort ? portKey : ''} onChange={event => setPortKey(event.target.value)}><option value="">{t('addressOnly')}</option>
-          {portOptions.map((port, index) => <option key={index} value={`${port.containerPort}/${port.protocol}`}>{port.containerPort}/{port.protocol.toUpperCase()}</option>)}
-        </select>
+        <span className="setting-select-control insights-port-control">
+          <select value={selectedPort ? portKey : ''} onChange={event => setPortKey(event.target.value)}><option value="">{t('addressOnly')}</option>
+            {portOptions.map((port, index) => <option key={index} value={`${port.containerPort}/${port.protocol}`}>{port.containerPort}/{port.protocol.toUpperCase()}</option>)}
+          </select>
+          <ChevronDown size={14} aria-hidden="true" />
+        </span>
       </label>}
       {selectedPort && <p className="insights-hint">{t('internalCandidate')} · {selectedPort.protocol.toUpperCase()}</p>}
       {!data.networksAvailable ? <p className="insights-hint">{t('networksUnavailable')}</p> : !data.networks.length ? <p className="insights-hint">{t('noNetworks')}</p> : <ul className="insights-network-list">{data.networks.map((network, index) => <li key={index}>

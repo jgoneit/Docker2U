@@ -22,7 +22,6 @@ export const containerInsightsMessages = {
   restarts: { ko: '재시작 횟수', en: 'Restart count' },
   oom: { ko: '메모리 부족 종료', en: 'OOM termination' },
   oomTrue: { ko: 'Engine에서 OOM 종료를 보고함', en: 'Engine reported an OOM termination' },
-  oomFalse: { ko: 'Engine의 OOM 종료 보고 없음', en: 'No OOM termination reported by Engine' },
   exit137: { ko: '종료 코드 137만으로 메모리 부족을 확정할 수 없습니다.', en: 'Exit code 137 alone does not establish an out-of-memory termination.' },
   health: { ko: '상태 검사', en: 'Health check' },
   healthUnavailable: { ko: '상태 검사 정보를 조회할 수 없습니다.', en: 'Health check information is unavailable.' },

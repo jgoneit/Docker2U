@@ -1,14 +1,15 @@
 #!/usr/bin/python3
 """Own an isolated fake Docker socket and a directly launched validation app."""
 import argparse
+from datetime import datetime
 import hashlib
+import importlib.util
 import json
 import math
 import os
 from pathlib import Path
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import time
@@ -17,6 +18,13 @@ import uuid
 REPO = Path(__file__).resolve().parent.parent
 STATE = REPO / ".cache/native-smoke"
 ACTIVE = STATE / "active.json"
+
+
+def engine_listener(root):
+    spec = importlib.util.spec_from_file_location("native_engine_http", REPO / "tests/native-smoke/engine_http.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.EngineServer(root)
 
 
 def write_json(path, value):
@@ -78,19 +86,83 @@ def archive_trace(manifest):
     expected = {("worker", name) for name in ["search", "connection-clear", "socket", "recovery", *INSIGHT_STEPS]} | {(mode, "search") for mode in ["constructor-fail", "never-ready"]}
     report = {**manifest, "cliEvents": len(events), "rejectedCommands": rejected,
               "dockerExecution": "isolated read-only Python fixture; no real Docker CLI is discovered or invoked",
-              "uiReports": ui_reports, "requiredCoverageComplete": expected <= coverage}
+              "uiReports": ui_reports, "requiredCoverageComplete": expected <= coverage,
+              "observationCoverageComplete": {("worker", name) for name in OBSERVATION_STEPS} <= coverage}
     write_json(evidence / "report.json", report)
     return report
 
 
 INSIGHT_STEPS = {
-    "project-stats": ["Compose grouping and real stats visible", "standalone project filter verified"],
+    "project-stats": ["Compose grouping and real stats visible", "standalone tree navigation verified"],
     "live-display": ["paused live display", "paused display while real stdout and stderr arrived", "resume caught up with ring loss notice", "search display frozen", "search froze and resumed without restarting the stream"],
     "pinned-refresh": ["requested inventory refresh with live stream", "inventory refreshed with the same live stream"],
     "clear-cancel": ["requested live Clear", "Clear stopped polling and remained cleared after Refresh"],
     "pane-resize": ["captured live pane before keyboard resize", "resized live pane with keyboard while receiving", "restored live pane without replacing the stream"],
     "detail-tabs": ["captured log view before detail tabs", "native diagnostics and bounded health output verified", "native connection candidates verified", "restored logs after all three tabs"],
 }
+
+OBSERVATION_STEPS = {
+    "observation-baseline": ["captured native project observation baseline"],
+    "observation-restore": ["verified native background collection and restore"],
+}
+
+
+def validate_observation(probe, by_name, attempt, steps, events, manifest):
+    expected_binding = {key: manifest[key] for key in ("runId", "binarySha256", "startedAtMs")}
+    ids = {format(value, "064x") for value in (1, 2)}
+    baseline_rows = [row for row in steps if row.get("name") == OBSERVATION_STEPS["observation-baseline"][0]
+                     and row["timeMs"] <= attempt[-1]["timeMs"]]
+    if not baseline_rows:
+        raise ValueError("Observation restore lacks a native baseline")
+    baseline_row = baseline_rows[-1]
+    baseline = baseline_row.get("detail", {})
+    if any(type(baseline.get(key)) is not int or baseline[key] < 1 for key in ("at", "generation", "sequence")):
+        raise ValueError("Observation baseline lacks positive Core sequence and generation")
+    if baseline.get("binding") != expected_binding or baseline.get("engineId") != "native-smoke-engine" or baseline.get("contextName") != "native-smoke-local":
+        raise ValueError("Observation baseline is not bound to the owned Engine and launch")
+    if manifest.get("fixtureRoot") and baseline.get("endpoint") != "unix://" + manifest["fixtureRoot"] + "/engine.sock":
+        raise ValueError("Observation baseline uses a foreign fixture socket")
+    if not isinstance(baseline.get("sessionId"), str) or not baseline["sessionId"] or set(baseline.get("fullIds", [])) != ids or baseline.get("sources") != 2:
+        raise ValueError("Observation baseline lacks the exact native sources and session")
+    if not {"tty", "stdout"} <= set(baseline.get("pipes", [])) or baseline.get("eventStatus") != "following" or baseline.get("resourcePoints", 0) < 1:
+        raise ValueError("Observation baseline lacks real TTY, multiplex, resources and events")
+    if not manifest["startedAtMs"] <= baseline.get("at", 0) <= baseline_row["timeMs"]:
+        raise ValueError("Observation baseline timestamp lies outside the launch")
+    for full_id in ids:
+        if not any(row.get("phase") == "api-log-binding" and row.get("fullId") == full_id and row.get("binding") == expected_binding
+                   and manifest["startedAtMs"] <= row.get("timeMs", 0) <= baseline["at"] for row in events):
+            raise ValueError("Observation launch binding was not emitted by both owned API streams")
+    if probe == "observation-baseline":
+        return
+    value = by_name[OBSERVATION_STEPS[probe][0]].get("detail", {})
+    if any(type(value.get(key)) is not int for key in ("hiddenAt", "restoredAt", "beforeGeneration", "afterGeneration", "beforeLogSequence", "afterLogSequence", "displayedInventoryAt")):
+        raise ValueError("Observation restore lacks numeric Core and visibility timestamps")
+    hidden, restored = value.get("hiddenAt", 0), value.get("restoredAt", 0)
+    if not baseline["at"] <= hidden < restored <= attempt[-1]["timeMs"] or restored - hidden < 10_000 or attempt[-1]["timeMs"] - baseline["at"] < 15_000:
+        raise ValueError("Native observation hidden interval is missing or too short")
+    if value.get("sessionId") != baseline["sessionId"] or value.get("beforeGeneration") != baseline.get("generation") or value.get("beforeLogSequence") != baseline.get("sequence"):
+        raise ValueError("Observation restore replaced its session or baseline")
+    if value.get("afterGeneration", 0) <= value["beforeGeneration"] or value.get("afterLogSequence", 0) <= value["beforeLogSequence"]:
+        raise ValueError("Background observations did not advance")
+    if not {("hidden", hidden), ("visible", restored)} <= {(row.get("state"), row.get("at")) for row in value.get("visibility", [])}:
+        raise ValueError("Native WebView visibility evidence is missing")
+    for key, count, minimum in [("resourceReceipts", "hiddenResourcePoints", 2), ("logReceipts", "hiddenLogRows", 2), ("eventReceipts", "hiddenEvents", 1)]:
+        rows = value.get(key, [])
+        if len(rows) < minimum or value.get(count) != len(rows) or any(row.get("fullId") not in (ids | {format(3, "064x")} if key == "resourceReceipts" else ids) or not hidden + 1000 < row.get("at", 0) < restored - 1000 for row in rows):
+            raise ValueError("Core observation receipts lie outside the hidden interval: " + key)
+    if value.get("renderedRows", 0) < 1 or not hidden < value.get("displayedInventoryAt", 0) <= attempt[-1]["timeMs"]:
+        raise ValueError("Restored native screen has not applied background data")
+    if type(value.get("visibleLogRows")) is not int or not 1 <= value["visibleLogRows"] <= value["renderedRows"]:
+        raise ValueError("Restored native log rows are not visible inside the viewport")
+    if not successful_command(events, ["container", "ls"], hidden, restored) or not successful_command(events, ["container", "stats"], hidden, restored):
+        raise ValueError("Hidden interval lacks successful native inventory and stats collection")
+    if not any(row.get("phase") == "stats-payload" and set(row.get("fullIds", [])) == ids | {format(3, "064x")} and hidden < row.get("timeMs", 0) < restored for row in events):
+        raise ValueError("Native hidden stats payload does not match the navigation inventory")
+    for phase, receipts in [("api-log-output", value["logReceipts"]), ("api-health-event", value["eventReceipts"])]:
+        if not any(row.get("phase") == phase and hidden < row.get("timeMs", 0) < restored
+                   and hidden < row.get("producedAtMs", 0) <= row["timeMs"]
+                   and any(receipt["fullId"] == row.get("fullId") and row["producedAtMs"] <= receipt["at"] for receipt in receipts) for row in events):
+            raise ValueError("Hidden Core receipts lack owned API output: " + phase)
 
 
 def successful_command(events, words, begin, end):
@@ -101,17 +173,62 @@ def successful_command(events, words, begin, end):
                for row in events)
 
 
+def validate_recovery(by_name, events):
+    requested = by_name["requested warning-preserving Refresh"]
+    rejected = by_name["warning retained after NeedsValidation rejected Refresh without new logs"]
+    reconnect = by_name["requested explicit Reconnect"]
+    restored = by_name["explicit reconnect restored the valid session"]
+    before, blocked, retry, fresh = (row.get("detail", {}) for row in (requested, rejected, reconnect, restored))
+    if not requested["timeMs"] <= rejected["timeMs"] <= reconnect["timeMs"] <= restored["timeMs"]:
+        raise ValueError("Recovery evidence is not ordered Refresh then Reconnect")
+    session = before.get("sessionId")
+    if not isinstance(session, str) or not session or blocked.get("sessionId") != session or retry.get("sessionId") != session:
+        raise ValueError("Blocked Refresh is not bound to the invalid native session")
+    if blocked.get("errorCode") != "NeedsValidation" or blocked.get("renderedErrorCode") != "NeedsValidation" or type(blocked.get("request")) is not int or blocked["request"] < 1:
+        raise ValueError("Blocked Refresh lacks an actual NeedsValidation IPC rejection and UI error")
+    if any(type(blocked.get(key)) is not int for key in ("requestedAtMs", "repliedAtMs")) or not requested["timeMs"] <= blocked["requestedAtMs"] <= blocked["repliedAtMs"] <= rejected["timeMs"]:
+        raise ValueError("NeedsValidation IPC reply does not belong to this Refresh attempt")
+    if any(blocked.get(key) is not True for key in ("inventoryPreserved", "warningVisible", "recoveryBlocked")) or not before.get("listCheckedAt") or blocked.get("listCheckedAt") != before["listCheckedAt"]:
+        raise ValueError("Blocked Refresh did not retain the inventory, warning, and disabled recovery")
+    for key in ("starts", "startRequests"):
+        if type(before.get(key)) is not int or before[key] < 0 or blocked.get(key) != before[key] or retry.get(key) != before[key]:
+            raise ValueError("Blocked Refresh requested or opened logs before Reconnect")
+    if any(requested["timeMs"] <= row.get("timeMs", 0) < reconnect["timeMs"] and
+           (row.get("phase") in ("follow-ready", "api-log-binding") or
+            (row.get("phase") == "start" and row.get("args", [])[2:4] in (["container", "ls"], ["container", "logs"]))) for row in events):
+        raise ValueError("Blocked Refresh dispatched native inventory or logs before Reconnect")
+    fresh_session = fresh.get("sessionId")
+    if not isinstance(fresh_session, str) or not fresh_session or fresh_session == session or fresh.get("responseSessionId") != fresh_session or fresh.get("errorCode") is not None:
+        raise ValueError("Reconnect lacks inventory from a fresh native session")
+    if type(fresh.get("request")) is not int or fresh["request"] <= blocked["request"] or any(type(fresh.get(key)) is not int for key in ("requestedAtMs", "repliedAtMs")) or not reconnect["timeMs"] <= fresh["requestedAtMs"] <= fresh["repliedAtMs"] <= restored["timeMs"]:
+        raise ValueError("Fresh inventory IPC reply does not belong to explicit Reconnect")
+    if type(fresh.get("starts")) is not int or fresh["starts"] <= before["starts"] or not fresh.get("streamId") or fresh.get("fullId") != format(3, "064x") or fresh.get("warningVisible") is not False or fresh.get("recoveryAvailable") is not True:
+        raise ValueError("Reconnect did not restore fresh standalone logs and recovery availability")
+    if not successful_command(events, ["container", "ls"], reconnect["timeMs"], restored["timeMs"]):
+        raise ValueError("Reconnect lacks successful native inventory")
+    if not any(row.get("phase") == "follow-ready" and row.get("fullId") == fresh["fullId"] and reconnect["timeMs"] <= row.get("timeMs", 0) <= restored["timeMs"] for row in events):
+        raise ValueError("Reconnect lacks a fresh native follow process")
+
+
 def validate_insights(probe, by_name, attempt, events, launch_start):
     begin, end = attempt[0]["timeMs"], attempt[-1]["timeMs"]
     if probe == "project-stats":
         sample = by_name["Compose grouping and real stats visible"]
-        expected_ids = {format(number, "064x") for number in [1, 2]}
-        if sample.get("detail") != {"projectRows": 2, "cpuPercent": 125.5, "memory": "64MiB / 2GiB"} or by_name["standalone project filter verified"].get("detail") != {"standaloneRows": 1}:
+        expected_ids = {format(number, "064x") for number in [1, 2, 3]}
+        value = sample.get("detail", {})
+        expected = {"projectRows": 2, "observedSources": 3, "cpuPercent": 125.5, "memoryUsageBytes": 67108864, "memoryLimitBytes": 2147483648}
+        if any(value.get(key) != expected[key] for key in expected) or set(value.get("fullIds", [])) != expected_ids or not isinstance(value.get("sessionId"), str) or not value["sessionId"] or type(value.get("observationSequence")) is not int or value["observationSequence"] < 1:
             raise ValueError("Project/stat UI sample does not match the fixture")
+        try:
+            sampled_at = datetime.fromisoformat(value["sampledAt"].replace("Z", "+00:00")).timestamp() * 1000
+        except (KeyError, ValueError, TypeError, AttributeError):
+            raise ValueError("Project/stat sample lacks a Core receipt time")
+        if not begin <= sampled_at <= sample["timeMs"] or by_name["standalone tree navigation verified"].get("detail") != {"standaloneRows": 1, "inventoryRows": 3, "fullId": format(3, "064x")}:
+            raise ValueError("Project/stat UI sample or tree navigation does not match the fixture")
         if not successful_command(events, ["container", "inspect"], launch_start, sample["timeMs"]):
             raise ValueError("Project metadata has no successful native inspect")
         if not any(row.get("phase") == "stats-payload" and begin <= row.get("timeMs", 0) <= sample["timeMs"]
-                   and row.get("count") == 2 and set(row.get("fullIds", [])) == expected_ids
+                   and row.get("count") == 3 and set(row.get("fullIds", [])) == expected_ids
                    and any(command.get("phase") == "start" and command.get("pid") == row.get("pid")
                            and command.get("args", [])[2:8] == ["container", "stats", "--no-stream", "--no-trunc", "--format", "{{json .}}"]
                            and set(command.get("args", [])[8:]) == expected_ids
@@ -172,15 +289,15 @@ def validate_insights(probe, by_name, attempt, events, launch_start):
         resized_step = by_name["resized live pane with keyboard while receiving"]
         resized = resized_step.get("detail", {})
         for size in [before, resized, after]:
-            numbers = [size.get(key) for key in ["height", "min", "max", "detailHeight", "listHeight"]]
+            numbers = [size.get(key) for key in ["width", "min", "max", "detailWidth", "listWidth"]]
             if any(type(value) not in [int, float] or not math.isfinite(value) for value in numbers):
                 raise ValueError("Pane resize lacks finite geometry")
-            if not 0 < size["min"] <= size["height"] <= size["max"] or size["listHeight"] <= 0 or abs(size["detailHeight"] - size["height"]) > 1:
+            if not 0 < size["min"] <= size["width"] <= size["max"] or size["listWidth"] <= 0 or abs(size["listWidth"] - size["width"]) > 1:
                 raise ValueError("Pane resize lies outside its announced bounds")
         if any(size["min"] != before["min"] or size["max"] != before["max"] for size in [resized, after]):
             raise ValueError("Pane bounds changed during the keyboard probe")
-        delta = 20 if resized.get("key") == "ArrowUp" else -20 if resized.get("key") == "ArrowDown" else 0
-        if not delta or resized["height"] != before["height"] + delta or after["height"] != before["height"] or abs(resized["listHeight"] - before["listHeight"] + delta) > 1 or abs(after["listHeight"] - before["listHeight"]) > 1:
+        delta = 20 if resized.get("key") == "ArrowRight" else -20 if resized.get("key") == "ArrowLeft" else 0
+        if not delta or resized["width"] != before["width"] + delta or after["width"] != before["width"] or abs(resized["detailWidth"] - before["detailWidth"] + delta) > 1 or abs(after["detailWidth"] - before["detailWidth"]) > 1:
             raise ValueError("Pane keyboard resize or restoration was not observed")
         if resized.get("fullId") != full_id or resized.get("streamId") != stream_id or resized.get("preservedView") is not True or after.get("preservedView") is not True or type(after.get("maximumActiveReads")) is not int or after["maximumActiveReads"] != 1 or type(resized.get("newReads")) is not int or resized["newReads"] < 3:
             raise ValueError("Pane resize did not retain the view and serialized stream")
@@ -228,7 +345,7 @@ def validate_ui(manifest, ui, events, now_ms=None):
             pending = (name.removeprefix("started "), index)
         elif name.startswith("passed "):
             probe = name.removeprefix("passed ")
-            if pending is None or pending[0] != probe or probe not in ["search", "connection-clear", "socket", "recovery", *INSIGHT_STEPS]:
+            if pending is None or pending[0] != probe or probe not in ["search", "connection-clear", "socket", "recovery", "project-recovery", *INSIGHT_STEPS, *OBSERVATION_STEPS]:
                 raise ValueError("UI completion has no matching probe start")
             attempt = steps[pending[1]:index + 1]
             by_name = {row["name"]: row for row in attempt}
@@ -236,11 +353,22 @@ def validate_ui(manifest, ui, events, now_ms=None):
                 "search": ["2 MiB dense count", "last dense match visible", "latest marker visible", "search backend verified"],
                 "connection-clear": ["requested pending logs", "cleared pending logs", "native connection warning preserved after Clear"],
                 "socket": ["requested missing-socket logs", "native SocketMissing verified"],
-                "recovery": ["requested warning-preserving Refresh", "warning retained after successful Refresh without new logs", "requested explicit Reconnect", "explicit reconnect restored the valid session"],
+                "recovery": ["requested warning-preserving Refresh", "warning retained after NeedsValidation rejected Refresh without new logs", "requested explicit Reconnect", "explicit reconnect restored the valid session"],
+                "project-recovery": ["injected project configure response failure", "native project retry restored visible logs"],
                 **INSIGHT_STEPS,
+                **OBSERVATION_STEPS,
             }[probe]
             if not all(name in by_name for name in required):
                 raise ValueError("UI probe is missing required evidence: " + probe)
+            if probe == "project-recovery":
+                injected = by_name[required[0]].get("detail", {})
+                recovered = by_name[required[1]].get("detail", {})
+                visible = recovered.get("visibleLogRows")
+                if (injected.get("nativeConfigureCompleted") is not True or injected.get("responseFaultOnly") is not True
+                        or not injected.get("sessionId") or injected.get("project") != "native-smoke-project"
+                        or type(recovered.get("nativeRetries")) is not int or recovered["nativeRetries"] != 1
+                        or type(visible) is not int or visible <= 0 or recovered.get("errorCleared") is not True):
+                    raise ValueError("Project response recovery lacks real IPC and visible viewport evidence")
             if probe == "connection-clear":
                 requested = by_name["requested pending logs"]["timeMs"]
                 cleared = by_name["cleared pending logs"]["timeMs"]
@@ -280,15 +408,10 @@ def validate_ui(manifest, ui, events, now_ms=None):
                     raise ValueError("Worker startup timeout evidence is missing")
             if probe in INSIGHT_STEPS:
                 validate_insights(probe, by_name, attempt, events, start)
+            if probe in OBSERVATION_STEPS:
+                validate_observation(probe, by_name, attempt, steps[:index + 1], events, manifest)
             if probe == "recovery":
-                refreshed = by_name["warning retained after successful Refresh without new logs"]["timeMs"]
-                requested = by_name["requested warning-preserving Refresh"]["timeMs"]
-                reconnect = by_name["requested explicit Reconnect"]["timeMs"]
-                restored = by_name["explicit reconnect restored the valid session"]["timeMs"]
-                if not successful_command(events, ["container", "ls"], requested, refreshed) or any(row.get("phase") == "follow-ready" and requested <= row.get("timeMs", 0) <= refreshed for row in events):
-                    raise ValueError("Warning-preserving Refresh restarted logs or lacks native inventory")
-                if not any(row.get("phase") == "follow-ready" and reconnect <= row.get("timeMs", 0) <= restored for row in events):
-                    raise ValueError("Reconnect lacks a fresh native follow process")
+                validate_recovery(by_name, events)
             completed.append(probe)
             pending = None
         elif name.startswith("failed "):
@@ -319,11 +442,9 @@ def serve(root, app, evidence):
     try:
         make_fixture(root)
         owned = True
-        listener = socket.socket(socket.AF_UNIX)
-        listener.bind(str(root / "engine.sock"))
-        listener.listen(4)
         executable = app / "Contents/MacOS/docker2u"
         manifest = {"marker": "NATIVE_SMOKE_HARNESS", "runId": root.name, "fixtureRoot": str(root), "app": str(app), "binarySha256": hashlib.sha256(executable.read_bytes()).hexdigest(), "controllerPid": os.getpid(), "evidenceDirectory": str(evidence), "startedAtMs": time.time_ns() // 1_000_000, "status": "running"}
+        listener = engine_listener(root)
         write_json(root / "launch.json", manifest)
         evidence.mkdir(parents=True, exist_ok=True)
         with (evidence / "app.log").open("wb") as log:
@@ -333,16 +454,16 @@ def serve(root, app, evidence):
             print(json.dumps(manifest), flush=True)
             while not stop and process.poll() is None:
                 if (root / "socket-off").exists():
-                    listener.close()
+                    if listener:
+                        listener.close()
+                    listener = None
                     (root / "engine.sock").unlink(missing_ok=True)
                     (root / "socket-off").unlink()
                     control_event(root, "socket-off")
                     write_json(root / "socket-status.json", {"available": False})
                 if (root / "socket-on").exists():
                     if not (root / "engine.sock").exists():
-                        listener = socket.socket(socket.AF_UNIX)
-                        listener.bind(str(root / "engine.sock"))
-                        listener.listen(4)
+                        listener = engine_listener(root)
                     (root / "socket-on").unlink()
                     control_event(root, "socket-on")
                     write_json(root / "socket-status.json", {"available": True})

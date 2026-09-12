@@ -1,13 +1,13 @@
 export type NativeCheckpoint = { listCheckedAt: string | null; logsReceivedAt: string | null };
-export type NativePaneSize = { height: number; min: number; max: number };
+export type NativePaneSize = { width: number; min: number; max: number };
 
 export function nativePaneSize(root: ParentNode): NativePaneSize | null {
-  const separator = root.querySelector<HTMLElement>('[role="separator"][aria-orientation="horizontal"]');
+  const separator = root.querySelector<HTMLElement>('[role="separator"][aria-orientation="vertical"]');
   if (!separator || separator.getAttribute('aria-controls') !== 'inventory-pane detail-pane') return null;
   const attributes = ['aria-valuenow', 'aria-valuemin', 'aria-valuemax'].map(name => separator.getAttribute(name));
   if (attributes.some(value => value === null || value.trim() === '')) return null;
-  const [height, min, max] = attributes.map(Number) as [number, number, number];
-  return [height, min, max].every(Number.isFinite) && min >= 0 && min <= height && height <= max ? { height, min, max } : null;
+  const [width, min, max] = attributes.map(Number) as [number, number, number];
+  return [width, min, max].every(Number.isFinite) && min >= 0 && min <= width && width <= max ? { width, min, max } : null;
 }
 
 function visiblePanel(root: ParentNode) {

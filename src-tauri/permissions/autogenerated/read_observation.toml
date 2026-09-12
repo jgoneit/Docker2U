@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-read-observation"
+description = "Enables the read_observation command without any pre-configured scope."
+commands.allow = ["read_observation"]
+
+[[permission]]
+identifier = "deny-read-observation"
+description = "Denies the read_observation command without any pre-configured scope."
+commands.deny = ["read_observation"]

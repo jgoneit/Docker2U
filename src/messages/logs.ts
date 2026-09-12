@@ -13,6 +13,7 @@ export const logMessages = {
   lastReceived: { ko: '마지막 수신', en: 'Last received' },
   pendingDropped: { ko: '표시를 멈춘 사이 일부 로그가 버퍼에서 제거되었습니다. 재개하면 남아 있는 최신 로그를 표시합니다.', en: 'Some logs were dropped while the display was frozen. Resuming shows the latest retained logs.' },
   resumedDropped: { ko: '일부 오래된 로그를 건너뛰고 최신 로그로 재개했습니다.', en: 'Resumed with the latest logs; some older logs were skipped.' },
+  cacheRangeReplaced: { ko: '화면 캐시 상한으로 이전 로그 구간이 제거되어, 새로 받은 구간으로 이동했습니다.', en: 'The saved log range was removed at the screen cache limit. The view moved to newly received logs.' },
   openSearch: { ko: '로그 검색 열기', en: 'Open log search' }, closeSearch: { ko: '로그 검색 닫기', en: 'Close log search' },
   search: { ko: '로그 검색', en: 'Search logs' }, searchArea: { ko: '로그 탐색', en: 'Log navigation' },
   previousMatch: { ko: '이전 일치', en: 'Previous match' }, nextMatch: { ko: '다음 일치', en: 'Next match' },

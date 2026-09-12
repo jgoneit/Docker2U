@@ -64,7 +64,7 @@ function expectRecoveryBlocked() {
   expect(recovery.getByRole('button', { name: '중지' })).toBeDisabled();
   expect(recovery.getByRole('button', { name: '재시작' })).toBeDisabled();
 }
-async function select(user: ReturnType<typeof userEvent.setup>, name: string) { await user.click(screen.getByRole('button', { name: `${name} 상세` })); }
+async function select(user: ReturnType<typeof userEvent.setup>, name: string) { await user.click(screen.getByRole('treeitem', { name: `${name} 상세` })); }
 async function refresh(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: '새로고침' }));
   await waitFor(() => expect(screen.getByRole('button', { name: '새로고침' })).toBeEnabled());
@@ -216,22 +216,46 @@ describe('native log request lifetime', () => {
     expect(logs.maximumActive()).toBe(1);
   });
 
-  it.each(['clear', 'hide', 'filter'].flatMap(action => ['success', 'failure'].map(outcome => ({ action, outcome }))))('drops the queued target after $action but preserves current-session warnings on $outcome', async ({ action, outcome }) => {
+  it.each(['success', 'failure'])('drops the queued target after Clear but preserves current-session warnings on %s', async outcome => {
     const user = userEvent.setup();
     const logs = controlledLogs();
     render(<App />);
     await waitFor(() => expect(logs.requests).toHaveLength(1));
     await select(user, 'beta');
-    if (action === 'clear') await user.click(clearLogs());
-    else if (action === 'hide') await user.type(screen.getByRole('textbox', { name: '컨테이너 검색' }), 'no match');
-    else await user.click(within(screen.getByLabelText('컨테이너 필터')).getByRole('button', { name: '중지' }));
+    await user.click(clearLogs());
     if (outcome === 'success') await logs.succeed(0);
     else await logs.fail(0);
     expect(logs.requests).toHaveLength(1);
     expectConnection(outcome === 'failure');
     expect(screen.queryByText('최근 로그를 읽지 못했습니다.')).not.toBeInTheDocument();
-    if (action === 'clear') expect(output()).toHaveAttribute('aria-busy', 'false');
-    else expect(screen.queryByLabelText('최근 로그 내용')).not.toBeInTheDocument();
+    expect(output()).toHaveAttribute('aria-busy', 'false');
+  });
+
+  it.each(['hide', 'filter'].flatMap(action => ['success', 'failure'].map(outcome => ({ action, outcome }))))('retains the selected target after $action and honors a pending request $outcome', async ({ action, outcome }) => {
+    const user = userEvent.setup();
+    const logs = controlledLogs();
+    render(<App />);
+    await waitFor(() => expect(logs.requests).toHaveLength(1));
+    await select(user, 'beta');
+    if (action === 'hide') await user.type(screen.getByRole('textbox', { name: '컨테이너 검색' }), 'no match');
+    else await user.click(within(screen.getByLabelText('컨테이너 필터')).getByRole('button', { name: '중지' }));
+    expect(screen.getByText('현재 대상이 검색 또는 상태 필터에 가려져 있습니다.')).toBeVisible();
+    expect(screen.queryByRole('treeitem', { name: 'beta 상세' })).not.toBeInTheDocument();
+    expect(output()).toBeInTheDocument();
+    if (outcome === 'success') {
+      await logs.succeed(0);
+      expect(logs.requests.map(request => request.handle)).toEqual(['alpha-1', 'beta-1']);
+      await logs.succeed(1);
+      expect(output()).toHaveTextContent('accepted beta-1');
+    } else {
+      await logs.fail(0);
+      // A session invalidation still vetoes the queued read, independently of filtering.
+      expect(logs.requests).toHaveLength(1);
+      expectRecoveryBlocked();
+    }
+    expectConnection(outcome === 'failure');
+    expect(screen.queryByText('최근 로그를 읽지 못했습니다.')).not.toBeInTheDocument();
+    expect(logs.maximumActive()).toBe(1);
   });
 
   it.each(['success', 'failure'])('keeps a pending stream pinned across repeated inventory refresh after %s', async outcome => {
@@ -425,4 +449,35 @@ describe('native log request lifetime', () => {
     await logs.succeed(0);
     expect(logs.requests).toHaveLength(1);
   });
+});
+
+
+it('restores standalone search and paused output after another target and clears it on reconnect', async () => {
+  const user = userEvent.setup();
+  const logs = controlledLogs();
+  render(<App />);
+  await waitFor(() => expect(logs.requests).toHaveLength(1));
+  await logs.succeed(0, 'alpha historical marker');
+  await waitFor(() => expect(output()).toHaveTextContent('alpha historical marker'));
+  await user.click(screen.getByRole('button', { name: '일시정지' }));
+  await user.click(screen.getByRole('button', { name: '로그 검색 열기' }));
+  await user.type(screen.getByRole('searchbox', { name: '로그 검색' }), 'historical');
+  await select(user, 'beta');
+  await waitFor(() => expect(logs.requests).toHaveLength(2));
+  await logs.succeed(1, 'beta output');
+  await waitFor(() => expect(output()).toHaveTextContent('beta output'));
+  expect(screen.queryByRole('searchbox', { name: '로그 검색' })).not.toBeInTheDocument();
+  await select(user, 'alpha');
+  await waitFor(() => expect(logs.requests).toHaveLength(3));
+  expect(screen.getByRole('searchbox', { name: '로그 검색' })).toHaveValue('historical');
+  expect(output()).toHaveTextContent('alpha historical marker');
+  await logs.succeed(2, 'new alpha output');
+  expect(output()).toHaveTextContent('alpha historical marker');
+  await user.click(screen.getByRole('button', { name: '로그 검색 닫기' }));
+  expect(screen.getByRole('button', { name: '재개' })).toBeVisible();
+  expect(output()).toHaveTextContent('alpha historical marker');
+  await user.click(screen.getByRole('button', { name: '다시 연결' }));
+  await waitFor(() => expect(logs.requests).toHaveLength(4));
+  expect(screen.queryByRole('searchbox', { name: '로그 검색' })).not.toBeInTheDocument();
+  expect(output()).not.toHaveTextContent('alpha historical marker');
 });

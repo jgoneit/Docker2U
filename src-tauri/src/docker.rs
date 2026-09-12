@@ -11,11 +11,19 @@ use std::{
 
 #[path = "docker_details.rs"]
 mod details;
+#[path = "engine_reader.rs"]
+mod engine_reader;
+#[path = "docker_observation.rs"]
+mod observation;
+#[path = "docker_project_logs.rs"]
+mod project_logs;
 #[path = "docker_stats.rs"]
 mod stats;
 #[path = "docker_stream.rs"]
 mod stream;
 pub use details::ContainerDetails;
+pub use observation::{ObservationHold, ObservationRead, ObservationScope};
+pub use project_logs::{ProjectLogPage, ProjectLogQuery};
 pub use stats::StatsSnapshot;
 pub use stream::{LogStreamChunk, LogStreamStarted};
 
@@ -24,7 +32,7 @@ pub use stream::{LogStreamChunk, LogStreamStarted};
 mod tests;
 
 const MINIMUM_MACOS_MAJOR: u32 = 14;
-const INSPECT_FORMAT: &str = r#"{"Id":{{json .Id}},"Name":{{json .Name}},"Image":{{json .Config.Image}},"Created":{{json .Created}},"State":{{json .State.Status}},"Health":{{with index .State "Health"}}{{json .Status}}{{else}}null{{end}},"Ports":{{json (index .NetworkSettings "Ports")}},"ComposeProject":{{with index .Config.Labels "com.docker.compose.project"}}{{json .}}{{else}}null{{end}},"ComposeService":{{with index .Config.Labels "com.docker.compose.service"}}{{json .}}{{else}}null{{end}}}"#;
+const INSPECT_FORMAT: &str = r#"{"Id":{{json .Id}},"Name":{{json .Name}},"Image":{{json .Config.Image}},"Created":{{json .Created}},"StartedAt":{{json .State.StartedAt}},"Tty":{{json .Config.Tty}},"State":{{json .State.Status}},"Health":{{with index .State "Health"}}{{json .Status}}{{else}}null{{end}},"Ports":{{json (index .NetworkSettings "Ports")}},"ComposeProject":{{with index .Config.Labels "com.docker.compose.project"}}{{json .}}{{else}}null{{end}},"ComposeService":{{with index .Config.Labels "com.docker.compose.service"}}{{json .}}{{else}}null{{end}}}"#;
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -99,6 +107,9 @@ pub struct Container {
     pub health: Option<String>,
     pub ports: Vec<String>,
     pub created_at: String,
+    pub started_at: Option<String>,
+    #[serde(skip)]
+    tty: bool,
     pub compose_project: Option<String>,
     pub compose_service: Option<String>,
 }
@@ -487,11 +498,13 @@ struct Session {
     handles: HashMap<String, Container>,
     stale: bool,
     needs_validation: bool,
+    inventory: Option<ContainerList>,
 }
 #[derive(Default)]
 struct State {
     session: Option<Session>,
     epoch: u64,
+    closing: bool,
     refreshing: bool,
     diagnosing: bool,
     mutating: bool,
@@ -539,6 +552,9 @@ struct HostInfo {
 pub struct Core {
     runner: Runner,
     state: Arc<Mutex<State>>,
+    observation: Arc<Mutex<Option<Arc<observation::ObservationService>>>>,
+    engine_reader: Arc<Mutex<Option<(String, engine_reader::EngineReader)>>>,
+    project_logs: Arc<Mutex<project_logs::ProjectLogManager>>,
     #[cfg(test)]
     config: Option<RuntimeConfig>,
     #[cfg(test)]
@@ -547,6 +563,8 @@ pub struct Core {
     host: Option<Result<HostInfo>>,
     #[cfg(test)]
     launch_env: Option<HashMap<String, String>>,
+    #[cfg(test)]
+    log_registration_barrier: Option<Arc<std::sync::Barrier>>,
 }
 
 fn args(values: &[&str]) -> Vec<String> {
@@ -571,6 +589,7 @@ fn connection_invalidated(error: &ApiError) -> bool {
             | "Configuration"
             | "EndpointMismatch"
             | "RemoteEndpoint"
+            | "UnsupportedObservationEndpoint"
     )
 }
 fn parse_macos_version(bytes: &[u8]) -> Result<String> {
@@ -650,8 +669,21 @@ fn command_label(path: &Path, args: &[String]) -> String {
 
 impl Core {
     pub fn shutdown(&self) {
+        // Retire authority before taking the collection slots. A configure call
+        // that already cloned a session must recheck it under its slot lock, so
+        // it cannot publish a new collector after shutdown has drained that slot.
+        {
+            let mut state = self.state.lock().unwrap();
+            state.closing = true;
+            state.epoch += 1;
+            state.session = None;
+        }
+        self.cancel_observation();
+        self.cancel_project_logs();
         self.cancel_log_stream();
         self.runner.shutdown();
+        self.stop_observation();
+        self.engine_reader.lock().unwrap().take();
     }
 
     fn detect_host(&self) -> Result<HostInfo> {
@@ -839,6 +871,12 @@ impl Core {
     pub fn get_environment(&self) -> Result<Environment> {
         let epoch = {
             let mut state = self.state.lock().unwrap();
+            if state.closing {
+                return Err(ApiError::new(
+                    "StaleSession",
+                    "The application is shutting down",
+                ));
+            }
             if state.mutating || state.diagnosing || state.refreshing {
                 return Err(ApiError::new("Busy", "An operation is still in progress"));
             }
@@ -847,6 +885,11 @@ impl Core {
             state.diagnosing = true;
             state.epoch
         };
+        // Reserve reconnection before retiring workers so a Busy result cannot
+        // stop a still-current background observer or race a new mutation.
+        self.stop_observation();
+        self.cancel_project_logs();
+        self.engine_reader.lock().unwrap().take();
         self.cancel_log_stream();
         let mut result = Environment::default();
         let target = self.diagnose(&mut result);
@@ -871,6 +914,7 @@ impl Core {
                     handles: HashMap::new(),
                     stale: true,
                     needs_validation: false,
+                    inventory: None,
                 });
             }
             Err(error) => {
@@ -1065,6 +1109,15 @@ impl Core {
                     health: Some(health.into()),
                     ports,
                     created_at: created.into(),
+                    started_at: row
+                        .get("StartedAt")
+                        .and_then(Value::as_str)
+                        .filter(|value| {
+                            chrono::DateTime::parse_from_rfc3339(value)
+                                .is_ok_and(|value| value.timestamp() > -62_135_596_800)
+                        })
+                        .map(str::to_owned),
+                    tty: row.get("Tty").and_then(Value::as_bool).unwrap_or(false),
                     compose_project: compose_label(&row, "ComposeProject"),
                     compose_service: compose_label(&row, "ComposeService"),
                 });
@@ -1075,9 +1128,36 @@ impl Core {
     }
 
     pub fn list_containers(&self, id: &str) -> Result<ContainerList> {
+        let service = self
+            .observation
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|service| service.session_id == id)
+            .cloned();
+        if let Some(service) = service {
+            return service.refresh(self);
+        }
+        self.fetch_inventory(id)
+    }
+
+    fn fetch_inventory(&self, id: &str) -> Result<ContainerList> {
+        self.fetch_inventory_inner(id, false)
+    }
+
+    fn fetch_observed_inventory(&self, id: &str) -> Result<ContainerList> {
+        self.fetch_inventory_inner(id, true)
+    }
+
+    fn fetch_inventory_inner(&self, id: &str, wait_readers: bool) -> Result<ContainerList> {
         let session = {
             let mut state = self.state.lock().unwrap();
-            if state.refreshing || state.diagnosing || state.mutating {
+            if state.refreshing
+                || state.diagnosing
+                || state.mutating
+                || (wait_readers
+                    && (state.stats_running || state.details_running || state.stream_starting))
+            {
                 return Err(ApiError::new("Busy", "An operation is still in progress"));
             }
             let session = state
@@ -1131,13 +1211,15 @@ impl Core {
                     .iter()
                     .map(|c| (c.handle.clone(), c.clone()))
                     .collect();
-                Ok(ContainerList {
+                let snapshot = ContainerList {
                     session_id: id.into(),
                     generation: active.generation,
                     containers,
                     refreshed_at: chrono::Utc::now().to_rfc3339(),
                     stale: false,
-                })
+                };
+                active.inventory = Some(snapshot.clone());
+                Ok(snapshot)
             }
             Err(error) => {
                 active.stale = true;
@@ -1148,6 +1230,11 @@ impl Core {
             }
         };
         drop(state);
+        if let Ok(snapshot) = &result {
+            self.sync_project_log_inventory(snapshot);
+        } else if let Err(error) = &result {
+            self.invalidate_observation(id, error);
+        }
         self.reconcile_log_stream();
         result
     }
