@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 import type { Container } from './api';
+import type { ProjectFilter } from './projects';
 import type { ObservationRead, ResourcePoint } from './observationApi';
 import { ErrorDetails } from './components';
 import { useI18n } from './i18n';
@@ -36,11 +37,11 @@ export function ResourceChart({ points, metric }: { points: ResourcePoint[]; met
     </svg><div className="resource-chart-times"><time>{new Date(start).toLocaleTimeString()}</time><time>{new Date(end).toLocaleTimeString()}</time></div>
   </figure>;
 }
-export function ObservationHistory({ observation, containers, fullId, onRetry, retrying = false }: { observation: ObservationRead | null; containers: Container[]; fullId?: string; onRetry?: () => void; retrying?: boolean }) {
+export function ObservationHistory({ observation, containers, fullId, scope = observation?.scope, onRetry, retrying = false }: { observation: ObservationRead | null; containers: Container[]; fullId?: string; scope?: ProjectFilter; onRetry?: () => void; retrying?: boolean }) {
   const t = useI18n(observationMessages);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [eventCursor, setEventCursor] = useState<number | null>(null);
-  const scopeKey = JSON.stringify(observation?.scope);
+  const scopeKey = JSON.stringify(scope);
   useEffect(() => { setEventCursor(null); setExpanded(null); }, [fullId, scopeKey]);
   const ids = new Set(containers.map(item => item.fullId));
   const activeId = fullId ?? expanded;
@@ -49,8 +50,8 @@ export function ObservationHistory({ observation, containers, fullId, onRetry, r
   const latest = new Map<string, ResourcePoint>(); for (const point of resources) latest.set(point.fullId, point);
   const eventKeys: Record<string, keyof typeof observationMessages> = { pause: 'eventPause', stop: 'eventStop', kill: 'eventKill', health_status: 'healthChanged', 'health_status: starting': 'healthStarting', 'health_status: healthy': 'healthHealthy', 'health_status: unhealthy': 'healthUnhealthy' };
   const events = (observation?.events ?? []).filter(event => !event.fullId || (fullId ? event.fullId === fullId
-    : observation?.scope.kind === 'all' || ids.has(event.fullId)
-      || (observation?.scope.kind === 'none' ? event.composeProject === null : observation?.scope.kind === 'project' && event.composeProject === observation.scope.name))).slice().reverse();
+    : scope?.kind === 'all' || ids.has(event.fullId)
+      || (scope?.kind === 'none' ? event.composeProject === null : scope?.kind === 'project' && event.composeProject === scope.name))).slice().reverse();
   const scopeResources = resources.filter(point => fullId ? point.fullId === fullId : ids.has(point.fullId));
   const resourceFrom = scopeResources.length ? scopeResources.reduce((oldest, point) => point.sampledAt < oldest ? point.sampledAt : oldest, scopeResources[0]!.sampledAt) : null;
   const resourceTo = scopeResources.at(-1)?.sampledAt ?? null;

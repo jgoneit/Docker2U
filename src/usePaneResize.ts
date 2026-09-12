@@ -1,29 +1,30 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, PointerEvent } from 'react';
 
-export const DEFAULT_DETAIL_HEIGHT = 300;
-const MIN_DETAIL_HEIGHT = 220;
-const MIN_INVENTORY_HEIGHT = 200;
-const SEPARATOR_HEIGHT = 10;
+export const DEFAULT_INVENTORY_WIDTH = 320;
+const MIN_INVENTORY_WIDTH = 280;
+const MAX_INVENTORY_WIDTH = 440;
+const MIN_DETAIL_WIDTH = 600;
+const SEPARATOR_WIDTH = 10;
 const clamp = (value: number, minimum: number, maximum: number) => Math.min(maximum, Math.max(minimum, value));
 
-/** Presentation-only state: resizing never changes the selected container or its log stream. */
+/** Presentation-only state: resizing never changes the selected target or its log stream. */
 export function usePaneResize() {
   const workspaceRef = useRef<HTMLElement>(null);
-  const [workspaceHeight, setWorkspaceHeight] = useState(650);
-  const [preferredHeight, setPreferredHeight] = useState(DEFAULT_DETAIL_HEIGHT);
+  const [workspaceWidth, setWorkspaceWidth] = useState(1024);
+  const [preferredWidth, setPreferredWidth] = useState(DEFAULT_INVENTORY_WIDTH);
   const [dragging, setDragging] = useState(false);
-  const drag = useRef<{ pointerId: number; y: number; height: number; target: HTMLButtonElement } | null>(null);
-  const maximum = Math.max(0, workspaceHeight - MIN_INVENTORY_HEIGHT - SEPARATOR_HEIGHT);
-  const minimum = Math.min(MIN_DETAIL_HEIGHT, maximum);
-  const height = clamp(preferredHeight, minimum, maximum);
+  const drag = useRef<{ pointerId: number; x: number; width: number; target: HTMLButtonElement } | null>(null);
+  const maximum = Math.min(MAX_INVENTORY_WIDTH, Math.max(MIN_INVENTORY_WIDTH, workspaceWidth - MIN_DETAIL_WIDTH - SEPARATOR_WIDTH));
+  const minimum = MIN_INVENTORY_WIDTH;
+  const width = clamp(preferredWidth, minimum, maximum);
 
   useLayoutEffect(() => {
     const workspace = workspaceRef.current;
     if (!workspace) return;
     const measure = () => {
-      const next = workspace.getBoundingClientRect().height;
-      if (next > 0) setWorkspaceHeight(next);
+      const next = workspace.getBoundingClientRect().width;
+      if (next > 0) setWorkspaceWidth(next);
     };
     measure();
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
@@ -36,7 +37,7 @@ export function usePaneResize() {
     const current = drag.current;
     if (!current) return;
     drag.current = null;
-    if (cancelled) setPreferredHeight(current.height);
+    if (cancelled) setPreferredWidth(current.width);
     setDragging(false);
     if (current.target.hasPointerCapture?.(current.pointerId)) current.target.releasePointerCapture(current.pointerId);
   }
@@ -52,32 +53,33 @@ export function usePaneResize() {
   }, []);
 
   return {
-    workspaceRef, height, dragging,
-    workspaceStyle: { gridTemplateRows: `minmax(0, 1fr) ${SEPARATOR_HEIGHT}px ${height}px` },
+    workspaceRef, width, dragging,
+    workspaceStyle: { gridTemplateColumns: `${width}px ${SEPARATOR_WIDTH}px minmax(${MIN_DETAIL_WIDTH}px, 1fr)` },
     separatorProps: {
-      'aria-valuemin': minimum, 'aria-valuemax': maximum, 'aria-valuenow': height,
+      'aria-orientation': 'vertical' as const,
+      'aria-valuemin': minimum, 'aria-valuemax': maximum, 'aria-valuenow': width,
       onPointerDown(event: PointerEvent<HTMLButtonElement>) {
         if (event.button !== 0 || drag.current) return;
         event.preventDefault();
         event.currentTarget.focus();
         event.currentTarget.setPointerCapture(event.pointerId);
-        drag.current = { pointerId: event.pointerId, y: event.clientY, height, target: event.currentTarget };
+        drag.current = { pointerId: event.pointerId, x: event.clientX, width, target: event.currentTarget };
         setDragging(true);
       },
       onPointerMove(event: PointerEvent<HTMLButtonElement>) {
         const current = drag.current;
-        if (current && current.pointerId === event.pointerId) setPreferredHeight(clamp(current.height + current.y - event.clientY, minimum, maximum));
+        if (current && current.pointerId === event.pointerId) setPreferredWidth(clamp(current.width + event.clientX - current.x, minimum, maximum));
       },
       onPointerUp(event: PointerEvent<HTMLButtonElement>) { if (drag.current?.pointerId === event.pointerId) finish(); },
       onPointerCancel(event: PointerEvent<HTMLButtonElement>) { if (drag.current?.pointerId === event.pointerId) finish(true); },
       onLostPointerCapture(event: PointerEvent<HTMLButtonElement>) { if (drag.current?.pointerId === event.pointerId) finish(); },
-      onDoubleClick() { setPreferredHeight(DEFAULT_DETAIL_HEIGHT); },
+      onDoubleClick() { setPreferredWidth(DEFAULT_INVENTORY_WIDTH); },
       onKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
-        const next = event.key === 'ArrowUp' ? height + 20 : event.key === 'ArrowDown' ? height - 20
+        const next = event.key === 'ArrowRight' ? width + 20 : event.key === 'ArrowLeft' ? width - 20
           : event.key === 'Home' ? minimum : event.key === 'End' ? maximum : null;
         if (next === null) return;
         event.preventDefault();
-        setPreferredHeight(clamp(next, minimum, maximum));
+        setPreferredWidth(clamp(next, minimum, maximum));
       },
     },
   };

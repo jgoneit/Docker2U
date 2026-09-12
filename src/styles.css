@@ -152,7 +152,7 @@ button.text-button { background: transparent; border-color: transparent; color: 
 .connection-help { flex-shrink: 0; padding: 7px 24px; margin: 0; color: var(--text-muted); background: var(--surface); font-size: 12px; }
 .connection-dot, .state-dot, .footer-dot { flex-shrink: 0; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--neutral); }
 .connection-dot.connected { background: var(--success); box-shadow: 0 0 0 3px var(--success-glow); }
-.workspace { display: grid; grid-template-columns: minmax(0, 1fr); flex: 1; min-height: 0; overflow: hidden; }
+.workspace { display: grid; grid-template-columns: 320px 10px minmax(600px, 1fr); grid-template-rows: minmax(0, 1fr); flex: 1; min-height: 0; overflow: hidden; }
 .inventory-panel, .detail-panel { min-height: 0; overflow: auto; overscroll-behavior: contain; }
 .inventory-panel { display: flex; flex-direction: column; overflow: hidden; background: var(--sidebar); min-width: 0; }
 .inventory-body { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
@@ -163,7 +163,11 @@ button.text-button { background: transparent; border-color: transparent; color: 
 .refresh-age { display: flex; flex-direction: column; min-width: 0; max-width: 62%; color: var(--text-muted); font-size: 12px; line-height: 1.3; text-align: right; overflow-wrap: anywhere; }
 .count-badge { border: 1px solid var(--border-subtle); border-radius: 6px; padding: 2px 6px; font-size: 12px; font-weight: 600; color: var(--link); background: var(--selected); }
 .muted { color: var(--text-muted); }.small { font-size: 12px; }
-.inventory-controls { flex-shrink: 0; display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--border-subtle); }
+.inventory-controls { flex-shrink: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px 6px; padding: 12px; border-bottom: 1px solid var(--border-subtle); }
+.inventory-controls .search-field { grid-column: 1 / -1; min-width: 0; width: 100%; }
+.inventory-controls .filter-group { min-width: 0; gap: 1px; }
+.inventory-controls .filter-group button { padding: 6px; font-size: 11px; }
+.inventory-controls .inventory-refresh { padding: 6px; font-size: 11px; }
 .project-filter { display: flex; flex: 0 0 190px; min-width: 0; margin: 0; font-size: 12px; }
 .project-select-control { position: relative; display: flex; width: 100%; height: 34px; border-radius: 10px; background: var(--raised); color: var(--text-muted); }
 .project-filter select { -webkit-appearance: none; appearance: none; min-width: 0; width: 100%; height: 100%; padding: 0 32px; border: 0; border-radius: inherit; color: var(--text); background: transparent; outline: none; font: inherit; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -413,24 +417,23 @@ button.action-restart:hover:not(:disabled) { background: var(--restart-action-ho
   .connection-target strong { max-width: 25ch; }
 }
 
-/* The separator only changes the lower pane size; both panes stay mounted. */
-.pane-resizer { display: flex; width: 100%; height: 10px; min-height: 10px; padding: 0; border: 0; border-top: 1px solid var(--border-subtle); border-bottom: 1px solid var(--border-subtle); border-radius: 0; background: var(--page); cursor: row-resize; touch-action: none; }
-.pane-resizer > span { width: 32px; height: 2px; border-radius: 2px; background: var(--border); }
+/* Resizing the navigation never remounts the active log viewer. */
+.pane-resizer { display: flex; width: 10px; height: 100%; min-width: 10px; padding: 0; border: 0; border-inline: 1px solid var(--border-subtle); border-radius: 0; background: var(--page); cursor: col-resize; touch-action: none; }
+.pane-resizer > span { width: 2px; height: 32px; border-radius: 2px; background: var(--border); }
 .pane-resizer:hover, .pane-resizer:focus-visible, .resizing .pane-resizer { background: var(--selected); }
 .pane-resizer:focus-visible { outline-offset: -2px; }
-.resizing { user-select: none; cursor: row-resize; }
+.resizing { user-select: none; cursor: col-resize; }
 @media (max-width: 1100px) {
   .inventory-controls { gap: 8px; }
   .project-filter { flex-basis: 160px; }
   .filter-group button { padding-inline: 6px; }
   .app-header { gap: 14px; }
 }
-/* At a small pane height, keep a usable log viewport and scroll the pane
-   instead of clipping search controls, warnings, or the log body to zero. */
+/* Keep detailed controls reachable while the log viewport owns row scrolling. */
 .detail-panel { overflow: auto; }
 .detail-context { flex-shrink: 0; }
-.container-detail { flex: 1 0 auto; overflow: visible; }
-.container-detail > .logs-panel { flex: 1 0 auto; }
+.container-detail { flex: 1 1 0; min-height: 260px; overflow: visible; }
+.container-detail > .logs-panel { flex: 1 1 0; min-height: 160px; }
 .container-detail .log-content { min-height: 80px; }
 .container-detail .log-error:not(.log-stream-error) { min-height: 80px; }
 .container-table-scroll { scroll-padding-block: 40px 6px; }
@@ -439,3 +442,8 @@ button.action-restart:hover:not(:disabled) { background: var(--restart-action-ho
 .container-summary .summary-overview { padding-right: 150px; }
 .container-summary .summary-information { margin-top: 0; }
 .container-summary .summary-information > summary { position: absolute; top: 7px; right: 18px; }
+
+.selection-hidden-notice { padding: 8px 18px; color: var(--text-muted); font-size: 12px; border-bottom: 1px solid var(--border-subtle); }
+.selection-hidden-notice button { margin-left: 6px; }
+.inventory-panel .panel-heading { padding-inline: 12px; gap: 8px; }
+.inventory-panel .bulk-selection { padding-inline: 12px; background: transparent; }
