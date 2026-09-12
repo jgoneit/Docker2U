@@ -5,6 +5,7 @@ use super::engine_reader::{
 use super::*;
 use chrono::Utc;
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
 
 const MAX_SOURCES: usize = 64;
 const MAX_ROWS: usize = 100_000;
@@ -13,6 +14,7 @@ const SOURCE_BYTES: usize = 1024 * 1024;
 const PAGE_BYTES: usize = 2 * 1024 * 1024;
 const RETENTION_SECONDS: i64 = 30 * 60;
 const INITIAL_TAIL_ROWS: usize = 300;
+const MAX_ORPHAN_PROJECTS: usize = 128;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,6 +96,12 @@ struct StoredRow {
     source_sequence: u64,
 }
 #[derive(Default)]
+struct ProjectRetentionMetadata {
+    dropped_rows: u64,
+    archived_gaps: u64,
+    orphaned_since: Option<Instant>,
+}
+#[derive(Default)]
 struct LogRing {
     rows: BTreeMap<OrderKey, StoredRow>,
     expiry: BTreeMap<(i64, u64), OrderKey>,
@@ -101,7 +109,7 @@ struct LogRing {
     source_sequence: HashMap<String, u64>,
     source_order: HashMap<String, BTreeSet<OrderKey>>,
     source_bytes: HashMap<String, usize>,
-    dropped: HashMap<String, u64>,
+    project_metadata: HashMap<String, ProjectRetentionMetadata>,
     source_dropped: HashMap<String, u64>,
     bytes: usize,
     sequence: u64,
@@ -139,7 +147,10 @@ impl LogRing {
             }
         }
         if dropped {
-            *self.dropped.entry(stored.project).or_default() += 1;
+            self.project_metadata
+                .entry(stored.project)
+                .or_default()
+                .dropped_rows += 1;
             *self.source_dropped.entry(source.clone()).or_default() += 1;
         }
     }
@@ -278,6 +289,10 @@ struct Source {
     token: u64,
     pending_start: Option<u64>,
     task: Option<StreamTask>,
+    // A retained JoinHandle may already be complete. Coverage follows the
+    // collection lifecycle, independently of transport ownership.
+    collecting: bool,
+    gap_open: bool,
     overlap: HashMap<DuplicateKey, usize>,
     last_seen: i64,
 }
@@ -292,12 +307,30 @@ pub(super) struct ProjectLogManager {
     token: u64,
     needs_selection: bool,
     error: Option<ApiError>,
-    archived_gaps: HashMap<String, u64>,
     #[cfg(test)]
     start_registration_barrier: Option<Arc<std::sync::Barrier>>,
 }
 
 impl Source {
+    fn open_gap_once(&mut self) {
+        if !self.gap_open {
+            self.view.coverage_gaps += 1;
+            self.gap_open = true;
+        }
+    }
+    fn interrupt_collection(&mut self) {
+        if self.collecting {
+            self.open_gap_once();
+        }
+        self.collecting = false;
+    }
+    fn fail_collection(&mut self, error: ApiError) {
+        self.open_gap_once();
+        self.collecting = false;
+        self.pending_start = None;
+        self.view.status = "error".into();
+        self.view.error = Some(error);
+    }
     fn owns_start(&self, token: u64) -> bool {
         self.token == token
             && self.pending_start == Some(token)
@@ -316,10 +349,19 @@ impl ProjectLogManager {
         if let Some(project) = &self.project {
             let gaps = self
                 .sources
-                .values()
-                .map(|source| source.view.coverage_gaps + u64::from(source.task.is_some()))
+                .values_mut()
+                .map(|source| {
+                    source.interrupt_collection();
+                    source.view.coverage_gaps
+                })
                 .sum::<u64>();
-            *self.archived_gaps.entry(project.clone()).or_default() += gaps;
+            if gaps > 0 {
+                self.ring
+                    .project_metadata
+                    .entry(project.clone())
+                    .or_default()
+                    .archived_gaps += gaps;
+            }
         }
     }
     fn overlap(&self, full_id: &str) -> HashMap<DuplicateKey, usize> {
@@ -382,8 +424,13 @@ impl ProjectLogManager {
                     return;
                 }
                 match status {
-                    ReaderStatus::Connecting => source.view.status = "starting".into(),
+                    ReaderStatus::Connecting => {
+                        source.collecting = true;
+                        source.view.status = "starting".into();
+                    }
                     ReaderStatus::Following => {
+                        source.collecting = true;
+                        source.gap_open = false;
                         source.view.status = "following".into();
                         source.view.error = None;
                     }
@@ -391,8 +438,9 @@ impl ProjectLogManager {
                         attempt,
                         delay_seconds,
                     } => {
+                        source.collecting = true;
                         source.view.status = "retrying".into();
-                        source.view.coverage_gaps += 1;
+                        source.open_gap_once();
                         source.view.error = Some(ApiError::new(
                             "LogCoverageGap",
                             format!(
@@ -401,10 +449,13 @@ impl ProjectLogManager {
                         ));
                         source.overlap = overlap.unwrap_or_default();
                     }
-                    ReaderStatus::Ended => source.view.status = "ended".into(),
+                    ReaderStatus::Ended => {
+                        source.collecting = false;
+                        source.gap_open = false;
+                        source.view.status = "ended".into();
+                    }
                     ReaderStatus::Failed(error) => {
-                        source.view.status = "error".into();
-                        source.view.error = Some(ApiError::new(&error.code, &error.message));
+                        source.fail_collection(ApiError::new(&error.code, &error.message));
                     }
                 }
             }
@@ -412,6 +463,9 @@ impl ProjectLogManager {
         }
     }
     fn prune(&mut self) {
+        self.prune_at(Instant::now());
+    }
+    fn prune_at(&mut self, now: Instant) {
         let previous_count = self.ring.rows.len();
         self.ring.expire(now_nanos());
         self.ring.source_dropped.retain(|id, _| {
@@ -423,19 +477,50 @@ impl ProjectLogManager {
             .values()
             .map(|stored| &stored.project)
             .collect::<HashSet<_>>();
-        self.ring
-            .dropped
-            .retain(|project, _| projects.contains(project));
-        self.archived_gaps.retain(|project, _| {
-            self.project.as_ref() == Some(project) || projects.contains(project)
-        });
         let cutoff = now_nanos().saturating_sub(RETENTION_SECONDS * 1_000_000_000);
+        let mut archived = 0;
         self.sources.retain(|id, source| {
-            source.view.status != "removed"
+            let keep = source.view.status != "removed"
                 || source.last_seen >= cutoff
-                || self.ring.source_order.contains_key(id)
+                || self.ring.source_order.contains_key(id);
+            if !keep {
+                archived += source.view.coverage_gaps;
+            }
+            keep
         });
-        if previous_count != self.ring.rows.len() {
+        if let Some(project) = self.project.as_ref().filter(|_| archived > 0) {
+            self.ring
+                .project_metadata
+                .entry(project.clone())
+                .or_default()
+                .archived_gaps += archived;
+        }
+        let previous_metadata_count = self.ring.project_metadata.len();
+        let mut orphans = Vec::new();
+        self.ring.project_metadata.retain(|project, metadata| {
+            if self.project.as_ref() == Some(project) || projects.contains(project) {
+                metadata.orphaned_since = None;
+                return true;
+            }
+            let since = *metadata.orphaned_since.get_or_insert(now);
+            if now.saturating_duration_since(since) >= Duration::from_secs(RETENTION_SECONDS as u64)
+            {
+                return false;
+            }
+            orphans.push((since, project.clone()));
+            true
+        });
+        // Reads do not refresh orphan timestamps. Stable tie-breaking makes
+        // eviction independent of HashMap iteration order.
+        orphans.sort();
+        let excess = orphans.len().saturating_sub(MAX_ORPHAN_PROJECTS);
+        for (_, project) in orphans.into_iter().take(excess) {
+            self.ring.project_metadata.remove(&project);
+        }
+        if previous_count != self.ring.rows.len()
+            || previous_metadata_count != self.ring.project_metadata.len()
+            || archived > 0
+        {
             self.revision += 1;
         }
     }
@@ -528,11 +613,19 @@ impl ProjectLogManager {
                 .iter()
                 .map(|source| source.coverage_gaps)
                 .sum::<u64>()
-                + self.archived_gaps.get(&query.project).copied().unwrap_or(0),
+                + self
+                    .ring
+                    .project_metadata
+                    .get(&query.project)
+                    .map_or(0, |metadata| metadata.archived_gaps),
             sources,
             total_rows: total,
             offset,
-            dropped_rows: self.ring.dropped.get(&query.project).copied().unwrap_or(0),
+            dropped_rows: self
+                .ring
+                .project_metadata
+                .get(&query.project)
+                .map_or(0, |metadata| metadata.dropped_rows),
             needs_selection: active_project && self.needs_selection,
             retained_from: matches.first().map(|stored| {
                 stored
@@ -607,10 +700,10 @@ impl Core {
                 .sources
                 .values_mut()
                 .filter_map(|source| {
+                    source.interrupt_collection();
                     source.view.status = "error".into();
                     source.pending_start = None;
                     source.view.error = Some(error.clone());
-                    source.view.coverage_gaps += 1;
                     source.task.take()
                 })
                 .collect::<Vec<_>>()
@@ -724,6 +817,7 @@ impl Core {
             manager.explicit = explicit;
             if manager.error.take().is_some() && !changed {
                 for source in manager.sources.values_mut() {
+                    source.interrupt_collection();
                     source.token = 0;
                     source.pending_start = None;
                     source.run = None;
@@ -779,6 +873,7 @@ impl Core {
                         source.view.status.as_str(),
                         "error" | "ended" | "retrying" | "starting"
                     ) {
+                        source.interrupt_collection();
                         // Fence callbacks and registrations from an earlier start
                         // before dropping the lock to retire its transport.
                         source.token = 0;
@@ -847,13 +942,13 @@ impl Core {
                 .collect::<HashSet<_>>();
             for source in manager.sources.values_mut() {
                 if !present.contains(&source.view.full_id) {
+                    source.interrupt_collection();
                     source.view.status = "removed".into();
                     source.view.selected = false;
                     source.run = None;
                     source.token = 0;
                     source.pending_start = None;
                     if let Some(task) = source.task.take() {
-                        source.view.coverage_gaps += 1;
                         stops.push(task);
                     }
                 }
@@ -887,6 +982,8 @@ impl Core {
                         token: 0,
                         pending_start: None,
                         task: None,
+                        collecting: false,
+                        gap_open: false,
                         overlap: HashMap::new(),
                         last_seen: now_nanos(),
                     });
@@ -899,15 +996,16 @@ impl Core {
                     .clone()
                     .or_else(|| Some(container.created_at.clone()));
                 if !selected || !readable {
+                    source.interrupt_collection();
                     source.token = 0;
                     source.pending_start = None;
                     if let Some(task) = source.task.take() {
-                        source.view.coverage_gaps += 1;
                         stops.push(task);
                     }
                     source.view.status = "idle".into();
                     source.run = None;
                 } else if let Some(error) = &collection_error {
+                    source.interrupt_collection();
                     // Keep inventory identity current while a collection-wide
                     // error blocks starts; do not leave a phantom reservation.
                     source.token = 0;
@@ -924,8 +1022,8 @@ impl Core {
                         && source.task.is_none()
                         && source.pending_start.is_none())
                 {
+                    source.interrupt_collection();
                     if let Some(task) = source.task.take() {
-                        source.view.coverage_gaps += 1;
                         stops.push(task);
                     }
                     source.run = run;
@@ -935,6 +1033,7 @@ impl Core {
                     let token = manager.token;
                     let overlap = manager.overlap(&container.full_id);
                     let source = manager.sources.get_mut(&container.full_id).unwrap();
+                    source.collecting = true;
                     source.token = token;
                     source.pending_start = Some(token);
                     source.overlap = overlap;
@@ -978,8 +1077,7 @@ impl Core {
                     // may retain an abandoned reservation when configuration retries.
                     for source in manager.sources.values_mut() {
                         if source.pending_start.take().is_some() {
-                            source.view.status = "error".into();
-                            source.view.error = Some(error.clone());
+                            source.fail_collection(error.clone());
                         }
                     }
                 }
@@ -1052,6 +1150,7 @@ impl Core {
                             .sources
                             .values_mut()
                             .filter_map(|source| {
+                                source.interrupt_collection();
                                 source.view.status = "error".into();
                                 source.pending_start = None;
                                 source.task.take()
@@ -1090,8 +1189,7 @@ impl Core {
             match result {
                 Ok(task) => source.task = Some(task),
                 Err(error) => {
-                    source.view.status = "error".into();
-                    source.view.error = Some(ApiError::new(&error.code, &error.message));
+                    source.fail_collection(ApiError::new(&error.code, &error.message));
                 }
             }
         }
@@ -1122,6 +1220,211 @@ mod tests {
             text: text.into(),
             truncated: false,
         }
+    }
+    fn managed_source(id: &str) -> Source {
+        Source {
+            view: source(id),
+            run: None,
+            token: 7,
+            pending_start: None,
+            task: None,
+            collecting: true,
+            gap_open: false,
+            overlap: HashMap::new(),
+            last_seen: now_nanos(),
+        }
+    }
+
+    #[test]
+    fn rowless_project_retains_loss_metadata_until_orphan_expiry_without_read_refresh() {
+        let mut manager = ProjectLogManager {
+            project: Some("old".into()),
+            ..Default::default()
+        };
+        manager
+            .ring
+            .append("old", &source("a"), log(&Utc::now().to_rfc3339(), "last"));
+        let key = manager.ring.rows.first_key_value().unwrap().0.clone();
+        manager.ring.remove(&key, true);
+        manager
+            .ring
+            .project_metadata
+            .get_mut("old")
+            .unwrap()
+            .archived_gaps = 2;
+        let start = Instant::now();
+        manager.prune_at(start);
+        assert_eq!(manager.ring.project_metadata["old"].orphaned_since, None);
+        manager.project = Some("new".into());
+        manager.prune_at(start);
+        let page = manager.page(&latest_query("old".into()));
+        assert!(page.rows.is_empty());
+        assert_eq!((page.dropped_rows, page.coverage_gaps), (1, 2));
+        manager.prune_at(start + Duration::from_secs(RETENTION_SECONDS as u64 - 1));
+        assert_eq!(
+            manager.ring.project_metadata["old"].orphaned_since,
+            Some(start)
+        );
+        let revision = manager.revision;
+        manager.prune_at(start + Duration::from_secs(RETENTION_SECONDS as u64));
+        assert!(!manager.ring.project_metadata.contains_key("old"));
+        assert!(manager.revision > revision);
+    }
+
+    #[test]
+    fn orphan_metadata_cap_is_deterministic_and_protects_active_and_retained_projects() {
+        let mut manager = ProjectLogManager {
+            project: Some("active".into()),
+            ..Default::default()
+        };
+        let start = Instant::now();
+        for project in (0..=MAX_ORPHAN_PROJECTS)
+            .map(|index| format!("p{index:03}"))
+            .chain(["active".into(), "retained".into()])
+        {
+            manager.ring.project_metadata.insert(
+                project,
+                ProjectRetentionMetadata {
+                    dropped_rows: 1,
+                    ..Default::default()
+                },
+            );
+        }
+        manager.ring.append(
+            "retained",
+            &source("a"),
+            log(&Utc::now().to_rfc3339(), "tail"),
+        );
+        manager.prune_at(start);
+        assert!(!manager.ring.project_metadata.contains_key("p000"));
+        assert!(manager.ring.project_metadata.contains_key("p001"));
+        assert_eq!(manager.ring.project_metadata.len(), MAX_ORPHAN_PROJECTS + 2);
+        manager.prune_at(start + Duration::from_secs(RETENTION_SECONDS as u64));
+        assert_eq!(manager.ring.project_metadata.len(), 2);
+        assert!(manager.ring.project_metadata.contains_key("active"));
+        assert!(manager.ring.project_metadata.contains_key("retained"));
+    }
+
+    #[test]
+    fn reactivating_project_preserves_counters_and_restarts_only_its_orphan_lifetime() {
+        let mut manager = ProjectLogManager::default();
+        manager.ring.project_metadata.insert(
+            "p".into(),
+            ProjectRetentionMetadata {
+                dropped_rows: 4,
+                archived_gaps: 2,
+                orphaned_since: None,
+            },
+        );
+        let start = Instant::now();
+        manager.prune_at(start);
+        manager.project = Some("p".into());
+        manager.prune_at(start + Duration::from_secs(1000));
+        assert_eq!(manager.ring.project_metadata["p"].orphaned_since, None);
+        manager.project = None;
+        let left = start + Duration::from_secs(1100);
+        manager.prune_at(left);
+        manager.prune_at(start + Duration::from_secs(RETENTION_SECONDS as u64));
+        let metadata = &manager.ring.project_metadata["p"];
+        assert_eq!(metadata.orphaned_since, Some(left));
+        assert_eq!((metadata.dropped_rows, metadata.archived_gaps), (4, 2));
+    }
+
+    #[test]
+    fn pruning_removed_sources_archives_their_gaps_once() {
+        let mut manager = ProjectLogManager {
+            project: Some("p".into()),
+            ..Default::default()
+        };
+        let mut removed = managed_source("a");
+        removed.view.status = "removed".into();
+        removed.view.coverage_gaps = 2;
+        removed.collecting = false;
+        removed.last_seen = now_nanos() - (RETENTION_SECONDS + 1) * 1_000_000_000;
+        manager.sources.insert("a".into(), removed);
+        manager.prune();
+        assert!(manager.sources.is_empty());
+        manager.archive_coverage();
+        assert_eq!(manager.page(&latest_query("p".into())).coverage_gaps, 2);
+    }
+
+    #[test]
+    fn retry_connecting_failure_and_manual_resume_share_one_coverage_gap() {
+        let mut manager = ProjectLogManager {
+            session_id: "s".into(),
+            project: Some("p".into()),
+            ..Default::default()
+        };
+        manager.sources.insert("a".into(), managed_source("a"));
+        for attempt in 1..=5 {
+            manager.receive("s", "a", 7, ReaderMessage::Status(ReaderStatus::Connecting));
+            manager.receive(
+                "s",
+                "a",
+                7,
+                ReaderMessage::Status(ReaderStatus::Retrying {
+                    attempt,
+                    delay_seconds: 1,
+                }),
+            );
+        }
+        manager.receive(
+            "s",
+            "a",
+            7,
+            ReaderMessage::Status(ReaderStatus::Failed(engine_reader::ReaderError {
+                code: "ObservationTransport".into(),
+                message: "fixture".into(),
+                transient: true,
+                invalidates_session: false,
+            })),
+        );
+        let source = manager.sources.get_mut("a").unwrap();
+        source.interrupt_collection();
+        assert!(!source.collecting);
+        assert_eq!(source.view.coverage_gaps, 1);
+        manager.receive("s", "a", 7, ReaderMessage::Status(ReaderStatus::Connecting));
+        manager.receive("s", "a", 7, ReaderMessage::Status(ReaderStatus::Following));
+        assert!(!manager.sources["a"].gap_open);
+        manager.receive(
+            "s",
+            "a",
+            7,
+            ReaderMessage::Status(ReaderStatus::Retrying {
+                attempt: 1,
+                delay_seconds: 1,
+            }),
+        );
+        manager.archive_coverage();
+        manager.sources.clear();
+        assert_eq!(manager.page(&latest_query("p".into())).coverage_gaps, 2);
+    }
+
+    #[test]
+    fn normal_log_end_and_late_retired_callbacks_do_not_add_coverage_gaps() {
+        let mut manager = ProjectLogManager {
+            session_id: "s".into(),
+            project: Some("p".into()),
+            ..Default::default()
+        };
+        manager.sources.insert("a".into(), managed_source("a"));
+        manager.receive("s", "a", 7, ReaderMessage::Status(ReaderStatus::Ended));
+        manager.archive_coverage();
+        assert_eq!(manager.sources["a"].view.coverage_gaps, 0);
+        let source = manager.sources.get_mut("a").unwrap();
+        source.token = 8;
+        source.interrupt_collection();
+        manager.receive(
+            "s",
+            "a",
+            7,
+            ReaderMessage::Status(ReaderStatus::Retrying {
+                attempt: 1,
+                delay_seconds: 1,
+            }),
+        );
+        assert_eq!(manager.sources["a"].view.coverage_gaps, 0);
+        assert!(!manager.sources["a"].collecting);
     }
     #[test]
     fn late_rows_sort_at_nanosecond_precision_and_pause_excludes_new_sequences() {
@@ -1341,7 +1644,7 @@ mod tests {
         }
         assert!(ring.bytes < SOURCE_BYTES + 1024);
         assert!(ring.rows.values().any(|stored| stored.row.text == "keep"));
-        assert!(ring.dropped["p"] > 0);
+        assert!(ring.project_metadata["p"].dropped_rows > 0);
         assert!(
             ring.source_tail
                 .values()
@@ -1439,6 +1742,8 @@ mod tests {
                 token: 7,
                 pending_start: None,
                 task: None,
+                collecting: false,
+                gap_open: false,
                 overlap,
                 last_seen: now_nanos(),
             },
@@ -1481,6 +1786,8 @@ mod tests {
                 token: 7,
                 pending_start: None,
                 task: None,
+                collecting: false,
+                gap_open: false,
                 overlap: HashMap::new(),
                 last_seen: now_nanos(),
             },
@@ -1529,7 +1836,7 @@ mod tests {
                 .values()
                 .all(|bytes| *bytes <= SOURCE_BYTES)
         );
-        assert!(manager.ring.dropped["p"] > 0);
+        assert!(manager.ring.project_metadata["p"].dropped_rows > 0);
         assert!(
             manager
                 .ring
@@ -1595,7 +1902,7 @@ mod tests {
                 .values()
                 .any(|stored| stored.row.text == "only output")
         );
-        assert!(ring.dropped.is_empty());
+        assert!(ring.project_metadata.is_empty());
         assert!(ring.expiry.is_empty());
     }
 
@@ -1625,7 +1932,7 @@ mod tests {
             ring.rows.values().map(|stored| stored.row.sequence).min(),
             Some(52)
         );
-        assert!(ring.dropped.is_empty());
+        assert!(ring.project_metadata.is_empty());
     }
 
     #[test]
@@ -1702,6 +2009,8 @@ mod tests {
                         token: 0,
                         pending_start: None,
                         task: None,
+                        collecting: false,
+                        gap_open: false,
                         overlap: HashMap::new(),
                         last_seen: old.timestamp_nanos_opt().unwrap(),
                     },
@@ -1755,6 +2064,8 @@ mod tests {
                 token: 1,
                 pending_start: None,
                 task: None,
+                collecting: false,
+                gap_open: false,
                 overlap: HashMap::new(),
                 last_seen: now_nanos(),
             },
@@ -2000,6 +2311,9 @@ mod tests {
     }
     impl RecoveryEngine {
         fn new(hold_first_headers: bool, quiet: bool) -> Self {
+            Self::with_end(hold_first_headers, quiet, false)
+        }
+        fn with_end(hold_first_headers: bool, quiet: bool, end: bool) -> Self {
             use std::io::{BufRead, BufReader, Read, Write};
             use std::os::unix::net::UnixListener;
             use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -2047,6 +2361,11 @@ mod tests {
                                     if !quiet {
                                         let body = format!("{} restored output\n", Utc::now().to_rfc3339());
                                         if write!(stream, "{:X}\r\n{}\r\n", body.len(), body).is_err() { return; }
+                                    }
+                                    if end {
+                                        let _ = stream.write_all(b"0\r\n\r\n");
+                                        closes.fetch_add(1, Ordering::SeqCst);
+                                        return;
                                     }
                                 }
                                 // Neither a waiting startup nor a quiet following
@@ -2107,6 +2426,8 @@ mod tests {
                     token: 41,
                     pending_start: None,
                     task: None,
+                    collecting: false,
+                    gap_open: false,
                     overlap: HashMap::new(),
                     last_seen: now_nanos(),
                 },
@@ -2140,6 +2461,88 @@ mod tests {
                 .store(true, std::sync::atomic::Ordering::Release);
             self.server.take().unwrap().join().unwrap();
             let _ = std::fs::remove_dir_all(&self.directory);
+        }
+    }
+
+    #[test]
+    fn completed_reader_handles_do_not_create_gaps_on_scope_or_inventory_changes() {
+        for action in ["switch", "stop", "deselect", "remove", "new-run", "retry"] {
+            let fixture = RecoveryEngine::with_end(false, false, true);
+            fixture.core.configure_project_logs("s", "p", None).unwrap();
+            fixture.wait_for(|page| page.sources[0].status == "ended");
+            {
+                let manager = fixture.core.project_logs.lock().unwrap();
+                let source = &manager.sources[&fixture.container.full_id];
+                assert!(source.task.is_some(), "completed handle is retained");
+                assert!(!source.collecting);
+            }
+            match action {
+                "switch" => {
+                    fixture
+                        .core
+                        .configure_project_logs("s", "other", None)
+                        .unwrap();
+                }
+                "stop" => {
+                    fixture.core.stop_project_logs("s").unwrap();
+                }
+                "deselect" => {
+                    fixture
+                        .core
+                        .configure_project_logs("s", "p", Some(vec![]))
+                        .unwrap();
+                }
+                "remove" => fixture.core.sync_project_log_containers("s", vec![]),
+                "new-run" => {
+                    let mut container = fixture.container.clone();
+                    container.started_at = Some("2026-09-12T00:00:00Z".into());
+                    fixture
+                        .core
+                        .sync_project_log_containers("s", vec![container]);
+                    fixture.wait_for(|page| page.sources[0].status == "ended");
+                }
+                "retry" => {
+                    fixture.core.retry_project_logs("s").unwrap();
+                    fixture.wait_for(|page| page.sources[0].status == "ended");
+                }
+                _ => unreachable!(),
+            }
+            let page = fixture
+                .core
+                .query_project_logs("s", &latest_query("p".into()))
+                .unwrap();
+            assert_eq!(page.coverage_gaps, 0, "{action}");
+        }
+    }
+
+    #[test]
+    fn invalidation_and_scope_exit_do_not_recount_an_open_stream_gap() {
+        for interrupted in [false, true] {
+            let fixture = RecoveryEngine::new(false, true);
+            fixture.core.configure_project_logs("s", "p", None).unwrap();
+            fixture.wait_for(|page| page.sources[0].status == "following");
+            if interrupted {
+                let mut manager = fixture.core.project_logs.lock().unwrap();
+                let token = manager.sources[&fixture.container.full_id].token;
+                manager.receive(
+                    "s",
+                    &fixture.container.full_id,
+                    token,
+                    ReaderMessage::Status(ReaderStatus::Retrying {
+                        attempt: 1,
+                        delay_seconds: 1,
+                    }),
+                );
+            }
+            let error = ApiError::new("ObservationTransport", "fixture interruption");
+            fixture.core.invalidate_project_logs("s", &error);
+            fixture.core.invalidate_project_logs("s", &error);
+            fixture.core.stop_project_logs("s").unwrap();
+            let page = fixture
+                .core
+                .query_project_logs("s", &latest_query("p".into()))
+                .unwrap();
+            assert_eq!(page.coverage_gaps, 1);
         }
     }
 

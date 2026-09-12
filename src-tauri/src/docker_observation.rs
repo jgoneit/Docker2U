@@ -125,6 +125,7 @@ struct Store {
     stats_error: Option<ApiError>,
     event_error: Option<ApiError>,
     event_status: String,
+    event_gap_open: bool,
     event_cursor: Option<String>,
     refresh_requested: u64,
     refresh_completed: u64,
@@ -151,6 +152,7 @@ impl Store {
             stats_error: None,
             event_error: None,
             event_status: "starting".into(),
+            event_gap_open: false,
             event_cursor: None,
             refresh_requested: 0,
             refresh_completed: 0,
@@ -269,6 +271,12 @@ impl Store {
             detail: Some(detail.into()),
         });
     }
+    fn open_event_gap_once(&mut self, detail: &str) {
+        if !self.event_gap_open {
+            self.gap(detail);
+            self.event_gap_open = true;
+        }
+    }
     fn record_stats(&mut self, snapshot: &StatsSnapshot) {
         self.resource_limits_dirty |= !snapshot.items.is_empty();
         for item in &snapshot.items {
@@ -308,7 +316,7 @@ impl ObservationService {
             store.inventory_error = Some(error.clone());
             store.event_error = Some(error.clone());
             store.event_status = "stopped".into();
-            store.gap("The Engine connection requires reconnection");
+            store.open_event_gap_once("The Engine connection requires reconnection");
         }
         self.cancel();
     }
@@ -555,24 +563,23 @@ impl ObservationService {
                     store.event_status = "starting".into();
                 }
                 ReaderStatus::Following => {
+                    store.event_gap_open = false;
                     store.event_status = "following".into();
                     store.event_error = None;
                 }
                 ReaderStatus::Retrying { .. } => {
-                    if store.event_status != "retrying" {
-                        store.gap("Event stream interrupted; recovery may omit events");
-                    }
+                    store.open_event_gap_once("Event stream interrupted; recovery may omit events");
                     store.event_status = "retrying".into();
                 }
                 ReaderStatus::Ended => {
                     store.event_status = "stopped".into();
-                    store.gap("Event stream ended");
+                    store.open_event_gap_once("Event stream ended");
                 }
                 ReaderStatus::Failed(error) => {
                     let failure = ApiError::new(&error.code, &error.message);
                     store.event_status = "error".into();
                     store.event_error = Some(failure.clone());
-                    store.gap("Event collection failed");
+                    store.open_event_gap_once("Event collection failed");
                     if error.invalidates_session {
                         invalidate = Some(failure);
                     }
@@ -901,6 +908,7 @@ impl Core {
                             return Err(ApiError::new("StaleSession", "Observation session ended"));
                         }
                         store.event_status = "error".into();
+                        store.open_event_gap_once("Event collection could not start");
                         store.event_error = Some(ApiError::new(&error.code, &error.message));
                     }
                 }
@@ -911,6 +919,7 @@ impl Core {
                     return Err(ApiError::new("StaleSession", "Observation session ended"));
                 }
                 store.event_status = "error".into();
+                store.open_event_gap_once("Event collection could not start");
                 store.event_error = Some(error);
             }
         }
@@ -973,7 +982,7 @@ impl Core {
             }
             store.event_status = "starting".into();
             store.event_error = None;
-            store.gap(
+            store.open_event_gap_once(
                 "Event collection was manually resumed; the interrupted interval may be incomplete",
             );
             store.event_cursor.clone()
@@ -991,6 +1000,7 @@ impl Core {
                     return Err(ApiError::new("StaleSession", "Observation session ended"));
                 }
                 store.event_status = "error".into();
+                store.open_event_gap_once("Event collection could not resume");
                 store.event_error = Some(error.clone());
                 return Err(error);
             }
@@ -1016,6 +1026,7 @@ impl Core {
                     return Err(ApiError::new("StaleSession", "Observation session ended"));
                 }
                 store.event_status = "error".into();
+                store.open_event_gap_once("Event collection could not resume");
                 store.event_error = Some(ApiError::new(&error.code, &error.message));
             }
         }
@@ -1137,6 +1148,93 @@ mod tests {
             event_task: Mutex::new(None),
             validation_task: Mutex::new(None),
         })
+    }
+
+    #[test]
+    fn event_retry_connecting_failure_and_manual_resume_record_one_interruption() {
+        let engine = PendingEngine::new();
+        let core = Core::default();
+        core.state.lock().unwrap().session = Some(Session {
+            id: "session".into(),
+            generation: 1,
+            handles: HashMap::new(),
+            stale: false,
+            needs_validation: false,
+            inventory: None,
+            target: engine.target.clone(),
+        });
+        let service = pending_service();
+        *core.observation.lock().unwrap() = Some(service.clone());
+        service.event_message(&core, ReaderMessage::Status(ReaderStatus::Following));
+        for attempt in 1..=5 {
+            service.event_message(&core, ReaderMessage::Status(ReaderStatus::Connecting));
+            service.event_message(
+                &core,
+                ReaderMessage::Status(ReaderStatus::Retrying {
+                    attempt,
+                    delay_seconds: 1,
+                }),
+            );
+        }
+        let failure = || {
+            ReaderMessage::Status(ReaderStatus::Failed(super::engine_reader::ReaderError {
+                code: "ObservationTransport".into(),
+                message: "fixture".into(),
+                transient: true,
+                invalidates_session: false,
+            }))
+        };
+        service.event_message(&core, failure());
+        assert_eq!(service.read(0).events.len(), 1);
+        core.retry_observation_events("session").unwrap();
+        assert_eq!(service.read(0).events.len(), 1);
+        // Stop the pending transport before injecting a deterministic recovery.
+        if let Some(task) = service.event_task.lock().unwrap().take() {
+            task.cancel();
+            tauri::async_runtime::block_on(task.join());
+        }
+        service.event_message(&core, ReaderMessage::Status(ReaderStatus::Following));
+        service.event_message(&core, failure());
+        assert_eq!(service.read(0).events.len(), 2);
+        // A separate resource-observation delay remains a separate record.
+        service
+            .store
+            .lock()
+            .unwrap()
+            .gap("Observation was delayed; resource samples may be missing");
+        assert_eq!(service.read(0).events.len(), 3);
+        service.invalidate(&ApiError::new("NeedsValidation", "fixture"));
+        service.invalidate(&ApiError::new("NeedsValidation", "fixture"));
+        assert_eq!(service.read(0).events.len(), 3);
+        core.shutdown();
+    }
+
+    #[test]
+    fn failed_event_start_and_repeated_resume_do_not_create_new_gaps() {
+        let engine = PendingEngine::new();
+        let core = Core::default();
+        let mut target = engine.target.clone();
+        target.endpoint = "tcp://fixture:2375".into();
+        core.state.lock().unwrap().session = Some(Session {
+            id: "session".into(),
+            generation: 1,
+            handles: HashMap::new(),
+            stale: false,
+            needs_validation: false,
+            inventory: None,
+            target,
+        });
+        let service = pending_service();
+        *core.observation.lock().unwrap() = Some(service.clone());
+        service.store.lock().unwrap().event_status = "error".into();
+        for _ in 0..2 {
+            assert_eq!(
+                core.retry_observation_events("session").unwrap_err().code,
+                "RemoteEndpoint"
+            );
+        }
+        assert_eq!(service.read(0).events.len(), 1);
+        core.shutdown();
     }
 
     struct PendingEngine {
