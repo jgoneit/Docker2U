@@ -46,6 +46,16 @@
   --success-glow: #11633f18;
   --log-match-bg: #f5ce57;
   --log-match-text: #1d2537;
+  --theme-preview-light-page: #e8edf5;
+  --theme-preview-light-window: #ffffff;
+  --theme-preview-light-bar: #f0f3f8;
+  --theme-preview-light-line: #c2ccdb;
+  --theme-preview-light-accent: #0054ff;
+  --theme-preview-dark-page: #101622;
+  --theme-preview-dark-window: #232c3b;
+  --theme-preview-dark-bar: #303c50;
+  --theme-preview-dark-line: #64758e;
+  --theme-preview-dark-accent: #90b9ff;
 }
 :root[data-theme="dark"] {
   --page: #171b23;
@@ -95,6 +105,16 @@
   --success-glow: #8be7bd18;
   --log-match-bg: #ffe0a6;
   --log-match-text: #1d2537;
+  --theme-preview-light-page: #e8edf5;
+  --theme-preview-light-window: #ffffff;
+  --theme-preview-light-bar: #f0f3f8;
+  --theme-preview-light-line: #c2ccdb;
+  --theme-preview-light-accent: #0054ff;
+  --theme-preview-dark-page: #101622;
+  --theme-preview-dark-window: #232c3b;
+  --theme-preview-dark-bar: #303c50;
+  --theme-preview-dark-line: #64758e;
+  --theme-preview-dark-accent: #90b9ff;
 }
 :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--text); background: var(--page); font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased;  }
 * { box-sizing: border-box; }
@@ -313,6 +333,20 @@ button:disabled, button.primary-button:disabled, button.danger-button:disabled, 
 .settings-heading h2 { font-size: 20px; }
 .settings-dialog > p { color: var(--text-muted); font-size: 12px; line-height: 1.8; margin-top: 14px; }
 .setting-field { display: flex; flex-direction: column; gap: 9px; margin: 24px 0; font-size: 13px; font-weight: 600; }
+.setting-theme-field { min-width: 0; padding: 0; border: 0; }
+.setting-theme-field legend { padding: 0; margin-bottom: 10px; }
+.theme-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.theme-choice { min-width: 0; display: flex; flex-direction: column; gap: 10px; padding: 8px; border: 2px solid transparent; border-radius: 11px; background: var(--raised); cursor: pointer; }
+.theme-choice:hover { background: var(--hover); }
+.theme-choice:has(input:checked) { border-color: var(--focus); background: var(--selected); }
+.theme-choice:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 3px; }
+.theme-preview { display: block; width: 100%; height: auto; }
+.theme-preview-light { --preview-page: var(--theme-preview-light-page); --preview-window: var(--theme-preview-light-window); --preview-bar: var(--theme-preview-light-bar); --preview-line: var(--theme-preview-light-line); --preview-accent: var(--theme-preview-light-accent); }
+.theme-preview-dark { --preview-page: var(--theme-preview-dark-page); --preview-window: var(--theme-preview-dark-window); --preview-bar: var(--theme-preview-dark-bar); --preview-line: var(--theme-preview-dark-line); --preview-accent: var(--theme-preview-dark-accent); }
+.theme-choice-label { display: flex; align-items: center; gap: 7px; padding: 0 1px 2px; color: var(--text-muted); font-size: 12px; font-weight: 500; }
+.theme-choice:has(input:checked) .theme-choice-label { color: var(--text); }
+.theme-choice input { -webkit-appearance: none; appearance: none; flex-shrink: 0; width: 14px; height: 14px; margin: 0; border: 1px solid var(--text-muted); border-radius: 50%; background: transparent; outline: none; cursor: pointer; }
+.theme-choice input:checked { border: 4px solid var(--primary); background: var(--on-action); }
 .setting-select-control { position: relative; display: flex; width: 100%; height: 40px; border-radius: 10px; background: var(--raised); color: var(--text-muted); }
 .setting-select-control select { -webkit-appearance: none; appearance: none; min-width: 0; width: 100%; height: 100%; padding: 0 36px 0 12px; border: 0; border-radius: inherit; background: transparent; color: var(--text); outline: none; font: inherit; font-weight: 400; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .setting-select-control > svg { position: absolute; top: 50%; right: 12px; transform: translateY(-50%); pointer-events: none; }
