@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronDown, Copy, Maximize2, Minimize2, Pause, Play, Search, X } from 'lucide-react';
+import { ArrowDownToLine, ChevronDown, Copy, LoaderCircle, Maximize2, Minimize2, Pause, Play, Search, Trash2, X } from 'lucide-react';
 import { coreError, type Container, type CoreError } from './api';
 import { ErrorDetails, type CopyText } from './components';
 import { CopyFeedback, type CopyFeedbackTone } from './CopyFeedback';
@@ -66,6 +66,7 @@ interface ProjectLogViewState {
   page: ProjectLogPage | null; keyword: string; services: string[] | null; paused: boolean;
   frozenSequence: number | null; savedScroll: number; anchorInset: number; following: boolean;
   offset: number | null; anchor: string | null; delayed: boolean;
+  afterSequence?: number | null;
 }
 export interface ProjectLogViewCache {
   sessionId: string | null; version: number; views: Map<string, ProjectLogViewState>; retainedPageBytes: number;
@@ -120,6 +121,7 @@ interface ProjectLogsProps {
   configure: (handles: string[] | null) => Promise<void>; error: CoreError | null; visible?: boolean;
   viewCache?: ProjectLogViewCache;
   copy: CopyText;
+  onClearStarted?: () => () => void;
   copyFeedback?: string; copyFeedbackTone?: CopyFeedbackTone; copyFeedbackId?: number;
   copyFeedbackHighlighted?: boolean; copyFeedbackHighlightUntil?: number;
   onError: (original: unknown, failure: CoreError, sessionId: string) => void;
@@ -131,7 +133,7 @@ export function ProjectLogs(props: ProjectLogsProps) {
   const scopeKey = JSON.stringify([props.project, props.fullId ?? null]);
   return <ProjectLogView key={`${cache.version}/${scopeKey}`} {...props} cache={cache} cacheVersion={cache.version} scopeKey={scopeKey} />;
 }
-function ProjectLogView({ sessionId, project, containers, initialPage, fullId, configure, error: collectionError, visible = true, onError, cache, cacheVersion, scopeKey, copy, copyFeedback, copyFeedbackTone, copyFeedbackId, copyFeedbackHighlighted, copyFeedbackHighlightUntil }: ProjectLogsProps & { cache: ProjectLogViewCache; cacheVersion: number; scopeKey: string }) {
+function ProjectLogView({ sessionId, project, containers, initialPage, fullId, configure, error: collectionError, visible = true, onError, cache, cacheVersion, scopeKey, copy, onClearStarted, copyFeedback, copyFeedbackTone, copyFeedbackId, copyFeedbackHighlighted, copyFeedbackHighlightUntil }: ProjectLogsProps & { cache: ProjectLogViewCache; cacheVersion: number; scopeKey: string }) {
   const t = useI18n(observationMessages);
   const saved = useState(() => cache.read(scopeKey))[0];
   const [page, setPage] = useState<ProjectLogPage | null>(saved ? saved.page : (fullId ? null : initialWindow(initialPage)));
@@ -141,6 +143,10 @@ function ProjectLogView({ sessionId, project, containers, initialPage, fullId, c
   const [paused, setPaused] = useState(saved?.paused ?? false);
   const [delayed, setDelayed] = useState(saved?.delayed ?? false);
   const [expanded, setExpanded] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const clearPending = useRef(false);
+  const clearFeedback = useRef<(() => void) | null>(null);
+  const afterSequence = useRef(saved?.afterSequence ?? null);
   const [selecting, setSelecting] = useState(!!initialPage?.needsSelection);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set((initialPage?.sources ?? []).filter(source => source.selected && source.status !== 'removed').map(source => source.fullId)));
   const [applying, setApplying] = useState(false);
@@ -175,7 +181,7 @@ function ProjectLogView({ sessionId, project, containers, initialPage, fullId, c
     const input = inputRef.current;
     cache.save(scopeKey, { page: pageRef.current, keyword: input.keyword, services: input.services, paused: input.paused,
       frozenSequence: frozenSequence.current, savedScroll: savedScroll.current, anchorInset: anchorInset.current,
-      following: following.current, offset: offset.current, anchor: anchor.current, delayed: delayedRef.current });
+      following: following.current, offset: offset.current, anchor: anchor.current, delayed: delayedRef.current, afterSequence: afterSequence.current });
   }, [cache, cacheVersion, scopeKey, sessionId]);
   useLayoutEffect(saveView);
   useEffect(() => {
@@ -187,7 +193,7 @@ function ProjectLogView({ sessionId, project, containers, initialPage, fullId, c
   const filterKey = JSON.stringify([sourceIds, keyword, !fullId && services !== null && sourceIds.length === 0]);
   // Configure describes collection startup, not the user's filtered/frozen view.
   // A returning view must keep its last page until its own query succeeds.
-  useEffect(() => { if (initialPage && !saved && !pageRef.current && !inputRef.current.paused && !fullId) setPage(initialWindow(initialPage)); }, [initialPage, fullId, saved]);
+  useEffect(() => { if (initialPage && !saved && !pageRef.current && !inputRef.current.paused && !fullId && afterSequence.current === null) setPage(initialWindow(initialPage)); }, [initialPage, fullId, saved]);
   useEffect(() => {
     if (!observationApi.available() || !initialPage) return;
     let live = true; let timer: ReturnType<typeof setTimeout> | undefined;
@@ -199,23 +205,40 @@ function ProjectLogView({ sessionId, project, containers, initialPage, fullId, c
       const deadline = setTimeout(() => {
         if (!mounted.current || pendingQuery.current?.id !== id) return;
         ++querySequence.current; pendingQuery.current = null; queuedRead.current = false;
+        clearPending.current = false; clearFeedback.current = null; setClearing(false);
         delayedRef.current = true; setDelayed(true);
       }, QUERY_TIMEOUT_MS);
       pendingQuery.current = { id, deadline };
       try {
         const [ids, text, missingServices] = JSON.parse(filterKey) as [string[], string, boolean];
-        const queried = await projectLogApi.query(sessionId, project, { sourceIds: ids, keyword: text, offset: following.current ? null : offset.current, limit: Math.min(PAGE_SIZE, Math.max(40, Math.ceil((viewport.current?.clientHeight ?? 400) / ROW_HEIGHT) + 24)), throughSequence: frozenSequence.current, anchorRowId: following.current ? null : anchor.current });
+        const establishingClear = clearPending.current;
+        const queried = await projectLogApi.query(sessionId, project, establishingClear
+          ? { sourceIds: ids, keyword: '', offset: null, limit: 1, throughSequence: null }
+          : { sourceIds: ids, keyword: text, offset: following.current ? null : offset.current, limit: Math.min(PAGE_SIZE, Math.max(40, Math.ceil((viewport.current?.clientHeight ?? 400) / ROW_HEIGHT) + 24)), throughSequence: frozenSequence.current, anchorRowId: following.current ? null : anchor.current, ...(afterSequence.current === null ? {} : { afterSequence: afterSequence.current }) });
         if (!live || id !== querySequence.current) return;
+        if (queried.sessionId !== sessionId || queried.project !== project) throw { code: 'InvalidProjectLogsResponse', message: 'Project log rows do not match the selected project.' };
+        if (establishingClear) {
+          if (queried.error) throw queried.error;
+          // Capture the Core watermark now, including rows collected while the
+          // display was paused. The retained ring and other views are untouched.
+          afterSequence.current = queried.maxSequence;
+          clearPending.current = false; setClearing(false);
+          setPage({ ...queried, rows: [], totalRows: 0, offset: 0, retainedFrom: null, retainedTo: null, anchorLost: false });
+          setError(null); clearFeedback.current?.(); clearFeedback.current = null;
+          queuedRead.current = true;
+          return;
+        }
         // An empty sourceIds list means "all" in IPC. A saved service filter
         // whose sources disappeared must remain empty instead of showing all.
         const result = missingServices ? { ...queried, rows: [], totalRows: 0, offset: 0 } : queried;
-        if (result.sessionId !== sessionId || result.project !== project) throw { code: 'InvalidProjectLogsResponse', message: 'Project log rows do not match the selected project.' };
         setPage(previous => !missingServices && previous?.rows.length && !result.totalRows && (result.error || result.sources.some(source => source.selected && (source.status === 'starting' || source.status === 'retrying')))
           ? { ...previous, sources: result.sources, error: result.error, needsSelection: result.needsSelection } : result);
         setError(result.error);
         if (result.error) inputRef.current.onError(result.error, result.error, sessionId);
       } catch (original) {
-        if (!live || id !== querySequence.current) return; const failure = coreError(original); setError(failure); inputRef.current.onError(original, failure, sessionId);
+        if (!live || id !== querySequence.current) return;
+        clearPending.current = false; clearFeedback.current = null; setClearing(false);
+        const failure = coreError(original); setError(failure); inputRef.current.onError(original, failure, sessionId);
       } finally {
         clearTimeout(deadline);
         if (pendingQuery.current?.id === id) {
@@ -234,6 +257,15 @@ function ProjectLogView({ sessionId, project, containers, initialPage, fullId, c
   function retryQuery() {
     ++querySequence.current; clearTimeout(pendingQuery.current?.deadline); pendingQuery.current = null; queuedRead.current = false;
     delayedRef.current = false; setDelayed(false); setQueryRevision(value => value + 1);
+  }
+  function clearView() {
+    if (clearing) return;
+    clearFeedback.current = onClearStarted?.() ?? null;
+    clearPending.current = true; setClearing(true);
+    resetFilter(); savedScroll.current = 0; frozenSequence.current = null;
+    pauseTransition.current = false; setPaused(false);
+    viewport.current?.focus();
+    retryQuery();
   }
   const restoreScroll = useCallback(() => {
     const node = viewport.current; const current = pageRef.current;
@@ -309,7 +341,7 @@ function ProjectLogView({ sessionId, project, containers, initialPage, fullId, c
   const emptyMessage = failure || visibleSources.some(source => source.error) ? 'logsUnavailable'
     : needSelection || (page && selectedSources.length === 0) ? (fullId ? 'sourceNotSelected' : 'noSources')
     : !page || selectedSources.some(source => source.status === 'starting' || source.status === 'retrying') ? 'logsLoading'
-    : hasFilters ? 'noMatchingLogs' : 'noLogs';
+    : hasFilters ? 'noMatchingLogs' : afterSequence.current !== null ? 'clearedWaiting' : 'noLogs';
   const sourceCounts = new Map<string, number>();
   for (const source of selectedSources) sourceCounts.set(source.status, (sourceCounts.get(source.status) ?? 0) + 1);
   const content = <section className={`project-logs${expanded ? ' project-logs-expanded' : ''}`} data-log-scope={fullId ? 'container' : 'project'} aria-label={t('logs')} onKeyDown={event => {
@@ -318,9 +350,10 @@ function ProjectLogView({ sessionId, project, containers, initialPage, fullId, c
     <div className="project-log-toolbar">
       {!fullId && <details className="project-service-filter"><summary>{t('serviceFilter')}{services !== null ? ` (${services.length})` : ''}<ChevronDown className="project-service-chevron" size={14} aria-hidden="true" /></summary><div><button onClick={() => { setServices(null); resetFilter(); }}>{t('allServices')}</button>{serviceOptions.map(service => <label key={service}><input type="checkbox" checked={services === null || services.includes(service)} disabled={(services ?? serviceOptions).length === 1 && (services === null || services.includes(service))} onChange={event => { const base = services ?? serviceOptions; setServices(event.target.checked ? [...new Set([...base, service])] : base.filter(item => item !== service)); resetFilter(); }} />{service}</label>)}</div></details>}
       <label className="project-keyword"><Search size={14} aria-hidden="true" /><input type="search" aria-label={t('keyword')} placeholder={t('keywordHint')} value={keyword} onChange={event => { setKeyword(event.target.value); resetFilter(); }} /></label>
-      <button onClick={togglePaused} aria-pressed={paused}>{paused ? <Play size={14} aria-hidden="true" /> : <Pause size={14} aria-hidden="true" />}{t(paused ? 'resume' : 'pause')}</button>
-      <button onClick={() => { resetFilter(); frozenSequence.current = null; setPaused(false); retryQuery(); }}>{t('latest')}</button>
+      <button disabled={clearing} onClick={togglePaused} aria-pressed={paused}>{paused ? <Play size={14} aria-hidden="true" /> : <Pause size={14} aria-hidden="true" />}{t(paused ? 'resume' : 'pause')}</button>
+      <button disabled={clearing} aria-label={t('latest')} title={t('latest')} onClick={() => { resetFilter(); frozenSequence.current = null; setPaused(false); retryQuery(); }}><ArrowDownToLine size={14} aria-hidden="true" /></button>
       <button disabled={!page?.rows.length} aria-label={t('copy')} title={t('copy')} onClick={() => void copy(logRowsText(page?.rows ?? []), 'logs')}><Copy size={14} aria-hidden="true" /></button>
+      <button disabled={clearing || !page?.totalRows} aria-busy={clearing} aria-label={t('clear')} title={t(clearing ? 'clearing' : 'clear')} onClick={clearView}>{clearing ? <LoaderCircle className="spin" size={14} aria-hidden="true" /> : <Trash2 size={14} aria-hidden="true" />}</button>
       <button ref={expanded ? expandedClose : expandButton} aria-label={t(expanded ? 'collapse' : 'expand')} onClick={toggleExpanded}>{expanded ? <Minimize2 size={14} aria-hidden="true" /> : <Maximize2 size={14} aria-hidden="true" />}</button>
       {!fullId && <button ref={sourceButton} onClick={selectSources}>{t('changeSources')}</button>}
     </div>

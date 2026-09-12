@@ -503,10 +503,16 @@ function AppContent() {
       if (clipboardAttempt.current === id) setClipboardMessage({ id, key: 'copyFailure', highlightUntil: Date.now() + 2_000, highlighted: true });
     }
   }
-  function clearDisplayedLogs() {
+  function beginDisplayedLogsClear() {
     const id = ++clipboardAttempt.current;
+    return () => {
+      if (clipboardAttempt.current === id) setClipboardMessage({ id, key: 'logsCleared', highlightUntil: Date.now() + 2_000, highlighted: true });
+    };
+  }
+  function clearDisplayedLogs() {
+    const completed = beginDisplayedLogsClear();
     clearLogs();
-    setClipboardMessage({ id, key: 'logsCleared', highlightUntil: Date.now() + 2_000, highlighted: true });
+    completed();
   }
   const ready = environment?.status === 'ready' && !!environment.sessionId;
   const connectionStatus = connecting ? t('checking') : reconnectRequired ? t('reconnectRequired') : ready ? t('connected') : t('disconnected');
@@ -522,7 +528,7 @@ function AppContent() {
   const [connectionTitle, connectionHelp] = connectionIssue(connectionError, environment?.status === 'unsupported');
   const copyFeedback = clipboardMessage ? clipboardMessage.key === 'copied' ? t('copied', { label: t(clipboardMessage.label) }) : t(clipboardMessage.key) : '';
   const copyFeedbackTone = clipboardMessage?.key === 'logsCleared' ? 'cleared' : clipboardMessage?.key === 'copyFailure' ? 'error' : 'success';
-  const projectCopyProps = { copy, copyFeedback, copyFeedbackTone, copyFeedbackId: clipboardMessage?.id,
+  const projectCopyProps = { copy, onClearStarted: beginDisplayedLogsClear, copyFeedback, copyFeedbackTone, copyFeedbackId: clipboardMessage?.id,
     copyFeedbackHighlighted: clipboardMessage?.highlighted, copyFeedbackHighlightUntil: clipboardMessage?.highlightUntil } as const;
   return <div className="app-shell">
     <div className="main-content" inert={!!confirmation || settingsOpen || logsExpanded}>

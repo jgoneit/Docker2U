@@ -44,7 +44,7 @@ export function installObservationFixture() {
     configure: async (sessionId: string, project: string, handles: string[] | null) => { count('configureLogs'); configuredProject = project; selected = handles === null ? null : new Set(snapshot?.containers.filter(item => handles.includes(item.handle)).map(item => item.fullId)); const result = await logs(sessionId, project); return { ...result, offset: Math.max(0, result.rows.length - 160), rows: result.rows.slice(-160) }; },
     query: async (sessionId, project, query) => {
       count('queryLogs'); const result = await logs(sessionId, project);
-      const rows = result.rows.filter(row => (!query.sourceIds.length || query.sourceIds.includes(row.sourceId)) && row.text.toLowerCase().includes(query.keyword.toLowerCase()) && (query.throughSequence === null || row.sequence <= query.throughSequence));
+      const rows = result.rows.filter(row => (!query.sourceIds.length || query.sourceIds.includes(row.sourceId)) && row.text.toLowerCase().includes(query.keyword.toLowerCase()) && (query.throughSequence === null || row.sequence <= query.throughSequence) && (query.afterSequence == null || row.sequence > query.afterSequence));
       let offset = query.offset === null ? Math.max(0, rows.length - query.limit) : query.offset;
       if (query.anchorRowId) { const index = rows.findIndex(row => row.rowId === query.anchorRowId); if (index >= 0) offset = index; }
       return { ...result, rows: rows.slice(offset, offset + query.limit), offset, totalRows: rows.length, anchorLost: !!query.anchorRowId && !rows.some(row => row.rowId === query.anchorRowId) };

@@ -17,6 +17,8 @@ export const observationMessages = {
   keyword: { ko: '로그 키워드 검색', en: 'Search log text' }, keywordHint: { ko: '키워드로 필터…', en: 'Filter by keyword…' },
   pause: { ko: '화면 일시정지', en: 'Pause view' }, resume: { ko: '화면 재개', en: 'Resume view' }, pausedHint: { ko: '화면이 고정되었습니다. 로그 수집은 계속됩니다.', en: 'View paused. Log collection continues.' },
   latest: { ko: '최신 위치', en: 'Latest' }, copy: { ko: '현재 표시 구간 복사', en: 'Copy displayed range' },
+  clear: { ko: '현재 로그 비우기', en: 'Clear displayed logs' }, clearing: { ko: '현재 로그를 비우는 중…', en: 'Clearing displayed logs…' },
+  clearedWaiting: { ko: '이전 로그를 화면에서 비웠습니다. 새로 수집되는 로그가 여기에 표시됩니다.', en: 'Previous logs were cleared from this view. Newly collected logs will appear here.' },
   expand: { ko: '로그 확대', en: 'Expand logs' }, collapse: { ko: '확대 닫기', en: 'Close expanded logs' },
   anchorLost: { ko: '보고 있던 로그가 보관 한도로 삭제되었습니다.', en: 'The log row you were viewing was removed at the retention limit.' },
   coverage: { ko: '보관 구간', en: 'Retained interval' }, trimmed: { ko: '보관 한도로 {count}행 삭제됨', en: '{count} rows removed at retention limit' },

@@ -106,6 +106,7 @@ fn real_engine_observation_read_only() {
         keyword: String::new(),
         offset: None,
         limit: 500,
+        after_sequence: None,
         through_sequence: None,
         anchor_row_id: None,
     };

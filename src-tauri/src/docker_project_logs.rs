@@ -55,6 +55,8 @@ pub struct ProjectLogQuery {
     pub offset: Option<usize>,
     #[serde(default = "page_size")]
     pub limit: usize,
+    #[serde(default)]
+    pub after_sequence: Option<u64>,
     pub through_sequence: Option<u64>,
     #[serde(default)]
     pub anchor_row_id: Option<String>,
@@ -450,6 +452,9 @@ impl ProjectLogManager {
             .filter(|stored| {
                 stored.project == query.project
                     && query
+                        .after_sequence
+                        .is_none_or(|sequence| stored.row.sequence > sequence)
+                    && query
                         .through_sequence
                         .is_none_or(|sequence| stored.row.sequence <= sequence)
                     && (source_ids.is_empty() || source_ids.contains(&stored.row.source_id))
@@ -556,6 +561,7 @@ fn latest_query(project: String) -> ProjectLogQuery {
         keyword: String::new(),
         offset: None,
         limit: 500,
+        after_sequence: None,
         through_sequence: None,
         anchor_row_id: None,
     }

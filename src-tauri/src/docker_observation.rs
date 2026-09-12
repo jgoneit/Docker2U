@@ -1314,6 +1314,7 @@ mod tests {
             keyword: String::new(),
             offset: None,
             limit: 10,
+            after_sequence: None,
             through_sequence: None,
             anchor_row_id: None,
         };
