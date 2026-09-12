@@ -743,3 +743,54 @@ Clear 후 갱신, 최소화 표본·복원을 검증했다. 생성 실패와 준
 `.cache/native-smoke/runs/d2u-smoke-9cc8d9c780/ui-worker-final.json`, 화면은
 같은 폴더의 `navigation-restored.png`다. fixture 실행을 정상 종료하고 trace를
 보관했다. 이 최종 통과가 앞서 기록한 실패 시도를 삭제하거나 성공으로 바꾸지는 않는다.
+
+
+## 콘솔형 로그와 하단바 복사 효과 복원 — 2026-09-12
+
+탐색 트리 개편에서 Compose 개별 로그를 `ProjectLogs`로 통일하면서 기존
+`LogPanel`의 콘솔 표현과 App 하단바 복사 피드백 연결이 빠졌다. 이 경로는
+클립보드를 직접 호출하고 본문 위에 자체 결과 문구를 넣어, 원래의 하단바
+그라데이션과 지연 응답 순서 보호를 사용하지 않았다.
+
+- 기존 로그 패널과 같은 테마별 inset 배경, 12px 고정폭 글꼴, 얕은 테두리를 적용했다.
+- 표 형태의 열 머리글을 제거하고 통합 로그 출처를 각 행 앞에 간결하게 표시한다.
+- 개별 로그에는 반복되는 서비스·컨테이너 열을 숨겨 시간과 본문을 넓게 보여 준다.
+- 26px 가상 행 높이와 수집·조회·대상별 탐색 상태는 유지한다. 복사되는 구간과 출처 데이터 형식도 유지한다.
+- 프로젝트·Compose 개별 복사를 App의 공통 복사 경로에 연결했다. 성공·실패 강조는 2초 뒤 사라지고 마지막 결과 문구는 남는다. 반복 복사는 강조를 다시 시작하며, 늦은 이전 응답은 새 결과를 덮어쓰지 못한다.
+- 확대 로그에도 같은 CopyFeedback 하단바를 배치해 기존 강조 만료 시각을 공유한다.
+- 통합 로그에 화면 비우기 기능을 추가하지 않았다. 명령을 입력하는 컨테이너 터미널은 기존 콘솔형 로그 화면 복원과 별개 기능으로 구분한다.
+
+구현 전 Seal Basic Task `docker2u-log-console-feedback-20260912`를 생성하고
+프런트엔드 테스트·빌드를 필수 검사로 선택했다. Rust·공개 IPC·저장 형식은
+변경하지 않았다.
+
+### 후속 집중 검사와 설치 앱 검증
+
+- 집중 프런트엔드 검사: `observation.test.tsx`와 `App.projectCopyFeedback.test.tsx` **51개 통과**. 공통 복사 경로, 성공·실패, 반복 강조, 늦은 응답, 확대 시 만료 시각 유지, 탐색 및 재연결을 검사했다.
+- 새 브라우저 사례: 테마·언어·창 크기 9개 조합 **9개 통과**. 3,000행 이상에서 실제 viewport와 보이는 행의 교차 영역, 고정폭 글꼴·26px 행 높이, 통합/개별 출처 표현, 복사 데이터 및 확대 하단바를 검사했다.
+- 전체 브라우저 회귀: `pnpm test:browser` **279개 통과** (4.7분). 결과는 `.cache/log-console-browser-full.log`에 보관했다.
+- `tsc --noEmit`과 `pnpm native:build --ci -- --locked` 통과. 프로덕션 번들은 ad-hoc 서명 후 `codesign --verify --deep --strict`로 검증했다.
+- 실제 `/Applications/Docker2U.app` 프로세스 PID **87790**을 확인했다. Computer Use로 `desktop-linux`의 프로젝트 통합 **428행**, PostgreSQL **128행**, Redis **300행**을 열어 콘솔 본문이 실제 화면 안에 표시되는 것을 확인했다.
+- 개별·통합·확대 화면에서 복사 후 하단바 강조를 확인했다. 강조가 끝난 뒤에도 완료 문구와 로그 본문이 남았고, 확대 닫기와 다른 대상 이동에서도 결과 문구가 유지됐다.
+- 출력 없는 memcached는 **0행 / 수집 중 1개**와 새 출력 대기 안내를 표시했다. 컨테이너 제어 명령은 실행하지 않았다. 검증 후 설치 앱은 필터·일시정지 없이 Redis 로그 화면으로 복원했다.
+
+| 설치 확인 | 값 |
+| --- | --- |
+| 교체 전 바이너리 SHA-256 | `44cd7e57a88fcf23a12790863fe5ca7acc6000e54050712f5325fad8a752abd7` |
+| 교체 후 바이너리 SHA-256 | `63a77d3556c302f6fa22896164971372a66e021f0bfeed216223e9368bb90fce` |
+| 롤백 백업 | `/Users/jgoneit/project/Docker2U/.local-apps/backups/20260912-180117-console-feedback/Docker2U.app` |
+| 파일·심볼릭 링크 비교 | 기존 설치 ↔ 백업, 빌드 번들 ↔ 설치 준비본 일치 |
+| 설치 바이너리·서명 | 새 빌드와 해시 일치, strict 검증 통과 |
+
+검사 로그는 `.cache/log-console-focused-tests.log`,
+`.cache/log-console-browser-focused.log`, `.cache/log-console-typecheck.log`,
+`.cache/log-console-production-build.log`에 있다. 설치 메타데이터는
+`.cache/log-console-installation.json`, 실제 화면은
+`.cache/log-console-installed/`의 `individual-copy-glow.png`,
+`individual-copy-settled.png`, `project-copy-glow.png`,
+`expanded-copy-glow.png`, `expanded-copy-settled.png`, `quiet-stream.png`,
+`redis-console-final.png`에 보관했다.
+
+이번 후속 변경에서는 Rust 전체 검사와 합성 Native Smoke를 다시 실행하지
+않았다. 앞선 탐색 트리 검증과 이번 실제 설치 앱 검증을 구분하며, notarization
+또는 명령 입력용 컨테이너 터미널의 구현·검증을 의미하지 않는다.
