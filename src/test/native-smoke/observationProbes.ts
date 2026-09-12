@@ -13,6 +13,25 @@ type Binding = { runId: string; binarySha256: string; startedAtMs: number };
 const project = 'native-smoke-project';
 function assert(value: unknown, message: string): asserts value { if (!value) throw new Error(message); }
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+// DOM presence alone does not prove that the virtualized tail is inside its
+// viewport. Include every clipping ancestor and the visible window in this check.
+function visibleLogTimes(): HTMLTimeElement[] {
+  return [...document.querySelectorAll<HTMLTimeElement>('.project-log-row time[datetime]')].filter(time => {
+    const row = time.closest<HTMLElement>('.project-log-row');
+    if (!row) return false;
+    const rect = row.getBoundingClientRect();
+    let left = 0; let top = 0; let right = innerWidth; let bottom = innerHeight;
+    for (let parent = row.parentElement; parent; parent = parent.parentElement) {
+      const style = getComputedStyle(parent);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      const bounds = parent.getBoundingClientRect();
+      if (style.overflowX !== 'visible') { left = Math.max(left, bounds.left); right = Math.min(right, bounds.right); }
+      if (style.overflowY !== 'visible') { top = Math.max(top, bounds.top); bottom = Math.min(bottom, bounds.bottom); }
+    }
+    return rect.height > 0 && rect.top >= top - 0.5 && rect.bottom <= bottom + 0.5
+      && Math.min(rect.right, right) - Math.max(rect.left, left) >= 24;
+  });
+}
 async function collected(): Promise<{ observation: ObservationRead; logs: ProjectLogPage }> {
   const sessionId = environment?.sessionId;
   assert(sessionId, 'Connect to the owned fixture first');
@@ -76,16 +95,17 @@ export async function verifyObservationRestore(record: RecordStep) {
   assert(rows.length >= 2 && logs.maxSequence > baseline.sequence, 'No project logs were collected inside the hidden interval; enable fixture live-on');
   assert(events.length > 0, 'No Engine Health events were recorded while hidden');
   assert(observation.inventory && observation.inventory.generation > baseline.generation && !observation.inventory.stale, 'Background inventory did not refresh');
-  const renderedReceipt = () => [...document.querySelectorAll<HTMLTimeElement>('.project-log-row time[datetime]')]
+  const renderedReceipt = () => visibleLogTimes()
     .some(time => Date.parse(time.dateTime) > hidden.at);
   const displayedInventory = () => Date.parse(document.querySelector<HTMLTimeElement>('.refresh-age[datetime]')?.dateTime ?? '');
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline && (!renderedReceipt() || !(displayedInventory() > hidden.at))) await wait(50);
-  assert(renderedReceipt() && displayedInventory() > hidden.at, 'Restored screen has not applied background inventory and log rows');
+  assert(renderedReceipt() && displayedInventory() > hidden.at, 'Restored screen has not displayed background log rows inside the visible viewport');
   record('verified native background collection and restore', { sessionId: observation.sessionId, hiddenAt: hidden.at, restoredAt: restored.at,
     hiddenResourcePoints: samples.length, hiddenLogRows: rows.length, hiddenEvents: events.length,
     beforeGeneration: baseline.generation, afterGeneration: observation.inventory.generation,
     beforeLogSequence: baseline.sequence, afterLogSequence: logs.maxSequence, renderedRows: document.querySelectorAll('.project-log-row').length,
+    visibleLogRows: visibleLogTimes().length,
     resourceReceipts: samples.map(point => ({ fullId: point.fullId, at: Date.parse(point.sampledAt) })),
     logReceipts: rows.map(row => ({ fullId: row.fullId, at: Date.parse(row.receivedAt) })),
     eventReceipts: events.map(event => ({ fullId: event.fullId, at: Date.parse(event.observedAt) })),

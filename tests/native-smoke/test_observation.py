@@ -22,7 +22,7 @@ class ObservationEvidenceTests(unittest.TestCase):
                     "sessionId": "native-session", "fullIds": IDS, "sources": 2, "pipes": ["tty", "stdout"], "eventStatus": "following", "resourcePoints": 2,
                     "at": 1500, "sequence": 2, "generation": 1}
         restored = {"sessionId": "native-session", "hiddenAt": 2000, "restoredAt": 20000, "beforeGeneration": 1, "afterGeneration": 3,
-                    "beforeLogSequence": 2, "afterLogSequence": 100, "hiddenResourcePoints": 2, "hiddenLogRows": 2, "hiddenEvents": 1, "renderedRows": 40,
+                    "beforeLogSequence": 2, "afterLogSequence": 100, "hiddenResourcePoints": 2, "hiddenLogRows": 2, "hiddenEvents": 1, "renderedRows": 40, "visibleLogRows": 6,
                     "resourceReceipts": [{"fullId": value, "at": 8000} for value in IDS], "logReceipts": [{"fullId": value, "at": 9000} for value in IDS],
                     "eventReceipts": [{"fullId": IDS[0], "at": 10000}], "displayedInventoryAt": 17000,
                     "visibility": [{"state": "hidden", "at": 2000}, {"state": "visible", "at": 20000}]}
@@ -76,6 +76,14 @@ class ObservationEvidenceTests(unittest.TestCase):
             elif fault == "wrong-stats": next(row for row in trace if row["phase"] == "stats-payload")["fullIds"] = [IDS[0]]
             else: trace = [row for row in trace if row["phase"] != ("api-log-output" if fault == "no-log-output" else "api-health-event")]
             with self.subTest(fault=fault), self.assertRaises(ValueError):
+                fixture.validate_ui(manifest, report, trace, now_ms=24000)
+
+    def test_dom_rows_without_visible_viewport_evidence_do_not_pass(self):
+        for visible in [None, 0, -1, True, 41]:
+            manifest, report, trace = copy.deepcopy(self.evidence())
+            value = report["steps"][4]["detail"]
+            value["visibleLogRows"] = visible
+            with self.subTest(visible=visible), self.assertRaisesRegex(ValueError, "not visible inside the viewport"):
                 fixture.validate_ui(manifest, report, trace, now_ms=24000)
 
     def test_owned_http_stream_emits_manifest_binding_for_tty_and_multiplex(self):

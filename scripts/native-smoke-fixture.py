@@ -151,6 +151,8 @@ def validate_observation(probe, by_name, attempt, steps, events, manifest):
             raise ValueError("Core observation receipts lie outside the hidden interval: " + key)
     if value.get("renderedRows", 0) < 1 or not hidden < value.get("displayedInventoryAt", 0) <= attempt[-1]["timeMs"]:
         raise ValueError("Restored native screen has not applied background data")
+    if type(value.get("visibleLogRows")) is not int or not 1 <= value["visibleLogRows"] <= value["renderedRows"]:
+        raise ValueError("Restored native log rows are not visible inside the viewport")
     if not successful_command(events, ["container", "ls"], hidden, restored) or not successful_command(events, ["container", "stats"], hidden, restored):
         raise ValueError("Hidden interval lacks successful native inventory and stats collection")
     if not any(row.get("phase") == "stats-payload" and set(row.get("fullIds", [])) == ids and hidden < row.get("timeMs", 0) < restored for row in events):

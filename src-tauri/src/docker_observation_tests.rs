@@ -15,6 +15,123 @@ fn wait_until(mut ready: impl FnMut() -> bool) {
 }
 
 #[test]
+fn observation_refresh_waits_for_an_inflight_stream_start() {
+    let fixture = Fixture::new();
+    fixture.states(&["running"]);
+    let id = fixture.connect();
+    let list = fixture.core.list_containers(&id).unwrap();
+    fixture.mode("held_info");
+    let core = fixture.core.clone();
+    let request_id = id.clone();
+    let generation = list.generation;
+    let handle = list.containers[0].handle.clone();
+    let start = thread::spawn(move || core.start_log_stream(&request_id, generation, &handle));
+    wait_until(|| fixture.dir.join("verifying").exists());
+
+    fixture
+        .core
+        .configure_observation(&id, ObservationScope::All)
+        .unwrap();
+    // Check the atomic reservation too: the worker's earlier busy snapshot is
+    // insufficient when a log start acquires the state lock immediately after it.
+    assert_eq!(
+        fixture.core.fetch_observed_inventory(&id).unwrap_err().code,
+        "Busy"
+    );
+    assert_eq!(fixture.core.active(&id).unwrap().generation, generation);
+    assert!(fixture.core.state.lock().unwrap().stream_starting);
+    assert!(!fixture.core.state.lock().unwrap().refreshing);
+
+    fixture.mode("");
+    fs::write(fixture.dir.join("release-info"), "1").unwrap();
+    let stream = start.join().unwrap().unwrap();
+    wait_until(|| fixture.dir.join("following").exists());
+    wait_until(|| {
+        fixture
+            .core
+            .read_observation(&id, 0)
+            .unwrap()
+            .inventory
+            .is_some_and(|inventory| inventory.generation > generation)
+    });
+    assert!(!fixture.core.state.lock().unwrap().stream_starting);
+    assert!(
+        !fixture
+            .core
+            .read_log_stream(&id, &stream.stream_id)
+            .unwrap()
+            .terminal
+    );
+    assert_eq!(stream.full_id, list.containers[0].full_id);
+    assert_eq!(fixture.mutations(), 0);
+    fixture.core.shutdown();
+}
+
+#[test]
+fn observation_refresh_before_stream_start_requires_the_new_inventory() {
+    let fixture = Fixture::new();
+    fixture.states(&["running"]);
+    let id = fixture.connect();
+    let list = fixture.core.list_containers(&id).unwrap();
+    fixture.mode("held_inspect");
+    fixture
+        .core
+        .configure_observation(&id, ObservationScope::All)
+        .unwrap();
+    wait_until(|| fixture.dir.join("inspecting").exists());
+    assert_eq!(
+        fixture
+            .core
+            .start_log_stream(&id, list.generation, &list.containers[0].handle)
+            .unwrap_err()
+            .code,
+        "Busy"
+    );
+    assert!(!fixture.dir.join("following").exists());
+
+    fixture.mode("");
+    fs::write(fixture.dir.join("release-inspect"), "1").unwrap();
+    wait_until(|| {
+        fixture
+            .core
+            .read_observation(&id, 0)
+            .unwrap()
+            .inventory
+            .is_some_and(|inventory| inventory.generation > list.generation)
+    });
+    let latest = fixture
+        .core
+        .read_observation(&id, 0)
+        .unwrap()
+        .inventory
+        .unwrap();
+    assert_eq!(
+        fixture
+            .core
+            .start_log_stream(&id, list.generation, &list.containers[0].handle)
+            .unwrap_err()
+            .code,
+        "StaleHandle"
+    );
+    assert!(!fixture.dir.join("following").exists());
+    let stream = fixture
+        .core
+        .start_log_stream(&id, latest.generation, &latest.containers[0].handle)
+        .unwrap();
+    wait_until(|| fixture.dir.join("following").exists());
+    assert_eq!(stream.full_id, list.containers[0].full_id);
+    assert!(
+        !fixture
+            .core
+            .read_log_stream(&id, &stream.stream_id)
+            .unwrap()
+            .terminal
+    );
+    assert_eq!(fixture.mutations(), 0);
+    fixture.core.shutdown();
+}
+
+#[test]
 fn background_stats_complete_before_a_coalesced_inventory_refresh() {
     let fixture = Fixture::new();
     fixture.states(&["running"]);

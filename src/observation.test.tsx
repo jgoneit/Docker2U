@@ -139,10 +139,12 @@ it('anchors a historical row when a late log shifts its sorted index', async () 
   const viewport = screen.getByRole('log', { name: '통합 로그' });
   Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 260 });
   Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 5200 });
-  viewport.scrollTop = 105 * 26;
+  // Deliver the geometry change before the separate user scroll.
+  fireEvent.scroll(viewport);
+  viewport.scrollTop = 105 * 26 + 7;
   fireEvent.scroll(viewport);
   await waitFor(() => expect(projectLogApi.query).toHaveBeenLastCalledWith('one', 'demo', expect.objectContaining({ anchorRowId: 'r5' })));
-  await waitFor(() => expect(viewport.scrollTop).toBe(106 * 26));
+  await waitFor(() => expect(viewport.scrollTop).toBe(106 * 26 + 7));
 });
 
 
@@ -170,4 +172,42 @@ it('keeps both sides of a backwards clock adjustment inside the chart time axis'
   const coordinates = lines.flatMap(line => line.getAttribute('points')!.split(' ').map(pair => Number(pair.split(',')[0])));
   expect(Math.min(...coordinates)).toBe(8);
   expect(Math.max(...coordinates)).toBe(592);
+});
+
+
+it('loads a larger window and keeps the latest row visible when the log viewport grows', async () => {
+  let resize: ResizeObserverCallback | undefined;
+  const observer = { observe: vi.fn(), disconnect: vi.fn(), unobserve: vi.fn() };
+  vi.stubGlobal('ResizeObserver', class { constructor(callback: ResizeObserverCallback) { resize = callback; } observe = observer.observe; disconnect = observer.disconnect; unobserve = observer.unobserve; });
+  try {
+    const latest = { ...page(160), totalRows: 5000, offset: 4840, maxSequence: 5000 };
+    vi.mocked(projectLogApi.query).mockResolvedValue(latest);
+    const { unmount } = render(<PreferencesProvider><ProjectLogs sessionId="one" project="demo" containers={[container]} initialPage={latest} configure={vi.fn()} error={null} onError={vi.fn()} /></PreferencesProvider>);
+    const viewport = screen.getByRole('log', { name: '통합 로그' });
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 130 });
+    await act(async () => resize!([], observer));
+    await waitFor(() => expect(projectLogApi.query).toHaveBeenLastCalledWith('one', 'demo', expect.objectContaining({ limit: 40, offset: null })));
+    expect(viewport.scrollTop).toBe(5000 * 26 - 130);
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 1300 });
+    await act(async () => resize!([], observer));
+    await waitFor(() => expect(projectLogApi.query).toHaveBeenLastCalledWith('one', 'demo', expect.objectContaining({ limit: 74, offset: null })));
+    expect(viewport.scrollTop).toBe(5000 * 26 - 1300);
+    unmount();
+    expect(observer.disconnect).toHaveBeenCalledOnce();
+  } finally { vi.unstubAllGlobals(); }
+});
+
+
+it('keeps a paused scroll position when a hidden tab reports zero scroll offset', async () => {
+  const initial = page();
+  const view = (visible: boolean) => <PreferencesProvider><ProjectLogs sessionId="one" project="demo" containers={[container]} initialPage={initial} configure={vi.fn()} error={null} visible={visible} onError={vi.fn()} /></PreferencesProvider>;
+  const { rerender } = render(view(true));
+  await waitFor(() => expect(projectLogApi.query).toHaveBeenCalled());
+  const viewport = screen.getByRole('log', { name: '통합 로그' });
+  let hidden = false, scrollTop = 1234;
+  Object.defineProperty(viewport, 'scrollTop', { configurable: true, get: () => hidden ? 0 : scrollTop, set: value => { scrollTop = hidden ? 0 : value; } });
+  fireEvent.click(screen.getByRole('button', { name: '화면 일시정지' }));
+  hidden = true; rerender(view(false));
+  hidden = false; rerender(view(true));
+  expect(viewport.scrollTop).toBe(1234);
 });
