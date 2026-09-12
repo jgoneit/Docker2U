@@ -26,6 +26,9 @@ hyper = { version = "1", default-features = false, features = ["client", "http1"
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 tokio = { version = "1", features = ["net", "rt", "sync", "time"] }
 
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

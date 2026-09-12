@@ -28,6 +28,7 @@ const MAX_LOGS: usize = 64;
 const MAX_STARTS: usize = 4;
 const JSON_LIMIT: usize = 1024 * 1024;
 const RETRY_SECONDS: [u64; 5] = [1, 2, 5, 10, 30];
+const STABLE_CONNECTION: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -117,6 +118,30 @@ pub(super) enum ReaderMessage {
     Log(LogRecord),
     Event(EngineEventRecord),
     Status(ReaderStatus),
+}
+
+#[derive(Default)]
+struct RetryBudget {
+    attempt: usize,
+}
+impl RetryBudget {
+    fn next(
+        &mut self,
+        error: &ReaderError,
+        following_since: Option<tokio::time::Instant>,
+    ) -> Option<(u8, u64)> {
+        if !error.transient || error.invalidates_session {
+            return None;
+        }
+        // Headers alone are not recovery: a peer can accept and immediately
+        // break every body. Quiet connections also recover after this interval.
+        if following_since.is_some_and(|since| since.elapsed() >= STABLE_CONNECTION) {
+            self.attempt = 0;
+        }
+        let delay = *RETRY_SECONDS.get(self.attempt)?;
+        self.attempt += 1;
+        Some((self.attempt as u8, delay))
+    }
 }
 pub(super) type ReaderSink = Arc<dyn Fn(ReaderMessage) + Send + Sync>;
 #[derive(Debug, Clone)]
@@ -307,23 +332,25 @@ impl EngineReader {
         })
     }
     async fn run(&self, mut request: StreamRequest, sink: ReaderSink) {
-        let mut retry = 0;
+        let mut retry = RetryBudget::default();
         loop {
             sink(ReaderMessage::Status(ReaderStatus::Connecting));
-            match self.read_once(&mut request, &sink).await {
+            let mut following_since = None;
+            match self
+                .read_once(&mut request, &sink, &mut following_since)
+                .await
+            {
                 Ok(()) => {
                     sink(ReaderMessage::Status(ReaderStatus::Ended));
                     return;
                 }
-                Err(error)
-                    if error.transient
-                        && !error.invalidates_session
-                        && retry < RETRY_SECONDS.len() =>
-                {
-                    let delay_seconds = RETRY_SECONDS[retry];
-                    retry += 1;
+                Err(error) => {
+                    let Some((attempt, delay_seconds)) = retry.next(&error, following_since) else {
+                        sink(ReaderMessage::Status(ReaderStatus::Failed(error)));
+                        return;
+                    };
                     sink(ReaderMessage::Status(ReaderStatus::Retrying {
-                        attempt: retry as u8,
+                        attempt,
                         delay_seconds,
                     }));
                     #[cfg(test)]
@@ -332,10 +359,6 @@ impl EngineReader {
                     let delay = Duration::from_secs(delay_seconds);
                     tokio::time::sleep(delay).await;
                 }
-                Err(error) => {
-                    sink(ReaderMessage::Status(ReaderStatus::Failed(error)));
-                    return;
-                }
             }
         }
     }
@@ -343,6 +366,7 @@ impl EngineReader {
         &self,
         request: &mut StreamRequest,
         sink: &ReaderSink,
+        following_since: &mut Option<tokio::time::Instant>,
     ) -> Result<(), ReaderError> {
         // A slot is held through connect, identity reads, and stream headers only.
         let startup = self
@@ -370,6 +394,7 @@ impl EngineReader {
             }
         };
         let mut body = connection.get(&path).await?;
+        *following_since = Some(tokio::time::Instant::now());
         drop(startup);
         sink(ReaderMessage::Status(ReaderStatus::Following));
         match request {

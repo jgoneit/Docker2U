@@ -70,6 +70,10 @@ enum Mode {
     Retry,
     Denied,
     Event,
+    Interrupted {
+        stable_at: Option<usize>,
+        clean_eof: bool,
+    },
 }
 struct Fixture {
     dir: PathBuf,
@@ -80,6 +84,7 @@ struct Fixture {
     opened: Arc<AtomicUsize>,
     closed: Arc<AtomicUsize>,
     peak_startups: Arc<AtomicUsize>,
+    release_body: Arc<AtomicBool>,
 }
 impl Fixture {
     fn new(mode: Mode) -> Self {
@@ -104,6 +109,8 @@ impl Fixture {
         let startups = Arc::new(AtomicUsize::new(0));
         let peak_startups = Arc::new(AtomicUsize::new(0));
         let peak = peak_startups.clone();
+        let release_body = Arc::new(AtomicBool::new(false));
+        let body_release = release_body.clone();
         let server = thread::spawn(move || {
             let mut workers = Vec::new();
             let mut next_id = 0;
@@ -115,10 +122,13 @@ impl Fixture {
                         let closes = closes.clone();
                         let startups = startups.clone();
                         let peak = peak.clone();
+                        let release = body_release.clone();
                         let id = next_id;
                         next_id += 1;
                         workers.push(thread::spawn(move || {
-                            serve(stream, mode, id, seen, opens, closes, startups, peak)
+                            serve(
+                                stream, mode, id, seen, opens, closes, startups, peak, release,
+                            )
                         }));
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -155,6 +165,7 @@ impl Fixture {
             opened,
             closed,
             peak_startups,
+            release_body,
         }
     }
     fn reader(&self) -> EngineReader {
@@ -164,6 +175,7 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        self.release_body.store(true, Ordering::Release);
         if let Some(server) = self.server.take() {
             server.join().unwrap();
         }
@@ -186,6 +198,7 @@ fn serve(
     closes: Arc<AtomicUsize>,
     startups: Arc<AtomicUsize>,
     peak: Arc<AtomicUsize>,
+    release_body: Arc<AtomicBool>,
 ) {
     // Darwin accepts inherit the listener's O_NONBLOCK flag. Each worker uses
     // blocking reads with a deadline so it can await the next keep-alive request.
@@ -253,7 +266,7 @@ fn serve(
                 startups.fetch_sub(1, Ordering::SeqCst);
                 startup_active = false;
             }
-            opens.fetch_add(1, Ordering::SeqCst);
+            let opened = opens.fetch_add(1, Ordering::SeqCst) + 1;
             if matches!(mode, Mode::Retry | Mode::Denied) {
                 let status = if matches!(mode, Mode::Retry) {
                     "503 Service Unavailable"
@@ -267,6 +280,26 @@ fn serve(
                 .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
                 .is_err()
             {
+                break;
+            }
+            if let Mode::Interrupted {
+                stable_at,
+                clean_eof,
+            } = mode
+            {
+                if stable_at == Some(opened) {
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    while !release_body.load(Ordering::Acquire) && Instant::now() < deadline {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                }
+                if clean_eof {
+                    let _ = stream.write_all(b"0\r\n\r\n");
+                } else {
+                    // Successful headers followed by an incomplete HTTP chunk.
+                    // No log/event has to arrive for the connection to recover.
+                    let _ = stream.write_all(b"10\r\nx");
+                }
                 break;
             }
             if matches!(mode, Mode::Quiet) {
@@ -563,6 +596,174 @@ fn transient_failures_retry_five_times_and_permission_failure_does_not_retry() {
         );
     }
 }
+
+#[test]
+fn retry_budget_recovers_at_thirty_seconds_after_headers_only() {
+    run_async(async {
+        tokio::time::pause();
+        let error = ReaderError::transport();
+        let mut budget = RetryBudget {
+            attempt: RETRY_SECONDS.len(),
+        };
+        // Time spent queued, connecting, or awaiting headers is not recovery.
+        tokio::time::advance(STABLE_CONNECTION).await;
+        assert_eq!(budget.next(&error, None), None);
+        let following = tokio::time::Instant::now();
+        tokio::time::advance(STABLE_CONNECTION - Duration::from_millis(1)).await;
+        assert_eq!(budget.next(&error, Some(following)), None);
+        tokio::time::advance(Duration::from_millis(1)).await;
+        assert_eq!(budget.next(&error, Some(following)), Some((1, 1)));
+
+        // Merely reaching Following again must not replenish the budget.
+        for (index, delay) in RETRY_SECONDS.iter().enumerate().skip(1) {
+            assert_eq!(
+                budget.next(&error, Some(tokio::time::Instant::now())),
+                Some(((index + 1) as u8, *delay))
+            );
+        }
+        assert_eq!(budget.next(&error, Some(tokio::time::Instant::now())), None);
+        tokio::time::resume();
+    });
+}
+
+#[test]
+fn stable_connection_does_not_retry_permanent_or_session_errors() {
+    run_async(async {
+        tokio::time::pause();
+        let following = tokio::time::Instant::now();
+        tokio::time::advance(STABLE_CONNECTION).await;
+        for error in [
+            ReaderError::protocol("invalid stream"),
+            ReaderError {
+                transient: true,
+                ..ReaderError::identity()
+            },
+        ] {
+            let mut budget = RetryBudget {
+                attempt: RETRY_SECONDS.len(),
+            };
+            assert_eq!(budget.next(&error, Some(following)), None);
+            assert_eq!(budget.attempt, RETRY_SECONDS.len());
+        }
+        tokio::time::resume();
+    });
+}
+
+#[test]
+fn quiet_stable_log_and_event_connections_restore_the_retry_budget() {
+    for events in [false, true] {
+        let fixture = Fixture::new(Mode::Interrupted {
+            stable_at: Some(6),
+            clean_eof: events,
+        });
+        run_async(async {
+            let mut reader = fixture.reader();
+            reader.retry_unit = Duration::from_millis(1);
+            let (sink, messages) = capture();
+            let stream_request = if events {
+                StreamRequest::Events(None)
+            } else {
+                StreamRequest::Logs(request(false))
+            };
+            // Keep the reader and its clock in this runtime, not Tauri's global
+            // runtime. Pause only after headers: the server uses real OS threads.
+            let task = tokio::spawn(async move { reader.run(stream_request, sink).await });
+            wait_for(|| {
+                messages
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|item| matches!(item, ReaderMessage::Status(ReaderStatus::Following)))
+                    .count()
+                    == 6
+            })
+            .await;
+            tokio::time::pause();
+            tokio::time::advance(STABLE_CONNECTION).await;
+            assert_eq!(fixture.opened.load(Ordering::SeqCst), 6);
+            assert!(messages.lock().unwrap().iter().all(|message| {
+                !matches!(message, ReaderMessage::Log(_) | ReaderMessage::Event(_))
+            }));
+            tokio::time::resume();
+            fixture.release_body.store(true, Ordering::Release);
+            tokio::time::timeout(Duration::from_secs(3), task)
+                .await
+                .unwrap()
+                .unwrap();
+            let messages = messages.lock().unwrap();
+            let attempts: Vec<_> = messages
+                .iter()
+                .filter_map(|item| match item {
+                    ReaderMessage::Status(ReaderStatus::Retrying {
+                        attempt,
+                        delay_seconds,
+                    }) => Some((*attempt, *delay_seconds)),
+                    _ => None,
+                })
+                .collect();
+            let cycle: Vec<_> = RETRY_SECONDS
+                .iter()
+                .enumerate()
+                .map(|(index, delay)| ((index + 1) as u8, *delay))
+                .collect();
+            assert_eq!(attempts, [cycle.clone(), cycle].concat());
+            assert!(matches!(
+                messages.last(),
+                Some(ReaderMessage::Status(ReaderStatus::Failed(error))) if error.transient
+            ));
+        });
+        assert_eq!(fixture.opened.load(Ordering::SeqCst), 11);
+    }
+}
+
+#[test]
+fn immediate_log_and_event_body_failures_still_stop_after_five_retries() {
+    for events in [false, true] {
+        let fixture = Fixture::new(Mode::Interrupted {
+            stable_at: None,
+            clean_eof: false,
+        });
+        run_async(async {
+            let mut reader = fixture.reader();
+            reader.retry_unit = Duration::from_millis(1);
+            let (sink, messages) = capture();
+            let stream_request = if events {
+                StreamRequest::Events(None)
+            } else {
+                StreamRequest::Logs(request(false))
+            };
+            tokio::time::timeout(Duration::from_secs(3), reader.run(stream_request, sink))
+                .await
+                .unwrap();
+            let messages = messages.lock().unwrap();
+            let delays: Vec<_> = messages
+                .iter()
+                .filter_map(|item| match item {
+                    ReaderMessage::Status(ReaderStatus::Retrying { delay_seconds, .. }) => {
+                        Some(*delay_seconds)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(delays, RETRY_SECONDS);
+            assert_eq!(
+                messages
+                    .iter()
+                    .filter(|item| {
+                        matches!(item, ReaderMessage::Status(ReaderStatus::Following))
+                    })
+                    .count(),
+                6
+            );
+            assert!(matches!(
+                messages.last(),
+                Some(ReaderMessage::Status(ReaderStatus::Failed(error))) if error.transient
+            ));
+        });
+        assert_eq!(fixture.opened.load(Ordering::SeqCst), 6);
+    }
+}
+
 #[test]
 fn event_stream_filters_sensitive_attributes_and_keeps_exact_nanoseconds() {
     let fixture = Fixture::new(Mode::Event);
