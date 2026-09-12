@@ -4,7 +4,7 @@ import { observationApi, projectLogApi } from './observationApi';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(), isTauri: () => true }));
 beforeEach(() => vi.resetAllMocks());
 it('sends the bounded project log query as the Rust command query DTO', async () => {
-  const query = { sourceIds: ['full-id'], keyword: 'Error[DB]', offset: 120, limit: 160, throughSequence: 500, anchorRowId: 'row-9' };
+  const query = { sourceIds: ['full-id'], keyword: 'Error[DB]', offset: 120, limit: 160, throughSequence: 500, anchorRowId: 'row-9', afterSequence: 20 };
   await projectLogApi.query('session', 'orders', query);
   expect(invoke).toHaveBeenCalledExactlyOnceWith('query_project_logs', { sessionId: 'session', query: { project: 'orders', ...query } });
 });

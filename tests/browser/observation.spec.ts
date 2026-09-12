@@ -189,6 +189,103 @@ test('project and container logs retain console typography and shared copy feedb
   }
 });
 
+async function displayedLogIndexes(page: Page) {
+  return (await page.locator('.project-log-row > span:last-child').allTextContents()).map(text => {
+    const match = text.match(/request=(\d+)|확인 (\d+)/);
+    if (!match) throw new Error(`Missing synthetic log index: ${text}`);
+    return Number(match[1] ?? match[2]);
+  });
+}
+
+test('clearing a paused log view hides the fresh Core boundary and keeps new output and shared feedback flowing', async ({ page }, info) => {
+  const en = info.project.metadata.language === 'en';
+  await page.clock.install(); await page.clock.pauseAt(new Date(Date.now() + 1_000));
+  const calls = () => page.evaluate(() => structuredClone((window as unknown as { __docker2uObservationCalls: Record<string, number> }).__docker2uObservationCalls));
+  const before = await calls(), priorMax = Math.max(...await displayedLogIndexes(page));
+  const latest = page.getByRole('button', { name: en ? 'Latest' : '최신 위치', exact: true });
+  await expect(latest).toHaveAttribute('title', en ? 'Latest' : '최신 위치');
+  await expect(latest).toHaveText(''); await expect(latest.locator('svg')).toHaveCount(1);
+  await page.getByRole('button', { name: en ? 'Pause view' : '화면 일시정지', exact: true }).click();
+  await page.clock.runFor(2_000);
+  await page.getByRole('button', { name: en ? 'Clear displayed logs' : '현재 로그 비우기', exact: true }).click();
+  await expect(page.locator('.project-log-row')).toHaveCount(0);
+  await expect(page.locator('.project-log-empty')).toContainText(en ? 'Newly collected logs will appear here.' : '새로 수집되는 로그가 여기에 표시됩니다.');
+  await expect(page.locator('.project-log-viewport')).toBeFocused();
+  await expect(page.getByRole('button', { name: en ? 'Pause view' : '화면 일시정지', exact: true })).toHaveAttribute('aria-pressed', 'false');
+  const cleared = en ? 'Displayed logs cleared.' : '로그 화면을 비웠습니다.';
+  await expect(page.locator('.app-footer .clipboard-feedback')).toHaveText(cleared);
+  await expect(page.locator('.app-footer .clipboard-feedback')).toHaveClass(/copy-feedback-cleared.*copy-feedback-highlighted/);
+  await page.getByRole('button', { name: en ? 'Expand logs' : '로그 확대', exact: true }).click();
+  await expect(page.locator('.project-log-copy-feedback')).toHaveText(cleared);
+  await expect(page.getByRole('button', { name: en ? 'Copy displayed range' : '현재 표시 구간 복사', exact: true })).toBeDisabled();
+  await page.clock.runFor(1_000);
+  await expectVisibleLogs(page);
+  expect(Math.min(...await displayedLogIndexes(page))).toBeGreaterThan(priorMax);
+  await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { (window as unknown as { copiedAfterClear: string }).copiedAfterClear = text; } } }));
+  await page.getByRole('button', { name: en ? 'Copy displayed range' : '현재 표시 구간 복사', exact: true }).click();
+  const copied = en ? 'Displayed logs copied' : '표시된 로그 복사됨';
+  await expect(page.locator('.app-footer .clipboard-feedback')).toHaveText(copied);
+  await expect(page.locator('.project-log-copy-feedback')).toHaveText(copied);
+  await expect(page.locator('.project-log-copy-feedback')).toHaveClass(/copy-feedback-success.*copy-feedback-highlighted/);
+  const newest = Math.max(...await displayedLogIndexes(page));
+  await page.clock.runFor(1_000);
+  await expect.poll(async () => Math.max(...await displayedLogIndexes(page))).toBeGreaterThan(newest);
+  const after = await calls();
+  expect(after.configureLogs).toBe(before.configureLogs); expect(after.stopLogs ?? 0).toBe(before.stopLogs ?? 0);
+});
+
+test('clear boundaries stay independent across project and container views while filters expansion and Latest retain them', async ({ page }, info) => {
+  const en = info.project.metadata.language === 'en';
+  await page.clock.install(); await page.clock.pauseAt(new Date(Date.now() + 1_000));
+  const project = page.getByRole('treeitem', { name: en ? 'orders project' : 'orders 프로젝트', exact: true }).locator('.project-tree-name');
+  const originalMax = Math.max(...await displayedLogIndexes(page));
+  const initialCollection = await page.evaluate(() => structuredClone((window as unknown as { __docker2uObservationCalls: Record<string, number> }).__docker2uObservationCalls));
+  await page.locator('.project-service-filter summary').click();
+  await page.getByRole('checkbox', { name: 'redis', exact: true }).uncheck();
+  await page.locator('.project-service-filter summary').click();
+  await page.getByRole('searchbox', { name: en ? 'Search log text' : '로그 키워드 검색', exact: true }).fill('request=');
+  await page.getByRole('button', { name: en ? 'Clear displayed logs' : '현재 로그 비우기', exact: true }).click();
+  await expect(page.locator('.project-log-row')).toHaveCount(0);
+  await page.clock.runFor(2_000);
+  await expectVisibleLogs(page);
+  const projectRetained = await displayedLogIndexes(page);
+  expect(Math.min(...projectRetained)).toBeGreaterThan(originalMax);
+  await page.locator('.container-row').first().click();
+  await expect.poll(async () => Math.min(...await displayedLogIndexes(page))).toBeLessThan(originalMax);
+  await expect(page.getByRole('searchbox', { name: en ? 'Search log text' : '로그 키워드 검색', exact: true })).toHaveValue('');
+  await page.getByRole('button', { name: en ? 'Clear displayed logs' : '현재 로그 비우기', exact: true }).click();
+  await expect(page.locator('.project-log-row')).toHaveCount(0);
+  await page.clock.runFor(2_000); await expectVisibleLogs(page);
+  expect(Math.min(...await displayedLogIndexes(page))).toBeGreaterThan(Math.max(...projectRetained));
+  await project.click();
+  await expect(page.getByRole('searchbox', { name: en ? 'Search log text' : '로그 키워드 검색', exact: true })).toHaveValue('request=');
+  await expect.poll(() => displayedLogIndexes(page)).toEqual(expect.arrayContaining(projectRetained));
+  await page.locator('.project-service-filter summary').click();
+  await expect(page.getByRole('checkbox', { name: 'redis', exact: true })).not.toBeChecked();
+  await page.locator('.project-service-filter summary').click();
+  await page.getByRole('button', { name: en ? 'Pause view' : '화면 일시정지', exact: true }).click();
+  const frozen = await displayedLogIndexes(page);
+  await page.getByRole('button', { name: en ? 'Expand logs' : '로그 확대', exact: true }).click();
+  const originalSize = page.viewportSize()!;
+  await page.setViewportSize({ ...originalSize, height: originalSize.height + 80 });
+  expect(await displayedLogIndexes(page)).toEqual(frozen);
+  await page.keyboard.press('Escape'); await page.setViewportSize(originalSize);
+  await page.getByRole('button', { name: en ? 'Settings' : '설정', exact: true }).click();
+  await page.locator(`input[name="theme-preference"][value="${info.project.metadata.theme === 'light' ? 'dark' : 'light'}"]`).check();
+  await page.locator('#language-preference').selectOption(en ? 'ko' : 'en'); await page.keyboard.press('Escape');
+  await expect(page.getByRole('searchbox', { name: en ? '로그 키워드 검색' : 'Search log text', exact: true })).toHaveValue('request=');
+  await expect(page.getByRole('button', { name: en ? '화면 재개' : 'Resume view', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  expect(await displayedLogIndexes(page)).toEqual(frozen);
+  await page.getByRole('button', { name: en ? '최신 위치' : 'Latest', exact: true }).click();
+  await expect(page.getByRole('searchbox', { name: en ? '로그 키워드 검색' : 'Search log text', exact: true })).toHaveValue('request=');
+  await expectVisibleLogs(page);
+  expect(Math.min(...await displayedLogIndexes(page))).toBeGreaterThan(originalMax);
+  await expect(page.getByRole('button', { name: en ? '화면 일시정지' : 'Pause view', exact: true })).toHaveAttribute('aria-pressed', 'false');
+  const finalCollection = await page.evaluate(() => structuredClone((window as unknown as { __docker2uObservationCalls: Record<string, number> }).__docker2uObservationCalls));
+  expect(finalCollection.configureLogs).toBe(initialCollection.configureLogs);
+  expect(finalCollection.stopLogs ?? 0).toBe(initialCollection.stopLogs ?? 0);
+});
+
 
 test('historical log row and fractional scroll survive pause, expansion, window and split resizing', async ({ page }, info) => {
   const en = info.project.metadata.language === 'en';

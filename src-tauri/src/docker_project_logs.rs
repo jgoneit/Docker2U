@@ -1189,6 +1189,149 @@ mod tests {
         assert_eq!(manager.page(&query).offset, 1);
     }
     #[test]
+    fn after_sequence_filters_late_rows_before_counts_offsets_anchors_and_coverage() {
+        let mut manager = ProjectLogManager::default();
+        let now = Utc::now();
+        for (project, id, seconds, text) in [
+            ("p", "a", 300, "error old future timestamp"),
+            ("p", "a", 0, "error old boundary"),
+            ("p", "a", -30, "Error late timestamp"),
+            ("p", "b", 1, "error other source"),
+            ("p", "a", 2, "debug nonmatching"),
+            ("p", "a", 3, "error next"),
+            ("p", "a", 4, "ERROR last frozen"),
+            ("other", "a", 4, "error other project"),
+            ("p", "a", 5, "error after pause"),
+        ] {
+            manager.ring.append(
+                project,
+                &source(id),
+                log(
+                    &(now + chrono::Duration::seconds(seconds)).to_rfc3339(),
+                    text,
+                ),
+            );
+        }
+        let retained = manager.page(&latest_query("p".into()));
+        let bytes = manager.ring.bytes;
+        let mut query = latest_query("p".into());
+        query.after_sequence = Some(2);
+        query.through_sequence = Some(7);
+        query.source_ids = vec!["a".into()];
+        query.keyword = "error".into();
+        query.limit = 2;
+        let latest = manager.page(&query);
+        assert_eq!(latest.total_rows, 3);
+        assert_eq!(latest.offset, 1);
+        assert_eq!(
+            latest
+                .rows
+                .iter()
+                .map(|row| row.sequence)
+                .collect::<Vec<_>>(),
+            [6, 7]
+        );
+        assert_eq!(latest.max_sequence, 9);
+        assert_eq!(
+            latest.retained_from,
+            Some((now - chrono::Duration::seconds(30)).to_rfc3339())
+        );
+        assert_eq!(
+            latest.retained_to,
+            Some((now + chrono::Duration::seconds(4)).to_rfc3339())
+        );
+
+        query.offset = Some(0);
+        let first = manager.page(&query);
+        assert_eq!(
+            first
+                .rows
+                .iter()
+                .map(|row| row.sequence)
+                .collect::<Vec<_>>(),
+            [3, 6]
+        );
+        query.anchor_row_id = Some(latest.rows[1].row_id.clone());
+        let anchored = manager.page(&query);
+        assert_eq!(anchored.offset, 2);
+        assert_eq!(anchored.rows[0].sequence, 7);
+        assert!(!anchored.anchor_lost);
+        query.anchor_row_id = Some(
+            retained
+                .rows
+                .iter()
+                .find(|row| row.sequence == 2)
+                .unwrap()
+                .row_id
+                .clone(),
+        );
+        let hidden_anchor = manager.page(&query);
+        assert!(hidden_anchor.anchor_lost);
+        assert_eq!(hidden_anchor.offset, 0);
+        assert_eq!(hidden_anchor.rows[0].sequence, 3);
+
+        // A view boundary never removes data from another query or source.
+        let unchanged = manager.page(&latest_query("p".into()));
+        assert_eq!(
+            unchanged
+                .rows
+                .iter()
+                .map(|row| &row.row_id)
+                .collect::<Vec<_>>(),
+            retained
+                .rows
+                .iter()
+                .map(|row| &row.row_id)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(unchanged.total_rows, retained.total_rows);
+        assert_eq!(manager.ring.bytes, bytes);
+        query.anchor_row_id = None;
+        query.source_ids = vec!["b".into()];
+        assert_eq!(manager.page(&query).rows[0].sequence, 4);
+    }
+
+    #[test]
+    fn after_sequence_empty_ranges_and_zero_keep_collection_metadata_intact() {
+        let mut manager = ProjectLogManager::default();
+        let time = Utc::now().to_rfc3339();
+        manager
+            .ring
+            .append("p", &source("a"), log(&time, "retained"));
+        let mut query = latest_query("p".into());
+        query.after_sequence = Some(0);
+        assert_eq!(manager.page(&query).total_rows, 1);
+        for (after, through) in [(1, None), (2, None), (1, Some(1)), (2, Some(1))] {
+            query.after_sequence = Some(after);
+            query.through_sequence = through;
+            let page = manager.page(&query);
+            assert_eq!(page.total_rows, 0);
+            assert!(page.rows.is_empty());
+            assert_eq!(page.offset, 0);
+            assert_eq!(page.retained_from, None);
+            assert_eq!(page.retained_to, None);
+            assert_eq!(page.max_sequence, 1);
+        }
+        assert_eq!(manager.page(&latest_query("p".into())).total_rows, 1);
+    }
+
+    #[test]
+    fn after_sequence_is_optional_and_deserializes_the_camel_case_query_field() {
+        let legacy = serde_json::json!({"project": "p", "sourceIds": [], "keyword": "", "offset": null, "limit": 20, "throughSequence": null, "anchorRowId": null});
+        let omitted: ProjectLogQuery = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(omitted.after_sequence, None);
+        assert_eq!(latest_query("p".into()).after_sequence, None);
+        for (value, expected) in [
+            (serde_json::Value::Null, None),
+            (serde_json::json!(42), Some(42)),
+        ] {
+            let mut extended = legacy.clone();
+            extended["afterSequence"] = value;
+            let query: ProjectLogQuery = serde_json::from_value(extended).unwrap();
+            assert_eq!(query.after_sequence, expected);
+        }
+    }
+    #[test]
     fn noisy_source_quota_preserves_quiet_tail_after_expiry() {
         let mut ring = LogRing::default();
         let time = Utc::now().to_rfc3339();
@@ -1766,6 +1909,12 @@ mod tests {
                     followed.recv_timeout(Duration::from_secs(5)).unwrap();
                     let live = format!("{} fresh output\n", Utc::now().to_rfc3339());
                     write!(stream, "{:X}\r\n{}\r\n", live.len(), live).unwrap();
+                    followed.recv_timeout(Duration::from_secs(5)).unwrap();
+                    let late = format!(
+                        "{} late output after clear\n",
+                        (Utc::now() - chrono::Duration::days(6)).to_rfc3339()
+                    );
+                    write!(stream, "{:X}\r\n{}\r\n", late.len(), late).unwrap();
                     let mut byte = [0];
                     let _ = reader.read(&mut byte);
                 } else {
@@ -1807,11 +1956,35 @@ mod tests {
         );
         assert_eq!(backlog.rows[0].text, "historical 0");
         assert_eq!(backlog.sources[0].status, "following");
+        let mut cleared_view = latest_query("p".into());
+        cleared_view.after_sequence = Some(backlog.max_sequence);
+        let cleared = core.query_project_logs("s", &cleared_view).unwrap();
+        assert!(cleared.rows.is_empty());
+        assert_eq!(cleared.sources[0].status, "following");
+        assert_eq!(
+            core.query_project_logs("s", &latest_query("p".into()))
+                .unwrap()
+                .total_rows,
+            INITIAL_TAIL_ROWS
+        );
         follow.send(()).unwrap();
         let live = wait_for_rows(INITIAL_TAIL_ROWS as u64 + 1);
         assert_eq!(live.total_rows, INITIAL_TAIL_ROWS);
         assert_eq!(live.rows[0].text, "historical 1");
         assert_eq!(live.rows.last().unwrap().text, "fresh output");
+        follow.send(()).unwrap();
+        wait_for_rows(INITIAL_TAIL_ROWS as u64 + 2);
+        let after_clear = core.query_project_logs("s", &cleared_view).unwrap();
+        assert_eq!(after_clear.total_rows, 2);
+        assert_eq!(after_clear.offset, 0);
+        assert_eq!(after_clear.rows[0].text, "late output after clear");
+        assert_eq!(after_clear.rows[1].text, "fresh output");
+        assert!(after_clear.rows[0].sequence > after_clear.rows[1].sequence);
+        assert_eq!(after_clear.sources[0].status, "following");
+        cleared_view.through_sequence = Some(live.max_sequence);
+        let paused = core.query_project_logs("s", &cleared_view).unwrap();
+        assert_eq!(paused.total_rows, 1);
+        assert_eq!(paused.rows[0].text, "fresh output");
         core.shutdown();
         server.join().unwrap();
     }

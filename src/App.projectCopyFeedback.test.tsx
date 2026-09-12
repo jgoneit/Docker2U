@@ -143,3 +143,46 @@ it('discards a pending project copy after reconnect while retaining the previous
   expect(footerFeedback()).not.toHaveClass('copy-feedback-highlighted');
   expect(api.mutateContainer).not.toHaveBeenCalled(); expect(api.mutateContainers).not.toHaveBeenCalled();
 });
+
+it('reserves Clear feedback before pending copies finish and never overwrites a newer copy when its boundary arrives', async () => {
+  await mount();
+  let collected = page;
+  vi.mocked(projectLogApi.query).mockImplementation(async (_sessionId, _project, request) => {
+    const rows = collected.rows.filter(row => request.afterSequence == null || row.sequence > request.afterSequence);
+    return { ...collected, rows, totalRows: rows.length, offset: 0 };
+  });
+  const olderCopy = deferred(); write.mockReturnValueOnce(olderCopy.promise);
+  await click(screen.getByRole('button', { name: '현재 표시 구간 복사' }));
+  let finishClear!: (value: ProjectLogPage) => void;
+  vi.mocked(projectLogApi.query).mockReturnValueOnce(new Promise(resolve => { finishClear = resolve; }));
+  await click(screen.getByRole('button', { name: '현재 로그 비우기' }));
+  await act(async () => olderCopy.reject(new Error('Previous clipboard attempt failed')));
+  expect(footerFeedback()).toBeEmptyDOMElement();
+  await act(async () => finishClear(collected));
+  expect(footerFeedback()).toHaveTextContent('로그 화면을 비웠습니다.');
+  expect(footerFeedback()).toHaveClass('copy-feedback-cleared', 'copy-feedback-highlighted');
+  expect(screen.getByRole('log')).not.toHaveTextContent('line 1');
+  await advance(750);
+  await click(screen.getByRole('button', { name: '로그 확대' }));
+  expect(modalFeedback()).toHaveTextContent('로그 화면을 비웠습니다.');
+  expect(modalFeedback().querySelector<HTMLElement>('.copy-feedback-glow')!.style.animationDelay).toBe('-750ms');
+  await advance(1_250);
+  expect(modalFeedback()).not.toHaveClass('copy-feedback-highlighted');
+  expect(modalFeedback()).toHaveTextContent('로그 화면을 비웠습니다.');
+
+  collected = { ...page, maxSequence: 3, totalRows: 3, rows: [...page.rows, { ...page.rows[0]!, rowId: 'r3', sequence: 3, text: 'new line 3' }] };
+  await advance(500);
+  expect(screen.getByRole('log')).toHaveTextContent('new line 3');
+  vi.mocked(projectLogApi.query).mockReturnValueOnce(new Promise(resolve => { finishClear = resolve; }));
+  await click(screen.getByRole('button', { name: '현재 로그 비우기' }));
+  await click(screen.getByRole('button', { name: '현재 표시 구간 복사' }));
+  expect(modalFeedback()).toHaveTextContent('표시된 로그 복사됨');
+  const latestGlow = modalFeedback().querySelector('.copy-feedback-glow');
+  await act(async () => finishClear(collected));
+  expect(screen.getByRole('log')).not.toHaveTextContent('new line 3');
+  expect(modalFeedback()).toHaveTextContent('표시된 로그 복사됨');
+  expect(modalFeedback().querySelector('.copy-feedback-glow')).toBe(latestGlow);
+  expect(footerFeedback()).toHaveClass('copy-feedback-success');
+  expect(projectLogApi.configure).toHaveBeenCalledOnce(); expect(projectLogApi.stop).not.toHaveBeenCalled();
+  expect(api.mutateContainer).not.toHaveBeenCalled(); expect(api.mutateContainers).not.toHaveBeenCalled();
+});
