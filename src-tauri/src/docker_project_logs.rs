@@ -4,7 +4,7 @@ use super::engine_reader::{
 };
 use super::*;
 use chrono::Utc;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_SOURCES: usize = 64;
 const MAX_ROWS: usize = 100_000;
@@ -12,6 +12,7 @@ const MAX_BYTES: usize = 32 * 1024 * 1024;
 const SOURCE_BYTES: usize = 1024 * 1024;
 const PAGE_BYTES: usize = 2 * 1024 * 1024;
 const RETENTION_SECONDS: i64 = 30 * 60;
+const INITIAL_TAIL_ROWS: usize = 300;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -87,11 +88,15 @@ struct StoredRow {
     project: String,
     row: ProjectLogRow,
     bytes: usize,
+    retention_time: i64,
+    source_sequence: u64,
 }
 #[derive(Default)]
 struct LogRing {
     rows: BTreeMap<OrderKey, StoredRow>,
-    arrival: VecDeque<(i64, OrderKey)>,
+    expiry: BTreeMap<(i64, u64), OrderKey>,
+    source_tail: HashMap<String, BTreeMap<u64, OrderKey>>,
+    source_sequence: HashMap<String, u64>,
     source_order: HashMap<String, BTreeSet<OrderKey>>,
     source_bytes: HashMap<String, usize>,
     dropped: HashMap<String, u64>,
@@ -113,8 +118,12 @@ impl LogRing {
         let Some(stored) = self.rows.remove(key) else {
             return;
         };
+        self.expiry.remove(&(stored.retention_time, key.2));
         self.bytes = self.bytes.saturating_sub(stored.bytes);
         let source = &stored.row.source_id;
+        if let Some(tail) = self.source_tail.get_mut(source) {
+            tail.remove(&stored.source_sequence);
+        }
         if let Some(bytes) = self.source_bytes.get_mut(source) {
             *bytes = bytes.saturating_sub(stored.bytes);
         }
@@ -123,6 +132,8 @@ impl LogRing {
             if order.is_empty() {
                 self.source_order.remove(source);
                 self.source_bytes.remove(source);
+                self.source_tail.remove(source);
+                self.source_sequence.remove(source);
             }
         }
         if dropped {
@@ -132,23 +143,21 @@ impl LogRing {
     }
     fn expire(&mut self, now: i64) {
         let cutoff = now.saturating_sub(RETENTION_SECONDS * 1_000_000_000);
-        // Late/replayed Docker timestamps do not receive another thirty minutes
-        // of retention just because this connection delivered them recently.
-        while let Some(key) = self
-            .rows
-            .first_key_value()
-            .filter(|(key, _)| key.0 < cutoff)
-            .map(|(key, _)| key.clone())
-        {
-            self.remove(&key, false);
-        }
-        while self.arrival.front().is_some_and(|(time, _)| *time < cutoff) {
-            let (_, key) = self.arrival.pop_front().unwrap();
-            self.remove(&key, false);
-        }
-        // Eviction tombstones must not accumulate when a noisy source fills its quota.
-        if self.arrival.len() > self.rows.len().saturating_mul(2).saturating_add(1024) {
-            self.arrival.retain(|(_, key)| self.rows.contains_key(key));
+        // Age limits additional history, while each source keeps its most
+        // recently received tail even if a quiet container last wrote days ago.
+        while let Some((&(time, _), _)) = self.expiry.first_key_value() {
+            if time >= cutoff {
+                break;
+            }
+            let (_, key) = self.expiry.pop_first().unwrap();
+            let in_tail = self.rows.get(&key).is_some_and(|stored| {
+                self.source_tail
+                    .get(&stored.row.source_id)
+                    .is_some_and(|tail| tail.contains_key(&stored.source_sequence))
+            });
+            if !in_tail {
+                self.remove(&key, false);
+            }
         }
     }
     fn append(&mut self, project: &str, source: &ProjectLogSource, log: LogRecord) {
@@ -156,6 +165,8 @@ impl LogRing {
         let received = nanos(&log.received_at).unwrap_or_else(now_nanos);
         let order = log.timestamp.as_deref().and_then(nanos).unwrap_or(received);
         let key = (order, source.full_id.clone(), self.sequence);
+        // Future timestamps cannot extend age retention beyond received age.
+        let retention_time = order.min(received);
         let pipe = match log.stream {
             LogStreamKind::Stdout => "stdout",
             LogStreamKind::Stderr => "stderr",
@@ -174,7 +185,7 @@ impl LogRing {
             text: log.text,
             truncated: log.truncated,
         };
-        // Charge retained fields and the three ordered/arrival index keys too,
+        // Charge retained fields and all ordered, expiry and tail index keys too,
         // so numerous short rows cannot evade the byte budget via metadata.
         let bytes = std::mem::size_of::<ProjectLogRow>()
             + row.text.capacity()
@@ -187,7 +198,7 @@ impl LogRing {
             + row.received_at.capacity()
             + row.pipe.capacity()
             + project.len()
-            + 3 * (std::mem::size_of::<OrderKey>() + source.full_id.len())
+            + 4 * (std::mem::size_of::<OrderKey>() + source.full_id.len())
             + 128;
         self.bytes += bytes;
         *self.source_bytes.entry(source.full_id.clone()).or_default() += bytes;
@@ -195,15 +206,46 @@ impl LogRing {
             .entry(source.full_id.clone())
             .or_default()
             .insert(key.clone());
-        self.arrival.push_back((received, key.clone()));
+        self.expiry
+            .insert((retention_time, self.sequence), key.clone());
+        let source_sequence = self
+            .source_sequence
+            .entry(source.full_id.clone())
+            .or_default();
+        *source_sequence += 1;
+        let source_sequence = *source_sequence;
+        let tail = self.source_tail.entry(source.full_id.clone()).or_default();
+        tail.insert(source_sequence, key.clone());
+        // Quota eviction must not reset the last-300-arrivals boundary.
+        let tail_cutoff = source_sequence.saturating_sub(INITIAL_TAIL_ROWS as u64);
+        let displaced = tail
+            .first_key_value()
+            .is_some_and(|(sequence, _)| *sequence <= tail_cutoff)
+            .then(|| tail.pop_first().unwrap().1);
         self.rows.insert(
             key,
             StoredRow {
                 project: project.into(),
                 row,
                 bytes,
+                retention_time,
+                source_sequence,
             },
         );
+        // Expired tail rows have already left the expiry index. Recheck the row
+        // when a newer arrival displaces it from the protected tail.
+        if let Some(key) = displaced {
+            let cutoff = received.saturating_sub(RETENTION_SECONDS * 1_000_000_000);
+            if let Some(stored) = self.rows.get(&key) {
+                if stored.retention_time < cutoff {
+                    self.remove(&key, false);
+                } else {
+                    // A backwards clock may make a previously expired tail row
+                    // young again. Restore its age index when protection ends.
+                    self.expiry.insert((stored.retention_time, key.2), key);
+                }
+            }
+        }
         while self.source_bytes.get(&source.full_id).copied().unwrap_or(0) > SOURCE_BYTES {
             let key = self
                 .source_order
@@ -944,14 +986,14 @@ impl Core {
                     drop(tasks);
                 }
             });
-            let since =
-                Some((Utc::now() - chrono::Duration::seconds(RETENTION_SECONDS)).to_rfc3339());
             let result = reader.spawn_logs(
                 LogRequest {
                     full_id: container.full_id.clone(),
                     tty: container.tty,
-                    since,
-                    tail: 300,
+                    // Start from Docker's latest output, including quiet sources.
+                    // EngineReader advances its timestamp cursor on reconnects.
+                    since: None,
+                    tail: INITIAL_TAIL_ROWS as u16,
                 },
                 sink,
             );
@@ -1074,7 +1116,7 @@ mod tests {
         assert_eq!(manager.page(&query).offset, 1);
     }
     #[test]
-    fn noisy_source_quota_preserves_other_source_and_expiry_releases_rows() {
+    fn noisy_source_quota_preserves_quiet_tail_after_expiry() {
         let mut ring = LogRing::default();
         let time = Utc::now().to_rfc3339();
         ring.append("p", &source("quiet"), log(&time, "keep"));
@@ -1084,9 +1126,56 @@ mod tests {
         assert!(ring.bytes < SOURCE_BYTES + 1024);
         assert!(ring.rows.values().any(|stored| stored.row.text == "keep"));
         assert!(ring.dropped["p"] > 0);
+        assert!(
+            ring.source_tail
+                .values()
+                .flat_map(|tail| tail.values())
+                .all(|key| ring.rows.contains_key(key))
+        );
         ring.expire(now_nanos() + (RETENTION_SECONDS + 1) * 1_000_000_000);
-        assert!(ring.rows.is_empty());
-        assert_eq!(ring.bytes, 0);
+        assert!(ring.rows.values().any(|stored| stored.row.text == "keep"));
+        assert!(ring.bytes < SOURCE_BYTES + 1024);
+        assert!(ring.expiry.is_empty());
+        assert!(
+            ring.source_tail
+                .values()
+                .all(|tail| tail.len() <= INITIAL_TAIL_ROWS)
+        );
+    }
+
+    #[test]
+    fn quota_eviction_does_not_extend_the_last_300_arrivals_boundary() {
+        let mut ring = LogRing::default();
+        let now = Utc::now();
+        ring.append("p", &source("a"), log(&now.to_rfc3339(), "first arrival"));
+        let old = (now - chrono::Duration::days(5)).to_rfc3339();
+        for _ in 0..INITIAL_TAIL_ROWS {
+            ring.append("p", &source("a"), log(&old, &"x".repeat(64 * 1024)));
+        }
+        assert!(
+            ring.rows
+                .values()
+                .any(|stored| stored.row.text == "first arrival")
+        );
+        ring.expire(
+            (now + chrono::Duration::minutes(31))
+                .timestamp_nanos_opt()
+                .unwrap(),
+        );
+        assert!(
+            !ring
+                .rows
+                .values()
+                .any(|stored| stored.row.text == "first arrival")
+        );
+        assert!(!ring.rows.is_empty());
+        assert!(ring.bytes <= SOURCE_BYTES);
+        assert!(
+            ring.source_tail
+                .values()
+                .flat_map(|tail| tail.values())
+                .all(|key| ring.rows.contains_key(key))
+        );
     }
 
     #[test]
@@ -1223,6 +1312,28 @@ mod tests {
                 .all(|bytes| *bytes <= SOURCE_BYTES)
         );
         assert!(manager.ring.dropped["p"] > 0);
+        assert!(
+            manager
+                .ring
+                .source_tail
+                .values()
+                .all(|tail| tail.len() <= INITIAL_TAIL_ROWS)
+        );
+        assert!(
+            manager
+                .ring
+                .source_tail
+                .values()
+                .flat_map(|tail| tail.values())
+                .all(|key| manager.ring.rows.contains_key(key))
+        );
+        assert!(
+            manager
+                .ring
+                .expiry
+                .values()
+                .all(|key| manager.ring.rows.contains_key(key))
+        );
         let mut query = latest_query("p".into());
         query.source_ids = vec![sources[63].full_id.clone()];
         let page = manager.page(&query);
@@ -1235,11 +1346,174 @@ mod tests {
     }
 
     #[test]
-    fn late_old_timestamp_expires_even_when_received_now() {
+    fn quiet_sources_keep_their_latest_received_tail_independently_of_timestamp_age() {
         let mut ring = LogRing::default();
-        let old = (Utc::now() - chrono::Duration::minutes(31)).to_rfc3339();
-        ring.append("p", &source("a"), log(&old, "expired replay"));
-        assert!(ring.rows.is_empty());
+        let now = Utc::now();
+        let old = (now - chrono::Duration::days(5)).to_rfc3339();
+        ring.append("p", &source("quiet"), log(&old, "only output"));
+        for index in 0..350 {
+            ring.append("p", &source("a"), log(&old, &format!("line {index}")));
+        }
+        ring.expire(
+            (now + chrono::Duration::days(1))
+                .timestamp_nanos_opt()
+                .unwrap(),
+        );
+        let retained = ring
+            .rows
+            .values()
+            .filter(|stored| stored.row.source_id == "a")
+            .collect::<Vec<_>>();
+        assert_eq!(retained.len(), INITIAL_TAIL_ROWS);
+        assert_eq!(retained.first().unwrap().row.text, "line 50");
+        assert_eq!(retained.last().unwrap().row.text, "line 349");
+        assert!(
+            retained
+                .iter()
+                .all(|stored| stored.row.timestamp.as_deref() == Some(old.as_str()))
+        );
+        assert!(
+            ring.rows
+                .values()
+                .any(|stored| stored.row.text == "only output")
+        );
+        assert!(ring.dropped.is_empty());
+        assert!(ring.expiry.is_empty());
+    }
+
+    #[test]
+    fn recent_extra_history_expires_but_late_arrivals_enter_the_protected_tail() {
+        let mut ring = LogRing::default();
+        let now = Utc::now();
+        let time = now.to_rfc3339();
+        for index in 0..350 {
+            ring.append("p", &source("a"), log(&time, &format!("line {index}")));
+        }
+        assert_eq!(ring.rows.len(), 350);
+        let old = (now - chrono::Duration::days(2)).to_rfc3339();
+        ring.append("p", &source("a"), log(&old, "late old timestamp"));
+        assert_eq!(ring.rows.len(), 351);
+        ring.expire(
+            (now + chrono::Duration::minutes(31))
+                .timestamp_nanos_opt()
+                .unwrap(),
+        );
+        assert_eq!(ring.rows.len(), INITIAL_TAIL_ROWS);
+        assert_eq!(
+            ring.rows.first_key_value().unwrap().1.row.text,
+            "late old timestamp"
+        );
+        assert_eq!(
+            ring.rows.values().map(|stored| stored.row.sequence).min(),
+            Some(52)
+        );
+        assert!(ring.dropped.is_empty());
+    }
+
+    #[test]
+    fn future_timestamps_and_out_of_order_received_times_use_received_age_for_extra_rows() {
+        let mut ring = LogRing::default();
+        let now = Utc::now();
+        let future = (now + chrono::Duration::days(5)).to_rfc3339();
+        for index in 0..302 {
+            let mut entry = log(&future, &format!("line {index}"));
+            entry.received_at = if index == 1 {
+                now
+            } else {
+                now + chrono::Duration::minutes(20)
+            }
+            .to_rfc3339();
+            ring.append("p", &source("a"), entry);
+        }
+        ring.expire(
+            (now + chrono::Duration::minutes(31))
+                .timestamp_nanos_opt()
+                .unwrap(),
+        );
+        assert_eq!(ring.rows.len(), 301);
+        assert!(!ring.rows.values().any(|stored| stored.row.text == "line 1"));
+        assert!(ring.rows.values().any(|stored| stored.row.text == "line 0"));
+        ring.expire(
+            (now + chrono::Duration::minutes(51))
+                .timestamp_nanos_opt()
+                .unwrap(),
+        );
+        assert_eq!(ring.rows.len(), INITIAL_TAIL_ROWS);
+        assert!(!ring.rows.values().any(|stored| stored.row.text == "line 0"));
+        assert!(ring.expiry.is_empty());
+    }
+
+    #[test]
+    fn displaced_tail_returns_to_age_index_after_a_backwards_received_time() {
+        let mut ring = LogRing::default();
+        let now = Utc::now();
+        let time = now.to_rfc3339();
+        for index in 0..INITIAL_TAIL_ROWS {
+            ring.append("p", &source("a"), log(&time, &format!("line {index}")));
+        }
+        let later = (now + chrono::Duration::minutes(31))
+            .timestamp_nanos_opt()
+            .unwrap();
+        ring.expire(later);
+        assert!(ring.expiry.is_empty());
+        ring.append("p", &source("a"), log(&time, "clock moved backwards"));
+        ring.expire(later);
+        assert_eq!(ring.rows.len(), INITIAL_TAIL_ROWS);
+        assert!(!ring.rows.values().any(|stored| stored.row.text == "line 0"));
+    }
+
+    #[test]
+    fn removed_source_tail_is_released_on_eviction_and_session_reset() {
+        let (core, containers) = core_with_project();
+        let old = Utc::now() - chrono::Duration::days(5);
+        {
+            let mut manager = core.project_logs.lock().unwrap();
+            manager.session_id = "s".into();
+            manager.project = Some("p".into());
+            for container in containers.iter().take(2) {
+                let mut view = source(&container.full_id);
+                view.status = "removed".into();
+                manager
+                    .ring
+                    .append("p", &view, log(&old.to_rfc3339(), "old retained"));
+                manager.sources.insert(
+                    container.full_id.clone(),
+                    Source {
+                        view,
+                        run: None,
+                        token: 0,
+                        task: None,
+                        overlap: HashMap::new(),
+                        last_seen: old.timestamp_nanos_opt().unwrap(),
+                    },
+                );
+            }
+            manager.prune();
+            assert_eq!(manager.sources.len(), 2);
+            let key = manager.ring.source_order[&containers[0].full_id]
+                .first()
+                .unwrap()
+                .clone();
+            manager.ring.remove(&key, true);
+            manager.prune();
+            assert_eq!(manager.sources.len(), 1);
+            assert!(
+                !manager
+                    .ring
+                    .source_tail
+                    .contains_key(&containers[0].full_id)
+            );
+        }
+        core.cancel_project_logs();
+        let manager = core.project_logs.lock().unwrap();
+        assert!(manager.ring.rows.is_empty());
+        assert!(manager.ring.expiry.is_empty());
+        assert!(manager.ring.source_tail.is_empty());
+        assert!(manager.ring.source_order.is_empty());
+        assert!(manager.ring.source_bytes.is_empty());
+        assert!(manager.ring.source_sequence.is_empty());
+        assert!(manager.sources.is_empty());
+        assert_eq!(manager.ring.bytes, 0);
     }
 
     #[test]
@@ -1330,6 +1604,139 @@ mod tests {
             },
         });
         (core, containers)
+    }
+
+    #[test]
+    fn initial_stream_requests_latest_tail_without_since_and_retains_historical_backlog() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::os::unix::net::UnixListener;
+        use std::sync::mpsc;
+        use std::time::Instant;
+
+        struct SocketDirectory(PathBuf);
+        impl Drop for SocketDirectory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let directory = SocketDirectory(
+            Path::new("/tmp")
+                .canonicalize()
+                .unwrap()
+                .join(format!("d2u-log-tail-{}", uuid::Uuid::new_v4())),
+        );
+        std::fs::create_dir(&directory.0).unwrap();
+        let socket = directory.0.join("engine.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let (core, containers) = core_with_project();
+        {
+            let mut state = core.state.lock().unwrap();
+            let session = state.session.as_mut().unwrap();
+            session.target.endpoint = format!("unix://{}", socket.display());
+            session.handles.retain(|handle, _| handle == "h0");
+            session.handles.get_mut("h0").unwrap().tty = true;
+        }
+        let old = (Utc::now() - chrono::Duration::days(5))
+            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let old_sent = old.clone();
+        let full_id = containers[0].full_id.clone();
+        let (follow, followed) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                if let Ok((stream, _)) = listener.accept() {
+                    break stream;
+                }
+                assert!(Instant::now() < deadline, "no Engine connection");
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            for expected in ["/v1.47/version", "/v1.47/info", "logs"] {
+                let mut first = String::new();
+                reader.read_line(&mut first).unwrap();
+                let mut headers = String::new();
+                loop {
+                    headers.clear();
+                    reader.read_line(&mut headers).unwrap();
+                    if headers == "\r\n" {
+                        break;
+                    }
+                    assert!(!headers.is_empty(), "incomplete Engine request");
+                }
+                if expected == "logs" {
+                    assert_eq!(
+                        first.trim(),
+                        format!(
+                            "GET /v1.47/containers/{full_id}/logs?stdout=1&stderr=1&timestamps=1&follow=1&tail=300 HTTP/1.1"
+                        )
+                    );
+                    stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+                        .unwrap();
+                    let backlog = (0..INITIAL_TAIL_ROWS)
+                        .map(|index| format!("{old_sent} historical {index}\n"))
+                        .collect::<String>();
+                    write!(stream, "{:X}\r\n{}\r\n", backlog.len(), backlog).unwrap();
+                    // Keep the stream open so the test controls when new output arrives.
+                    followed.recv_timeout(Duration::from_secs(5)).unwrap();
+                    let live = format!("{} fresh output\n", Utc::now().to_rfc3339());
+                    write!(stream, "{:X}\r\n{}\r\n", live.len(), live).unwrap();
+                    let mut byte = [0];
+                    let _ = reader.read(&mut byte);
+                } else {
+                    assert_eq!(first.trim(), format!("GET {expected} HTTP/1.1"));
+                    let body = if expected == "/v1.47/version" {
+                        r#"{"Version":"27.5.0","ApiVersion":"1.47","MinAPIVersion":"1.24","Os":"linux","Arch":"aarch64"}"#
+                    } else {
+                        r#"{"ID":"fixture","OSType":"linux","Architecture":"aarch64","Name":"fixture"}"#
+                    };
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", body.len(), body).unwrap();
+                }
+            }
+        });
+        core.configure_project_logs("s", "p", None).unwrap();
+        let wait_for_rows = |sequence| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let page = core
+                    .query_project_logs("s", &latest_query("p".into()))
+                    .unwrap();
+                if page.max_sequence >= sequence {
+                    break page;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "historical log stream timed out: {:?}",
+                    page.error
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        let backlog = wait_for_rows(INITIAL_TAIL_ROWS as u64);
+        assert_eq!(backlog.total_rows, INITIAL_TAIL_ROWS);
+        assert!(
+            backlog
+                .rows
+                .iter()
+                .all(|row| row.timestamp.as_deref() == Some(old.as_str()))
+        );
+        assert_eq!(backlog.rows[0].text, "historical 0");
+        assert_eq!(backlog.sources[0].status, "following");
+        follow.send(()).unwrap();
+        let live = wait_for_rows(INITIAL_TAIL_ROWS as u64 + 1);
+        assert_eq!(live.total_rows, INITIAL_TAIL_ROWS);
+        assert_eq!(live.rows[0].text, "historical 1");
+        assert_eq!(live.rows.last().unwrap().text, "fresh output");
+        core.shutdown();
+        server.join().unwrap();
     }
 
     #[test]

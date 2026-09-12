@@ -6,7 +6,7 @@ fn checked<T>(result: Result<T>, operation: &str) -> T {
 }
 
 /// Opt-in, read-only evidence against the current Docker CLI context. The probe
-/// requires an existing running Compose project. Recent log output is optional:
+/// requires an existing running Compose project. Existing log output is optional:
 /// a healthy quiet stream is valid, while emitted rows provide extra evidence.
 /// It never
 /// creates, starts, stops, restarts, executes in, or removes any container.
@@ -202,30 +202,36 @@ fn real_engine_observation_read_only() {
         }
         thread::sleep(Duration::from_millis(200));
     }
-    // Corroborate an empty API log window through the existing, pinned CLI path.
-    // Capture both streams in memory and report only a bounded line count.
-    let mut cli_recent_log_lines = 0;
-    if log_rows == 0 {
-        for container in running.iter().take(64) {
-            let target = &initial_session.target;
-            let output = checked(
-                core.checked_output(
+    // Corroborate the latest tail through the existing, pinned CLI path.
+    // Use log capture mode: checked_output captures stdout/stderr separately
+    // and leaves Output.logs empty. Report only the bounded combined count.
+    let mut cli_tail_log_lines = 0;
+    for container in running.iter().take(64) {
+        let target = &initial_session.target;
+        let output = checked(
+            core.runner
+                .run(
                     &target.docker,
-                    &target.engine_args(&[
-                        "logs",
-                        "--since",
-                        "30m",
-                        "--tail",
-                        "300",
-                        &container.full_id,
-                    ]),
+                    &target.engine_args(&["logs", "--tail", "300", &container.full_id]),
                     &target.env,
-                    10,
-                ),
-                "count recent logs using pinned CLI",
-            );
-            cli_recent_log_lines += String::from_utf8_lossy(&output.logs).lines().count();
-        }
+                    Duration::from_secs(10),
+                    true,
+                )
+                .map_err(|_| ApiError::new("StartFailed", "CLI log count could not start")),
+            "count latest logs using pinned CLI",
+        );
+        assert!(
+            output.code == Some(0) && !output.interrupted,
+            "CLI log count failed or was interrupted"
+        );
+        cli_tail_log_lines += String::from_utf8_lossy(&output.logs).lines().count();
+    }
+    if cli_tail_log_lines > 0 {
+        let latest = checked(
+            core.query_project_logs(id, &query),
+            "confirm existing Docker output is retained",
+        );
+        log_rows = log_rows.max(latest.rows.len());
     }
     // Report metadata only, including on assertion failure. Never print rows,
     // service/project/container names, command output, or Engine credentials.
@@ -251,8 +257,12 @@ fn real_engine_observation_read_only() {
     );
     eprintln!("read-only log source error codes: {log_error_codes:?}");
     eprintln!(
-        "read-only log body evidence: api_has_rows={} cli_recent_lines_if_empty={cli_recent_log_lines}",
+        "read-only log body evidence: api_has_rows={} cli_latest_tail_lines={cli_tail_log_lines}",
         log_rows > 0
+    );
+    assert!(
+        cli_tail_log_lines == 0 || log_rows > 0,
+        "Docker has existing output but the project log page is empty"
     );
     assert!(
         event_following,
