@@ -273,6 +273,64 @@ class ComposeFixtureTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return docker.compose.rows(self.root)
 
+    def apply_command(self, *services):
+        return ["up", "--detach", "--no-deps", "--no-build", "--pull", "never", "--force-recreate", "--", *services]
+
+    def test_apply_preparation_changes_images_without_recreating_containers(self):
+        before = self.require_up()
+        self.assertEqual(self.compose_cli(["pull", "--policy", "always", "--", "api"]).returncode, 0)
+        self.assertEqual(docker.compose.rows(self.root), before)
+        self.assertEqual(self.compose_cli(["build", "--", "worker"]).returncode, 0)
+        built = docker.compose.images(self.root)["native-compose-worker"]["dockerfileDigest"]
+        (self.root / "compose project 한글/Dockerfile").write_text("FROM scratch\nLABEL fixture=changed\n")
+        self.assertEqual(self.compose_cli(["build", "--", "worker"]).returncode, 0)
+        self.assertNotEqual(docker.compose.images(self.root)["native-compose-worker"]["dockerfileDigest"], built)
+        self.assertEqual(docker.compose.rows(self.root), before)
+        self.assertEqual(self.compose_cli(self.apply_command("worker")).returncode, 0)
+        after = docker.compose.rows(self.root)
+        self.assertEqual(next(row for row in before if row["ComposeService"] == "api"),
+                         next(row for row in after if row["ComposeService"] == "api"))
+        self.assertNotEqual(next(row for row in before if row["ComposeService"] == "worker")["Id"],
+                            next(row for row in after if row["ComposeService"] == "worker")["Id"])
+
+    def test_apply_missing_local_image_does_not_implicitly_prepare(self):
+        result = self.compose_cli(self.apply_command("api"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b"NATIVE_COMPOSE_MISSING_LOCAL_IMAGE", result.stdout)
+        self.assertEqual(docker.compose.images(self.root), {})
+        self.assertEqual(docker.compose.rows(self.root), [])
+
+    def test_apply_preparation_failure_preserves_existing_containers_and_prior_images(self):
+        before = self.require_up()
+        self.assertEqual(self.compose_cli(["pull", "--policy", "always", "--", "api"]).returncode, 0)
+        prepared = docker.compose.images(self.root)
+        (self.root / "compose-mode").write_text("build-fail")
+        self.assertEqual(self.compose_cli(["build", "--", "worker"]).returncode, 1)
+        self.assertEqual(docker.compose.rows(self.root), before)
+        self.assertEqual(docker.compose.images(self.root), prepared)
+
+    def test_apply_catalog_can_include_profiles_without_activating_them(self):
+        source = self.root / "compose project 한글/compose.yaml"
+        model = json.loads(source.read_text())
+        model["services"]["debug"] = {"image": "debug:fixture", "profiles": ["tools"]}
+        source.write_text(json.dumps(model))
+        result = self.compose_cli(["--profile", "*", "config", "--format", "json"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("debug", json.loads(result.stdout)["services"])
+        self.assertNotIn("debug", [row["ComposeService"] for row in self.require_up()])
+        self.assertEqual(self.compose_cli(["pull", "--policy", "always", "--", "debug"]).returncode, 0)
+        self.assertEqual(self.compose_cli(self.apply_command("debug")).returncode, 0)
+        self.assertIn("debug", [row["ComposeService"] for row in docker.compose.rows(self.root)])
+        self.assertEqual(self.compose_cli(["--profile", "*", *self.apply_command("debug")]).returncode, 95)
+
+    def test_apply_fixture_rejects_empty_unknown_and_unbounded_commands(self):
+        for command in [["pull", "--policy", "always", "--"], ["build", "--", "unknown"],
+                        self.apply_command(), self.apply_command("api", "api"),
+                        ["up", "--detach", "--force-recreate", "api"], ["build", "--push", "--", "worker"]]:
+            with self.subTest(command=command):
+                self.assertEqual(self.compose_cli(command).returncode, 95)
+        self.assertEqual(docker.compose.rows(self.root), [])
+
     def test_version_help_and_config_match_core_contract_without_secret_in_trace(self):
         for command, expected in [(["version", "--short"], b"2.39.4"), (["--help"], b"--project-directory"),
                                   (["config", "--help"], b"--format"), (["up", "--help"], b"--detach"),
@@ -453,6 +511,19 @@ class EvidenceValidationTests(unittest.TestCase):
         forged = {**report, "steps": [step("started compose", 1100), step("passed compose", 1200)]}
         with self.assertRaisesRegex(ValueError, "no matching probe"):
             fixture.validate_ui(identity(), forged, [], now_ms=5000)
+
+    def test_apply_cancelled_metadata_remains_separate_from_native_ui_coverage(self):
+        detail = {"id": "apply-operation", "action": "apply", "phase": "finished", "outcome": "cancelled", "reconciliation": "succeeded", "observedContainers": 0, "errorCode": "Cancelled"}
+        report = {**clear_report(), "status": "ready", "steps": [step("compose phase", 1100, detail)]}
+        result = fixture.validate_ui(identity(), report, [], now_ms=5000)
+        self.assertTrue(result["accepted"])
+        self.assertTrue(result["metadataOnly"])
+        self.assertFalse(result["composeUiVerified"])
+        self.assertEqual(result["completedProbes"], [])
+        for changed in [{**detail, "action": "push"}, {**detail, "output": "private build output"}, {**detail, "outcome": "rolledBack"}]:
+            report["steps"] = [step("compose phase", 1100, changed)]
+            with self.subTest(detail=changed), self.assertRaises(ValueError):
+                fixture.validate_ui(identity(), report, [], now_ms=5000)
 
     def test_accepts_same_pid_order_with_launch_and_binary_binding(self):
         result = fixture.validate_ui(identity(), clear_report(), native_events(), now_ms=5000)

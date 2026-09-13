@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import App from './App';
 import { api, type ContainerList, type Environment } from './api';
-import { composeApi, type ComposeOperation } from './composeApi';
+import { composeApi, type ComposeOperation, type ComposePreparation } from './composeApi';
 import { mountApi, mountKey } from './mountApi';
 import { observationApi, projectLogApi, type ObservationRead, type ProjectLogPage } from './observationApi';
 import { containerDetailsFixture } from './test/containerDetailsFixture';
@@ -20,7 +20,7 @@ vi.mock('./observationApi', async original => ({ ...await original<typeof import
 vi.mock('./mountApi', async original => ({ ...await original<typeof import('./mountApi')>(), mountApi: { getInventory: vi.fn() } }));
 vi.mock('./composeApi', async original => ({ ...await original<typeof import('./composeApi')>(), composeApi: {
   available: vi.fn(), pick: vi.fn(), list: vi.fn(), preview: vi.fn(), save: vi.fn(), remove: vi.fn(),
-  prepare: vi.fn(), start: vi.fn(), operations: vi.fn(), read: vi.fn(), cancel: vi.fn(),
+  previewApply: vi.fn(), prepare: vi.fn(), start: vi.fn(), operations: vi.fn(), read: vi.fn(), cancel: vi.fn(),
 } }));
 
 const primary = { ...storageContainer, state: 'running', health: 'unhealthy', healthConfigured: true };
@@ -136,4 +136,46 @@ it.each(['logs', 'diagnostics'] as const)('navigates from Compose progress to th
     expect(projectLogApi.query).toHaveBeenLastCalledWith(inventory.sessionId, 'orders', expect.objectContaining({ sourceIds: [primary.fullId] }));
   } else expect(api.getContainerDetails).toHaveBeenCalledExactlyOnceWith(inventory.sessionId, inventory.generation, primary.handle);
   expect(composeApi.start).not.toHaveBeenCalled(); expect(composeApi.cancel).not.toHaveBeenCalled();
+});
+
+it('keeps a paused project log filter and scroll while applying changes in the background, then transfers diagnostic focus', async () => {
+  const project = { id: 'registered-orders', revision: 1, name: 'orders', composeFile: '/work/compose.yaml', workingDirectory: '/work', envFile: null };
+  const prepared: ComposePreparation = { prepareId: 'apply-ready', project, action: 'apply', composeVersion: 'v2', existingContainers: 1, recreatePossible: true,
+    services: [{ name: 'db', image: 'postgres:17', build: false, profiles: [] }], selections: [{ service: 'db', preparation: 'none' }], warnings: [], stages: [
+      { kind: 'pull', services: [], status: 'skipped', exitCode: null, error: null },
+      { kind: 'build', services: [], status: 'skipped', exitCode: null, error: null },
+      { kind: 'recreate', services: ['db'], status: 'pending', exitCode: null, error: null },
+    ] };
+  let job: ComposeOperation = { ...operation, action: 'apply', phase: 'running', outcome: null, selections: prepared.selections, stages: prepared.stages, warnings: [] };
+  vi.mocked(composeApi.list).mockResolvedValue([project]);
+  vi.mocked(composeApi.previewApply).mockResolvedValue({ project, composeVersion: 'v2', services: prepared.services.map(service => ({ ...service, preparations: ['pull', 'none'], blockedReason: null })) });
+  vi.mocked(composeApi.prepare).mockResolvedValue(prepared);
+  vi.mocked(composeApi.start).mockImplementation(async (_session, _prepare, requestId) => { job = { ...job, requestId }; return job; });
+  vi.mocked(composeApi.read).mockImplementation(async () => ({ operation: job, text: '', oldestSequence: 1, nextSequence: 0, truncated: false }));
+  await mount(); await click(screen.getByRole('treeitem', { name: 'orders 프로젝트' }));
+  fireEvent.change(screen.getByRole('searchbox', { name: '로그 키워드 검색' }), { target: { value: 'request=' } }); await advance();
+  await click(screen.getByRole('button', { name: '화면 일시정지' })); await advance();
+  const viewport = screen.getByRole('log'); const position = viewport.scrollTop; const contents = viewport.textContent;
+  const configured = vi.mocked(projectLogApi.configure).mock.calls.length;
+  const stopped = vi.mocked(projectLogApi.stop).mock.calls.length;
+  await click(screen.getByRole('button', { name: '변경 반영' })); await advance();
+  expect(composeApi.start).not.toHaveBeenCalled();
+  await click(screen.getByRole('checkbox', { name: 'db 선택' }));
+  fireEvent.change(screen.getByRole('combobox', { name: 'db 이미지 준비' }), { target: { value: 'none' } });
+  await click(screen.getByRole('button', { name: '선택 내용 확인' })); await advance();
+  expect(screen.getByText('현재 복제본 1개 · 모두 대상')).toBeVisible();
+  await click(screen.getByRole('button', { name: '선택 서비스에 반영' })); await advance();
+  const dialog = screen.getByRole('dialog', { name: '프로젝트 작업' });
+  await click(within(dialog).getAllByRole('button', { name: '닫기' }).at(-1)!); await advance();
+  expect(screen.getByRole('searchbox', { name: '로그 키워드 검색' })).toHaveValue('request=');
+  expect(screen.getByRole('button', { name: '화면 재개' })).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.getByRole('log')).toBe(viewport); expect(viewport.scrollTop).toBe(position); expect(viewport.textContent).toBe(contents);
+  expect(projectLogApi.configure).toHaveBeenCalledTimes(configured); expect(projectLogApi.stop).toHaveBeenCalledTimes(stopped);
+  expect(composeApi.cancel).not.toHaveBeenCalled(); expect(composeApi.start).toHaveBeenCalledOnce();
+  await click(screen.getByRole('button', { name: '최근 프로젝트 작업' })); await advance();
+  await click(screen.getByRole('button', { name: 'database 진단 보기' })); await advance();
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(screen.getByRole('tab', { name: '상태 진단' })).toHaveFocus();
+  expect(screen.getByRole('tab', { name: '상태 진단' })).toHaveAttribute('aria-selected', 'true');
+  expect(composeApi.cancel).not.toHaveBeenCalled();
 });
