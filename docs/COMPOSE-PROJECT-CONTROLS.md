@@ -45,7 +45,11 @@ Compose 변경 작업은 세션당 한 개이며 개별 컨테이너 변경과 �
 
 [`up --detach`](https://docs.docker.com/reference/cli/docker/compose/up/)의 성공은
 Compose 명령의 종료 성공이다. 모든 서비스가 healthy 또는 준비 완료라는 뜻은
-아니며, 진행 창에서 마지막 컨테이너 목록의 상태를 별도로 확인한다.
+아니며, 진행 창에는 “명령 실행 완료”와 기존 목록 관측의 서비스별 State·Health를
+별도로 표시한다. 복제본은 실제 컨테이너별로 구분하고 Health 미설정·확인 불가,
+마지막 관측 시각과 오래된 결과를 표시한다. 실제 컨테이너의 로그·진단으로 이동하면
+진행 창을 닫고 해당 탭으로 포커스를 넘긴다. 작업은 계속 유지된다.
+자세한 상태와 이동 계약은 [상태 표시와 저장소 탐색](COMPOSE-STORAGE.md)을 따른다.
 [`stop`](https://docs.docker.com/reference/cli/docker/compose/stop/)은 컨테이너를
 제거하지 않는다. 취소와 시간 초과는 이미 Engine에 반영된 변경을 되돌리지 않는다.
 
