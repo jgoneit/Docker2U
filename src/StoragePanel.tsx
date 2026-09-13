@@ -38,6 +38,11 @@ export function StoragePanel({ inventory, error, loading, stale, reload, contain
   const scope = containers.filter(container => target.kind === 'container' ? container.fullId === target.fullId : container.composeProject === target.name);
   const selectedIds = new Set(scope.map(container => container.fullId));
   const usages = inventory ? storageUsages(inventory, containers) : [];
+  const usagesByKey = new Map<string, MountUsage[]>();
+  for (const usage of usages) {
+    const related = usagesByKey.get(usage.key);
+    if (related) related.push(usage); else usagesByKey.set(usage.key, [usage]);
+  }
   const scoped = usages.filter(usage => selectedIds.has(usage.container.fullId));
   const groups = new Map<string, MountUsage[]>();
   for (const usage of scoped) {
@@ -45,7 +50,8 @@ export function StoragePanel({ inventory, error, loading, stale, reload, contain
     const existing = groups.get(key);
     if (existing) existing.push(usage); else groups.set(key, [usage]);
   }
-  const unavailable = inventory ? scope.filter(container => !inventory.containers.find(item => item.fullId === container.fullId)?.mountsAvailable) : [];
+  const availableIds = new Set(inventory?.containers.filter(item => item.mountsAvailable).map(item => item.fullId));
+  const unavailable = inventory ? scope.filter(container => !availableIds.has(container.fullId)) : [];
   const timestamp = parseTimestamp(inventory?.observedAt);
   useEffect(() => {
     const focusKey = JSON.stringify([targetKey, highlightMountKey]);
@@ -80,7 +86,7 @@ export function StoragePanel({ inventory, error, loading, stale, reload, contain
     <ul className="storage-mounts">{[...groups.entries()].map(([key, members]) => {
       const first = members[0]!;
       const mount = first.mount;
-      const related = usages.filter(usage => usage.key === first.key);
+      const related = usagesByKey.get(first.key)!;
       const sharedIdentity = (mount.type === 'volume' && !!mount.volumeName) || (mount.type === 'bind' && !!mount.source);
       const isHighlighted = first.key === highlightMountKey;
       return <li key={key} className="storage-mount" data-highlighted={isHighlighted} tabIndex={-1} ref={isHighlighted ? highlighted : undefined}>
