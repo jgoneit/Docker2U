@@ -40,6 +40,23 @@ prepare를 호출해 오래된 handle 거절이 발생하지 않는지도 확인
 fixture 격리 검사가 통과했다. 새 export 브라우저 72개와 usability 162개는 수집을
 확인했으며, 실제 화면 결과는 최종 PR CI에서 별도로 확인한다.
 
+## 두 번째 후보와 전체 검사 시간
+
+소스 HEAD `f80a48164708de2addf6adf9a4a39fa5279c2af6`의
+[CI Run 34752849934](https://github.com/jgoneit/Docker2U/actions/runs/34752849934)에서도
+macOS ARM64 build는 통과했다(Rust 257 passed / 8 ignored). Frontend의 React 812개,
+native fixture 59개와 빌드는 통과했지만 전체 job의 25분 제한으로 취소됐다.
+
+- 브라우저 로그는 고유 테스트 483개 통과, 실패 및 재시도 완료행 0개를 기록했다.
+  전체 576개 중 미실행·미완료 항목이 있으므로 전체 통과로 표시하지 않는다.
+- 기존 실패가 있던 도구막대 시나리오는 실행된 7개 환경에서 통과했고, 이미지
+  내보내기는 8개 환경의 64개 테스트가 통과했다. 마지막 환경은 아직 시작하지 않았다.
+- 준비 단계는 약 3분 42초, 브라우저는 약 21분 28초 실행했다. 같은 처리 속도로
+  전체를 완료하면 약 29.3분이 필요하다는 추정에 따라 frontend job 제한을 35분으로
+  늘렸다. 전체 테스트, worker 2개, 재시도 및 assertion timeout은 유지했다.
+- 두 번째 취소 로그도 별도 파일로 보존한다. 새 후보의 최종 CI 결과는 PR 본문과
+  작업 응답에 기록한다.
+
 ## Seal 및 실제 환경의 경계
 
 최초 커밋 후보의 Seal Run `5507a71abf7549f58db50135d0bceef8`은 기록됐으며,
@@ -47,9 +64,12 @@ fixture 격리 검사가 통과했다. 새 export 브라우저 72개와 usabilit
 Scope·검사 중 소스 안정성은 통과했다. 이 로컬 실패 기록은 위 CI의 Rust 통과와
 구분하고 그대로 보존한다.
 
-후속 수정·문서 커밋에서 같은 Basic Task의 새 `verify` Run을 생성하고 정확한 ID로
-`complete`한다. 최종 후보의 Seal 결과와 PR HEAD CI는 PR 본문과 작업 응답에 기록한다.
-카탈로그·필수 여부·검사 timeout과 CI timeout을 변경하지 않았다.
+두 번째 후보의 Run `ba6e762d2fd34543b7e0c451aa302978`도 같은 필수 Rust 검사 실패로
+Completion이 거절됐다. 앞선 Run과 이전 작업의 Accepted 기록을 그대로 보존한다.
+CI 파일이 Scope에 추가되어 새 Basic Task
+`docker2u-compose-apply-image-export-ci-v1-20260913`을 만든 뒤 job 제한을 변경했다.
+최종 커밋에서 `verify`하고 반환된 정확한 Run ID로 `complete`한다. 카탈로그·필수
+여부·Seal 검사 timeout은 유지한다. 최종 결과는 PR 본문과 작업 응답에 기록한다.
 
 실제 Engine export/load와 native 저장 창 직접 조작은 이 세션의 소켓 권한 제한으로
 여전히 미검증이다. CI의 fake CLI·Chromium·unsigned 앱 빌드는 이를 대신하지 않는다.
