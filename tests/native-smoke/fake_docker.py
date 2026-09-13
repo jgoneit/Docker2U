@@ -12,6 +12,9 @@ import time
 _compose_spec = importlib.util.spec_from_file_location("native_compose", Path(__file__).with_name("compose_fixture.py"))
 compose = importlib.util.module_from_spec(_compose_spec)
 _compose_spec.loader.exec_module(compose)
+_export_spec = importlib.util.spec_from_file_location("native_image_export", Path(__file__).with_name("image_export_fixture.py"))
+image_export = importlib.util.module_from_spec(_export_spec)
+_export_spec.loader.exec_module(image_export)
 
 LIMIT = 2 * 1024 * 1024
 END = b"\nNATIVE_SMOKE_END\n"
@@ -86,6 +89,9 @@ def run(root, arguments):
         return compose_result
     compose_rows = compose.rows(root)
     identifiers = [*IDS, *(row["Id"] for row in compose_rows)]
+    export_result = image_export.dispatch(root, args, identifiers, record, lambda: STOP_REQUESTED)
+    if export_result is not None:
+        return export_result
     if args == ["info", "--format", "{{json .}}"]:
         claimed = root / ("claimed-info-" + str(os.getpid()))
         changed = False

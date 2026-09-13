@@ -1,0 +1,7 @@
+import type { Container, ContainerList } from '../api';
+import type { ImageExportOperation, ImageExportPreview } from '../imageExportApi';
+export const exportContainer: Container = { handle: 'container-handle', fullId: 'b'.repeat(64), shortId: 'b'.repeat(12), name: 'web', image: 'app:latest', state: 'running', health: null, healthConfigured: false, ports: [], createdAt: '2026-09-13T00:00:00Z', composeProject: null, composeService: null };
+export const exportInventory: ContainerList = { sessionId: 'session-1', generation: 1, containers: [exportContainer], refreshedAt: '2026-09-13T00:00:00Z', stale: false };
+export const exportPreview: ImageExportPreview = { prepareId: 'preview-1', sessionId: 'session-1', containerId: exportContainer.fullId, containerName: exportContainer.name, imageId: `sha256:${'a'.repeat(64)}`, imageReference: exportContainer.image, engineName: 'desktop', engineId: 'engine-1', engineEndpoint: 'unix:///engine.sock', expiresAt: '2026-09-13T00:05:00Z' };
+export const exportDestination = { destinationToken: 'destination-1', path: '/exports/web.tar' };
+export const exportOperation = (patch: Partial<ImageExportOperation> = {}): ImageExportOperation => ({ ...exportPreview, id: 'export-1', requestId: '00000000-0000-4000-8000-000000000001', path: exportDestination.path, phase: 'exporting', outcome: null, bytesWritten: 8192, elapsedMs: 1200, startedAt: '2026-09-13T00:00:00Z', finishedAt: null, exitCode: null, stderr: '', stderrTruncated: false, error: null, cleanupWarning: null, ...patch });

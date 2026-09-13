@@ -36,6 +36,12 @@
     "allow-start-compose-operation",
     "allow-list-compose-operations",
     "allow-read-compose-operation",
-    "allow-cancel-compose-operation"
+    "allow-cancel-compose-operation",
+    "allow-prepare-image-export",
+    "allow-pick-image-export-destination",
+    "allow-start-image-export",
+    "allow-read-image-export",
+    "allow-list-image-exports",
+    "allow-cancel-image-export"
   ]
 }

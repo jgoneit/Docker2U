@@ -15,6 +15,8 @@ mod compose;
 mod details;
 #[path = "engine_reader.rs"]
 mod engine_reader;
+#[path = "docker_image_export.rs"]
+mod image_export;
 #[path = "docker_mounts.rs"]
 mod mounts;
 #[path = "docker_observation.rs"]
@@ -31,6 +33,7 @@ pub use compose::{
     ComposeServiceSelection,
 };
 pub use details::ContainerDetails;
+pub use image_export::{ImageExportDestination, ImageExportOperation, ImageExportPreview};
 pub use mounts::MountInventory;
 pub use observation::{ObservationHold, ObservationRead, ObservationScope};
 pub use project_logs::{ProjectLogPage, ProjectLogQuery};
@@ -40,6 +43,9 @@ pub use stream::{LogStreamChunk, LogStreamStarted};
 #[cfg(all(test, unix))]
 #[path = "docker_live_compose_apply_test.rs"]
 mod live_compose_apply_test;
+#[cfg(all(test, unix))]
+#[path = "docker_live_image_export_test.rs"]
+mod live_image_export_test;
 #[cfg(all(test, unix))]
 #[path = "docker_tests.rs"]
 mod tests;
@@ -573,12 +579,17 @@ pub struct Core {
     compose_registry: Arc<Mutex<compose::ComposeRegistry>>,
     compose_operations: Arc<Mutex<compose::ComposeOperationManager>>,
     mount_inventory: Arc<Mutex<mounts::MountInventoryManager>>,
+    image_exports: Arc<Mutex<image_export::ImageExportManager>>,
     #[cfg(test)]
     config: Option<RuntimeConfig>,
     #[cfg(test)]
     mutation_timeout: Option<Duration>,
     #[cfg(test)]
     mount_timeout: Option<Duration>,
+    #[cfg(test)]
+    image_export_timeout: Option<Duration>,
+    #[cfg(test)]
+    image_export_directory_sync: Option<Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>>,
     #[cfg(test)]
     mount_output_limit: Option<usize>,
     #[cfg(test)]
@@ -704,6 +715,7 @@ impl Core {
         }
         self.cancel_observation();
         self.cancel_mount_reads(None);
+        self.cancel_all_image_exports_and_wait();
         self.cancel_all_compose_and_wait();
         self.cancel_project_logs();
         self.cancel_log_stream();
@@ -914,6 +926,7 @@ impl Core {
         // Reserve reconnection before retiring workers so a Busy result cannot
         // stop a still-current background observer or race a new mutation.
         self.cancel_mount_reads(None);
+        self.cancel_all_image_exports_and_wait();
         self.cancel_all_compose_and_wait();
         self.stop_observation();
         self.cancel_project_logs();

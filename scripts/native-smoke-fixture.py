@@ -48,6 +48,7 @@ def populate_fixture(root):
     write_json(config / "config.json", {"currentContext": "native-smoke-local"})
     shutil.copyfile(REPO / "tests/native-smoke/fake_docker.py", root / "docker")
     shutil.copyfile(REPO / "tests/native-smoke/compose_fixture.py", root / "compose_fixture.py")
+    shutil.copyfile(REPO / "tests/native-smoke/image_export_fixture.py", root / "image_export_fixture.py")
     compose_spec = importlib.util.spec_from_file_location("native_compose_fixture", root / "compose_fixture.py")
     compose = importlib.util.module_from_spec(compose_spec)
     compose_spec.loader.exec_module(compose)
