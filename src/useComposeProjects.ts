@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { coreError, type CoreError, type Environment } from './api';
-import { composeApi, type ComposeAction, type ComposeOperation, type ComposePreparation, type ComposeProject, type ComposeServicePreview } from './composeApi';
+import { composeApi, type ComposeAction, type ComposeApplyPreview, type ComposeApplySelection, type ComposeOperation, type ComposePreparation, type ComposeProject, type ComposeServicePreview } from './composeApi';
+
+import { sameApplyPlan, sameSelections, validApplyPlan, validApplyPreview, validSelections } from './composeApply';
 
 export type ComposeModal = { kind: 'editor'; project: ComposeProject | null; name?: string }
   | { kind: 'prepare'; project: ComposeProject; action: ComposeAction }
+  | { kind: 'apply'; project: ComposeProject }
   | { kind: 'progress' } | { kind: 'forget'; project: ComposeProject } | null;
 interface Options {
   environment: Environment | null;
@@ -24,6 +27,8 @@ export function useComposeProjects(options: Options) {
   const [registryError, setRegistryError] = useState<CoreError | null>(null);
   const [issues, setIssues] = useState<Map<string, CoreError>>(new Map());
   const [modal, setModal] = useState<ComposeModal>(null);
+  const [applyPreview, setApplyPreview] = useState<ComposeApplyPreview | null>(null);
+  const [applySelections, setApplySelections] = useState<ComposeApplySelection[]>([]);
   const [preparation, setPreparation] = useState<ComposePreparation | null>(null);
   const [engine, setEngine] = useState<Pick<Environment, 'contextName' | 'endpoint' | 'engineId'>>({ contextName: null, endpoint: null, engineId: null });
   const [preparing, setPreparing] = useState(false);
@@ -69,8 +74,8 @@ export function useComposeProjects(options: Options) {
     ++sequence.current;
     preparationSession.current = null;
     startingRef.current = false;
-    setStarting(false); setPreparing(false); setPreparation(null); setActionError(null); setCancelling(false); setRefreshing(false);
-    setModal(current => current?.kind === 'prepare' ? null : current);
+    setStarting(false); setPreparing(false); setPreparation(null); setApplyPreview(null); setApplySelections([]); setActionError(null); setCancelling(false); setRefreshing(false);
+    setModal(current => current?.kind === 'prepare' || current?.kind === 'apply' ? null : current);
     setIssues(new Map()); setActiveOperation(null); activeOperationRef.current = null;
   }, [sessionId]);
   const close = useCallback(() => {
@@ -84,17 +89,20 @@ export function useComposeProjects(options: Options) {
     setIssues(previous => { const next = new Map(previous); next.delete(project.name); return next; });
     setModal(null);
   }, []);
-  const prepare = useCallback(async (project: ComposeProject, action: ComposeAction) => {
+  const prepare = useCallback(async (project: ComposeProject, action: ComposeAction, selections?: ComposeApplySelection[]) => {
     const targetSession = session.current;
     if (!targetSession || busyRef.current || startingRef.current) return;
+    if (action === 'apply' && !validSelections(selections)) return;
+    const requestedSelections = selections?.map(item => ({ ...item }));
+    if (action === 'apply') setApplySelections(requestedSelections!);
     const attempt = ++sequence.current;
     setModal({ kind: 'prepare', project, action }); setPreparation(null); setActionError(null); setPreparing(true);
     const currentEnvironment = latest.current.environment;
     setEngine({ contextName: currentEnvironment?.contextName ?? null, endpoint: currentEnvironment?.endpoint ?? null, engineId: currentEnvironment?.engineId ?? null });
     try {
-      const result = await composeApi.prepare(targetSession, project.id, project.revision, action);
+      const result = await composeApi.prepare(targetSession, project.id, project.revision, action, requestedSelections);
       if (!mounted.current || attempt !== sequence.current || session.current !== targetSession) return;
-      if (result.project.id !== project.id || result.project.revision !== project.revision || result.project.name !== project.name || result.action !== action || !result.prepareId) throw invalid();
+      if (result.project.id !== project.id || result.project.revision !== project.revision || result.project.name !== project.name || result.action !== action || !result.prepareId || !validApplyPlan(result) || (action === 'apply' && !sameSelections(result.selections, requestedSelections))) throw invalid();
       preparationSession.current = targetSession;
       requestId.current = crypto.randomUUID();
       setPreparation(result);
@@ -103,8 +111,24 @@ export function useComposeProjects(options: Options) {
       if (attempt === sequence.current && session.current === targetSession) setActionError(report(error, targetSession, project.name));
     } finally { if (mounted.current && attempt === sequence.current) setPreparing(false); }
   }, [report]);
-  const acceptOperation = useCallback((result: ComposeOperation, expectedSession: string, project: ComposeProject, action: ComposeAction) => {
-    if (result.sessionId !== expectedSession || result.projectId !== project.id || result.projectName !== project.name || result.action !== action || !result.id) throw invalid();
+  const openApply = useCallback(async (project: ComposeProject) => {
+    const targetSession = session.current;
+    if (!targetSession || busyRef.current || startingRef.current) return;
+    const attempt = ++sequence.current;
+    setModal({ kind: 'apply', project }); setApplyPreview(null); setPreparation(null); setApplySelections([]); setActionError(null); setPreparing(true);
+    const currentEnvironment = latest.current.environment;
+    setEngine({ contextName: currentEnvironment?.contextName ?? null, endpoint: currentEnvironment?.endpoint ?? null, engineId: currentEnvironment?.engineId ?? null });
+    try {
+      const result = await composeApi.previewApply(targetSession, project.id, project.revision);
+      if (!mounted.current || attempt !== sequence.current || session.current !== targetSession) return;
+      if (result.project.id !== project.id || result.project.revision !== project.revision || result.project.name !== project.name || !validApplyPreview(result)) throw invalid();
+      setApplyPreview(result);
+    } catch (error) {
+      if (attempt === sequence.current && session.current === targetSession) setActionError(report(error, targetSession, project.name));
+    } finally { if (mounted.current && attempt === sequence.current) setPreparing(false); }
+  }, [report]);
+  const acceptOperation = useCallback((result: ComposeOperation, expectedSession: string, project: ComposeProject, action: ComposeAction, expectedRequest: string, expected: ComposePreparation) => {
+    if (result.sessionId !== expectedSession || result.projectId !== project.id || result.projectName !== project.name || result.action !== action || !result.id || (result.requestId !== undefined && result.requestId !== expectedRequest) || (action === 'apply' && !result.requestId) || !sameApplyPlan(result, expected)) throw invalid();
     ++listRequest.current;
     setOperation(result); operationRef.current = result;
     setActiveOperation(result.phase === 'finished' ? null : result); activeOperationRef.current = result.phase === 'finished' ? null : result;
@@ -116,12 +140,13 @@ export function useComposeProjects(options: Options) {
     if (!targetSession || !preparation || preparationSession.current !== targetSession || startingRef.current || busyRef.current) return;
     startingRef.current = true; busyRef.current = true; setStarting(true); setActionError(null);
     const attempt = sequence.current;
+    const expectedRequest = requestId.current;
     try {
-      const result = await composeApi.start(targetSession, preparation.prepareId, requestId.current);
+      const result = await composeApi.start(targetSession, preparation.prepareId, expectedRequest);
       if (!mounted.current || session.current !== targetSession) return;
       // A close while start is pending hides the dialog, not the resulting job.
       const closed = attempt !== sequence.current;
-      acceptOperation(result, targetSession, preparation.project, preparation.action);
+      acceptOperation(result, targetSession, preparation.project, preparation.action, expectedRequest, preparation);
       setServices(preparation.services); serviceCache.current.set(result.id, preparation.services);
       if (closed) setModal(null);
     } catch (error) {
@@ -131,8 +156,8 @@ export function useComposeProjects(options: Options) {
         try {
           const jobs = await composeApi.operations(targetSession);
           if (!mounted.current || session.current !== targetSession) return;
-          const job = jobs.find(item => item.sessionId === targetSession && item.projectId === preparation.project.id && item.action === preparation.action && item.phase !== 'finished');
-          if (job) { acceptOperation(job, targetSession, preparation.project, preparation.action); setServices(preparation.services); serviceCache.current.set(job.id, preparation.services); if (attempt !== sequence.current) setModal(null); }
+          const job = jobs.find(item => item.sessionId === targetSession && item.requestId === expectedRequest);
+          if (job) { acceptOperation(job, targetSession, preparation.project, preparation.action, expectedRequest, preparation); setServices(preparation.services); serviceCache.current.set(job.id, preparation.services); if (attempt !== sequence.current) setModal(null); }
           else setActionError(report(error, targetSession, preparation.project.name));
         } catch (recoveryError) { if (mounted.current && session.current === targetSession) setActionError(report(recoveryError, targetSession, preparation.project.name)); }
       }
@@ -159,7 +184,7 @@ export function useComposeProjects(options: Options) {
         // Core returns its bounded journal oldest first; the UI opens the newest job.
         const jobs = (await composeApi.operations(sessionId!)).slice().reverse();
         if (!live || session.current !== sessionId || attempt !== listRequest.current) return;
-        if (jobs.some(item => !item.sessionId || !item.id)) throw invalid();
+        if (jobs.some(item => !item.sessionId || !item.id || !validApplyPlan(item) || (item.action === 'apply' && !item.requestId))) throw invalid();
         setRecentOperations(previous => [...jobs, ...previous.filter(item => !jobs.some(job => job.id === item.id))].slice(0, 10));
         const active = activeOperationRef.current;
         const current = active && jobs.find(item => item.id === active.id);
@@ -193,7 +218,7 @@ export function useComposeProjects(options: Options) {
         const page = await composeApi.read(operationSession!, id!, cursor);
         if (!active || session.current !== sessionId) return;
         const current = operationRef.current;
-        if (current?.id !== id || page.operation.id !== id || page.operation.sessionId !== operationSession || page.operation.projectId !== current?.projectId || page.operation.projectName !== current?.projectName || page.operation.action !== current?.action || page.nextSequence < cursor || page.oldestSequence > page.nextSequence + 1) throw invalid();
+        if (current?.id !== id || page.operation.id !== id || page.operation.sessionId !== operationSession || page.operation.projectId !== current?.projectId || page.operation.projectName !== current?.projectName || page.operation.action !== current?.action || page.operation.requestId !== current?.requestId || !sameApplyPlan(page.operation, current) || page.nextSequence < cursor || page.oldestSequence > page.nextSequence + 1) throw invalid();
         cursor = page.nextSequence;
         setOperation(page.operation); operationRef.current = page.operation;
         setRecentOperations(previous => previous.map(item => item.id === page.operation.id ? page.operation : item));
@@ -224,7 +249,10 @@ export function useComposeProjects(options: Options) {
     try {
       const result = await composeApi.cancel(target.sessionId, target.id);
       if (!mounted.current || session.current !== target.sessionId || operationRef.current?.id !== target.id) return;
-      if (result.id !== target.id || result.sessionId !== target.sessionId || result.projectId !== target.projectId) throw invalid();
+      // Polling may finish and drain output while the cancellation reply is in
+      // flight. Its older snapshot must not revive the completed operation.
+      if (operationRef.current.phase === 'finished') return;
+      if (result.id !== target.id || result.sessionId !== target.sessionId || result.projectId !== target.projectId || result.requestId !== target.requestId || result.action !== target.action || !sameApplyPlan(result, target)) throw invalid();
       setOperation(result); operationRef.current = result; setReadError(null); setPollVersion(value => value + 1);
     } catch (error) { if (session.current === target.sessionId) setReadError(report(error, target.sessionId, target.projectName)); }
     finally { if (mounted.current && session.current === target.sessionId) setCancelling(false); }
@@ -241,7 +269,7 @@ export function useComposeProjects(options: Options) {
     } catch (error) { if (mounted.current) setActionError(coreError(error)); return false; }
     finally { if (mounted.current) setRemoving(false); }
   }, [removing]);
-  return { available, projects, registryError, issues, reload, modal, close, saved, prepare, start, preparation, engine, preparing, starting, actionError,
+  return { available, projects, registryError, issues, reload, modal, close, saved, prepare, openApply, applyPreview, applySelections, start, preparation, engine, preparing, starting, actionError,
     operation, feedbackOperation: activeOperation ?? operation, recentOperations, text, truncated, readError, previousSession, services, cancelling, cancel, refreshing, refreshFailed, busy, busyRef, removing, remove,
     openEditor: (project: ComposeProject | null = null, name?: string) => { if (!busyRef.current) { setActionError(null); setModal({ kind: 'editor', project, name }); } },
     openForget: (project: ComposeProject) => { if (!busyRef.current) { setActionError(null); setModal({ kind: 'forget', project }); } },

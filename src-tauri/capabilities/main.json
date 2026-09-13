@@ -31,6 +31,7 @@
     "allow-preview-compose-project",
     "allow-save-compose-project",
     "allow-remove-compose-project",
+    "allow-preview-compose-apply",
     "allow-prepare-compose-operation",
     "allow-start-compose-operation",
     "allow-list-compose-operations",

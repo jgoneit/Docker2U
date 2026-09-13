@@ -26,6 +26,7 @@ fn main() {
             "preview_compose_project",
             "save_compose_project",
             "remove_compose_project",
+            "preview_compose_apply",
             "prepare_compose_operation",
             "start_compose_operation",
             "list_compose_operations",

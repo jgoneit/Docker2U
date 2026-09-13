@@ -19,6 +19,22 @@ def rows(root):
     return state(root).get("containers", [])
 
 
+def images(root):
+    path = root / "compose-images.json"
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
+def save_images(root, value):
+    temporary = root / ("compose-images-" + str(os.getpid()) + ".tmp")
+    temporary.write_text(json.dumps(value))
+    temporary.chmod(0o600)
+    temporary.replace(root / "compose-images.json")
+
+
+def image_name(model, service):
+    return model["services"][service].get("image") or model["name"] + "-" + service
+
+
 def save_rows(root, containers, generations=None):
     temporary = root / ("compose-state-" + str(os.getpid()) + ".tmp")
     temporary.write_text(json.dumps({"containers": containers, "generations": generations if generations is not None else state(root).get("generations", {})}))
@@ -52,11 +68,11 @@ def dispatch(root, arguments, record, stopping):
     if values == ["version", "--short"]:
         print("2.39.4")
         return 0
-    if values in [["--help"], ["config", "--help"], ["up", "--help"], ["stop", "--help"]]:
-        print("Docker Compose fixture: --ansi --progress --project-directory --project-name --file --env-file config --format json up --detach stop --timeout")
+    if values in [["--help"], ["config", "--help"], ["up", "--help"], ["stop", "--help"], ["pull", "--help"], ["build", "--help"]]:
+        print("Docker Compose fixture: --ansi --progress --project-directory --project-name --file --env-file --profile config --format json up --detach --no-deps --no-build --pull --force-recreate stop --timeout pull --policy build")
         return 0
     flags = {}
-    pair_flags = {"--ansi", "--progress", "--project-directory", "--project-name", "-p", "--file", "-f", "--env-file"}
+    pair_flags = {"--ansi", "--progress", "--project-directory", "--project-name", "-p", "--file", "-f", "--env-file", "--profile"}
     while values and values[0] in pair_flags:
         if len(values) < 2:
             raise ValueError("missing fixture Compose flag value")
@@ -84,7 +100,7 @@ def dispatch(root, arguments, record, stopping):
     name = flags.get("--project-name", flags.get("-p", model.get("name", directory.name)))
     model["name"] = name
     if command == "config" and options == ["--format", "json"]:
-        record(root, phase="compose-config", project=name, composeFile=str(source))
+        record(root, phase="compose-config", project=name, composeFile=str(source), allProfiles=flags.get("--profile") == "*")
         while (root / "compose-config-block").exists() and not stopping():
             time.sleep(0.02)
         if stopping():
@@ -95,24 +111,61 @@ def dispatch(root, arguments, record, stopping):
             return 1
         print(json.dumps(model))
         return 0
-    if command not in ["up", "stop"] or (command == "up" and options not in [["-d"], ["--detach"]]) or (command == "stop" and options):
-        raise ValueError("fixture accepts only config, up -d, and stop")
+    if "--profile" in flags:
+        raise ValueError("fixture refuses profile expansion during changes")
+    apply_prefix = ["--detach", "--no-deps", "--no-build", "--pull", "never", "--force-recreate", "--"]
+    apply = command == "up" and options[:len(apply_prefix)] == apply_prefix
+    if command == "pull" and options[:3] == ["--policy", "always", "--"]:
+        selected = options[3:]
+    elif command == "build" and options[:1] == ["--"]:
+        selected = options[1:]
+    elif apply:
+        selected = options[len(apply_prefix):]
+    elif command == "up" and options in [["-d"], ["--detach"]]:
+        selected = [service for service, spec in model["services"].items() if not spec.get("profiles")]
+    elif command == "stop" and not options:
+        selected = list(model["services"])
+    else:
+        raise ValueError("fixture rejects unsupported Compose action or options")
+    if not selected or len(selected) != len(set(selected)) or any(service not in model["services"] for service in selected):
+        raise ValueError("fixture requires distinct known services")
     mode = (root / "compose-mode").read_text().strip() if (root / "compose-mode").exists() else "success"
-    record(root, phase="compose-operation", action=command, project=name, mode=mode)
+    record(root, phase="compose-operation", action=command, project=name, mode=mode, services=selected, apply=apply)
     print("NATIVE_COMPOSE_BEGIN " + command + " " + name, flush=True)
     if mode == "quiet":
         while not stopping():
             time.sleep(0.02)
         record(root, phase="compose-cancelled", project=name)
         return 130
+    prepared_images = images(root)
+    if command in ["pull", "build"]:
+        for service in selected:
+            spec = model["services"][service]
+            if (command == "pull" and not spec.get("image")) or (command == "build" and not spec.get("build")):
+                raise ValueError("fixture rejects impossible image preparation")
+            if mode == command + "-fail":
+                print("NATIVE_COMPOSE_PREPARATION_FAILURE " + service, flush=True)
+                record(root, phase="compose-preparation-failed", action=command, project=name)
+                return 1
+            image = image_name(model, service)
+            prepared_images[image] = {"preparation": command, "service": service}
+            if command == "build":
+                prepared_images[image]["dockerfileDigest"] = hashlib.sha256((directory / "Dockerfile").read_bytes()).hexdigest()
+            save_images(root, prepared_images)
+            print("NATIVE_COMPOSE_IMAGE_READY " + service, flush=True)
+        record(root, phase="compose-complete", action=command, project=name, services=selected)
+        return 0
     containers = rows(root)
     if command == "up":
-        containers = [row for row in containers if row["ComposeProject"] != name]
+        if apply and any(image_name(model, service) not in prepared_images for service in selected):
+            print("NATIVE_COMPOSE_MISSING_LOCAL_IMAGE", flush=True)
+            return 1
+        containers = [row for row in containers if row["ComposeProject"] != name or row["ComposeService"] not in selected]
         generations = state(root).get("generations", {})
         generations[name] = generations.get(name, 0) + 1
         generation = generations[name]
         save_rows(root, containers, generations)
-        for service in model["services"]:
+        for service in selected:
             if stopping():
                 record(root, phase="compose-cancelled", project=name)
                 return 130
@@ -120,7 +173,7 @@ def dispatch(root, arguments, record, stopping):
             time.sleep(0.4)
             containers.append({
                 "Id": hashlib.sha256((name + ":" + service + ":" + str(generation)).encode()).hexdigest(), "Name": "/" + name + "-" + service + "-1",
-                "Image": "native-compose:fixture", "Created": "2026-09-13T00:00:00Z",
+                "Image": image_name(model, service), "Created": "2026-09-13T00:00:00Z",
                 "StartedAt": "2026-09-13T00:00:01Z", "Tty": False, "State": "running",
                 "HealthConfigured": service == "api", "Health": "healthy" if service == "api" else None, "Ports": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": "18080"}]} if service == "api" else None,
                 "ComposeProject": name, "ComposeService": service,
@@ -128,7 +181,10 @@ def dispatch(root, arguments, record, stopping):
                 "EnvironmentFile": flags.get("--env-file", ""),
             })
             save_rows(root, containers)
-            if mode == "fail":
+            if not apply:
+                prepared_images.setdefault(image_name(model, service), {"preparation": "up", "service": service})
+                save_images(root, prepared_images)
+            if mode in ["fail", "recreate-fail"]:
                 print("NATIVE_COMPOSE_PARTIAL_FAILURE worker failed to start", flush=True)
                 record(root, phase="compose-partial-failure", project=name)
                 return 1

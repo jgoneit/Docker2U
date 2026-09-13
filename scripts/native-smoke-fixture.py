@@ -139,9 +139,9 @@ def validate_compose_metadata(step):
             valid = (key in ("outcome", "errorCode") and value is None) or (isinstance(value, str) and 0 < len(value) <= 256)
         if not valid:
             raise ValueError("Compose metadata contains an invalid value: " + key)
-    for key, allowed in {"kind": {"file", "directory", "env"}, "action": {"up", "stop"},
+    for key, allowed in {"kind": {"file", "directory", "env"}, "action": {"up", "stop", "apply"},
                          "phase": {"preparing", "running", "reconciling", "finished"},
-                         "outcome": {None, "succeeded", "failed", "resultUnknown", "cancelledBeforeStart"},
+                         "outcome": {None, "succeeded", "failed", "resultUnknown", "cancelledBeforeStart", "cancelled"},
                          "reconciliation": {"pending", "succeeded", "failed", "skipped"}}.items():
         if key in detail and detail[key] not in allowed:
             raise ValueError("Compose metadata contains an unknown state: " + key)

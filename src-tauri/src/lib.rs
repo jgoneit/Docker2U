@@ -4,11 +4,11 @@ mod process;
 mod process_tests;
 
 use docker::{
-    Action, ApiError, BulkMutation, ComposeAction, ComposeOperation, ComposeOperationPreview,
-    ComposeOperationRead, ComposeProject, ComposeProjectInput, ComposeProjectPreview,
-    ContainerDetails, ContainerList, Core, Environment, LogStreamChunk, LogStreamStarted, Logs,
-    MountInventory, Mutation, ObservationHold, ObservationRead, ObservationScope, ProjectLogPage,
-    ProjectLogQuery, StatsSnapshot,
+    Action, ApiError, BulkMutation, ComposeAction, ComposeApplyPreview, ComposeOperation,
+    ComposeOperationPreview, ComposeOperationRead, ComposeProject, ComposeProjectInput,
+    ComposeProjectPreview, ComposeServiceSelection, ContainerDetails, ContainerList, Core,
+    Environment, LogStreamChunk, LogStreamStarted, Logs, MountInventory, Mutation, ObservationHold,
+    ObservationRead, ObservationScope, ProjectLogPage, ProjectLogQuery, StatsSnapshot,
 };
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
@@ -283,16 +283,34 @@ async fn remove_compose_project(
 }
 
 #[tauri::command]
+async fn preview_compose_apply(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    project_id: String,
+    expected_revision: u64,
+) -> Result<ComposeApplyPreview, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.preview_compose_apply(&session_id, &project_id, expected_revision)).await
+}
+
+#[tauri::command]
 async fn prepare_compose_operation(
     core: tauri::State<'_, Core>,
     session_id: String,
     project_id: String,
     expected_revision: u64,
     action: ComposeAction,
+    selections: Option<Vec<ComposeServiceSelection>>,
 ) -> Result<ComposeOperationPreview, ApiError> {
     let core = core.inner().clone();
     worker(move || {
-        core.prepare_compose_operation(&session_id, &project_id, expected_revision, action)
+        core.prepare_compose_operation(
+            &session_id,
+            &project_id,
+            expected_revision,
+            action,
+            selections,
+        )
     })
     .await
 }
@@ -378,6 +396,7 @@ pub fn run() {
             preview_compose_project,
             save_compose_project,
             remove_compose_project,
+            preview_compose_apply,
             prepare_compose_operation,
             start_compose_operation,
             list_compose_operations,
@@ -431,6 +450,7 @@ mod ipc_tests {
                 "allow-preview-compose-project",
                 "allow-save-compose-project",
                 "allow-remove-compose-project",
+                "allow-preview-compose-apply",
                 "allow-prepare-compose-operation",
                 "allow-start-compose-operation",
                 "allow-list-compose-operations",

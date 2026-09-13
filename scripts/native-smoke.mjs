@@ -57,7 +57,7 @@ if (command === 'build') {
     override,
   }, null, 2) + '\n');
   console.log(`Validation bundle: ${app}\nProduction CSP and Rust IPC are unchanged. This is a test-only bundle.`);
-} else if (['live-on', 'live-off', 'compose-success', 'compose-fail', 'compose-quiet'].includes(command)) {
+} else if (['live-on', 'live-off', 'compose-success', 'compose-fail', 'compose-quiet', 'compose-pull-fail', 'compose-build-fail', 'compose-recreate-fail'].includes(command)) {
   // Reuse the fixture's controller ownership check. Only the exact live run in
   // /tmp can receive a gate; no Docker endpoint or user config is modified.
   await run('/usr/bin/python3', ['-c', `
@@ -113,6 +113,9 @@ print(json.dumps({"command": sys.argv[2], "fixtureRoot": str(root), "liveOutput"
   pnpm native:smoke compose-success  Complete synthetic Compose operations
   pnpm native:smoke compose-fail  Fail after creating one fixture service
   pnpm native:smoke compose-quiet  Wait silently until explicit cancellation
+  pnpm native:smoke compose-pull-fail  Fail synthetic image preparation before build/recreation
+  pnpm native:smoke compose-build-fail  Fail synthetic build before recreation
+  pnpm native:smoke compose-recreate-fail  Fail synthetic selected-service recreation
   pnpm native:smoke report [--ui-results path.json]  Combine CLI trace with the UI JSON report
   pnpm native:smoke stop         Stop only the owned validation run and archive evidence
 

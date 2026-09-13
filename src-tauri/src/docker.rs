@@ -26,8 +26,9 @@ mod stats;
 #[path = "docker_stream.rs"]
 mod stream;
 pub use compose::{
-    ComposeAction, ComposeOperation, ComposeOperationPreview, ComposeOperationRead, ComposeProject,
-    ComposeProjectInput, ComposeProjectPreview,
+    ComposeAction, ComposeApplyPreview, ComposeOperation, ComposeOperationPreview,
+    ComposeOperationRead, ComposeProject, ComposeProjectInput, ComposeProjectPreview,
+    ComposeServiceSelection,
 };
 pub use details::ContainerDetails;
 pub use mounts::MountInventory;
@@ -36,6 +37,9 @@ pub use project_logs::{ProjectLogPage, ProjectLogQuery};
 pub use stats::StatsSnapshot;
 pub use stream::{LogStreamChunk, LogStreamStarted};
 
+#[cfg(all(test, unix))]
+#[path = "docker_live_compose_apply_test.rs"]
+mod live_compose_apply_test;
 #[cfg(all(test, unix))]
 #[path = "docker_tests.rs"]
 mod tests;
