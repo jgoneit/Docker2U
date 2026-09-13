@@ -13,7 +13,7 @@ function render(ui: ReactNode) { return renderUI(<PreferencesProvider initialPre
 
 const container: Container = {
   handle: 'handle-1', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'backend',
-  image: 'company-api:1', state: 'running', health: 'healthy', ports: [], composeProject: null, composeService: null, createdAt: '2026-09-05T03:00:00Z',
+  image: 'company-api:1', state: 'running', health: 'healthy', healthConfigured: true, ports: [], composeProject: null, composeService: null, createdAt: '2026-09-05T03:00:00Z',
 };
 const snapshot: ContainerList = {
   sessionId: 'session-1', generation: 1, containers: [container], refreshedAt: '2026-09-05T04:20:00Z', stale: false,
@@ -46,14 +46,14 @@ describe('container summary and information', () => {
     expect(copy).toHaveBeenCalledExactlyOnceWith(container.fullId, 'fullId');
   });
   it('keeps stale resources, unhealthy status and blocked-operation warnings in the header', () => {
-    render(<ContainerSummary container={{ ...container, health: 'unhealthy' }} snapshot={{ ...snapshot, stale: true }}
+    render(<ContainerSummary container={{ ...container, health: 'unhealthy', healthConfigured: true }} snapshot={{ ...snapshot, stale: true }}
       mutationBlocked mutationAllowed resourceSample={{ ...resourceSample, stale: true }} />);
     for (const text of ['비정상', '이전 정보', '자원 이전 값', '추가 복구 작업이 차단되었습니다. 재연결로 환경을 다시 검증하세요.', '최신 상태를 확인할 수 없어 복구 작업을 잠시 사용할 수 없습니다. 새로고침을 실행하세요.']) {
       expect(screen.getByText(text)).toBeVisible();
     }
   });
   it('puts absent healthcheck information in metadata without hiding real state', () => {
-    const target = { ...container, health: null };
+    const target = { ...container, health: null, healthConfigured: null };
     render(<><ContainerSummary container={target} snapshot={snapshot} mutationBlocked={false} mutationAllowed />
       <ContainerInformation container={target} snapshot={snapshot} copy={async () => {}} /></>);
     const summary = document.querySelector('.container-summary') as HTMLElement;

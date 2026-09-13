@@ -15,7 +15,7 @@ const now = Date.parse('2026-09-12T00:00:00Z');
 const point = (sequence: number, offset = sequence * 5000): ResourcePoint => ({ sequence, fullId: 'a', sampledAt: new Date(now + offset).toISOString(), cpuPercent: 150, memoryUsageBytes: 64 * 1024 * 1024, memoryLimitBytes: 1024 * 1024 * 1024, available: true });
 const read = (sequence = 1): ObservationRead => ({ sessionId: 'one', sequence, scope: { kind: 'all' }, inventory: null,
   resources: [point(sequence)], events: [], resourceTruncated: false, eventTruncated: false, inventoryError: null, statsError: null, eventError: null, eventStatus: 'following' });
-const container: Container = { handle: 'ha', fullId: 'a', shortId: 'a', name: 'web-1', composeProject: 'demo', composeService: 'web', state: 'running', health: 'healthy', image: 'web', ports: [], createdAt: '' };
+const container: Container = { handle: 'ha', fullId: 'a', shortId: 'a', name: 'web-1', composeProject: 'demo', composeService: 'web', state: 'running', health: 'healthy', healthConfigured: true, image: 'web', ports: [], createdAt: '' };
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason: unknown) => void;

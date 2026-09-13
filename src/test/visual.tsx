@@ -66,25 +66,25 @@ if (import.meta.env.DEV) {
       handle: 'visual-backend', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12),
       name: 'backend-주문처리-api-development',
       image: 'fixture.invalid/team/long-service-image-name:development-build-2026-09-06',
-      state: 'running', health: 'healthy',
+      state: 'running', health: 'healthy', healthConfigured: true,
       ports: ['127.0.0.1:18080->8080/tcp', '[::1]:18443->8443/tcp', '127.0.0.1:19090->9090/tcp'],
       composeProject: null, composeService: null, createdAt: '2026-09-06T00:00:00Z',
     },
     {
       handle: 'visual-redis', fullId: 'b'.repeat(64), shortId: 'b'.repeat(12),
-      name: 'redis-캐시-stopped', image: 'fixture.invalid/redis:7', state: 'exited', health: 'none',
+      name: 'redis-캐시-stopped', image: 'fixture.invalid/redis:7', state: 'exited', health: 'none', healthConfigured: false,
       ports: [], composeProject: null, composeService: null, createdAt: '2026-09-06T00:00:00Z',
     },
     {
       handle: 'visual-worker', fullId: 'c'.repeat(64), shortId: 'c'.repeat(12),
       name: 'worker-상태확인-required', image: 'fixture.invalid/worker:development',
-      state: 'running', health: 'unhealthy', ports: ['127.0.0.1:19091->9091/tcp'],
+      state: 'running', health: 'unhealthy', healthConfigured: true, ports: ['127.0.0.1:19091->9091/tcp'],
       composeProject: null, composeService: null, createdAt: '2026-09-06T00:00:00Z',
     },
     {
       handle: 'visual-paused', fullId: 'd'.repeat(64), shortId: 'd'.repeat(12),
       name: 'scheduler-일시정지-paused', image: 'fixture.invalid/scheduler:development',
-      state: 'paused', health: null, ports: [], composeProject: null, composeService: null, createdAt: '2026-09-06T00:00:00Z',
+      state: 'paused', health: null, healthConfigured: null, ports: [], composeProject: null, composeService: null, createdAt: '2026-09-06T00:00:00Z',
     },
   ];
   baseContainers[0]!.composeProject = 'orders'; baseContainers[0]!.composeService = 'api';
@@ -264,6 +264,7 @@ if (import.meta.env.DEV) {
   }
   if (scenario === 'compose') { const { installComposeFixture } = await import('./composeFixture'); installComposeFixture(); }
   if (scenario === 'observation' || scenario === 'compose') { const { installObservationFixture } = await import('./observationFixture'); installObservationFixture(); }
+  const { installMountFixture } = await import('./mountFixture'); installMountFixture();
   const { default: App } = await import('../App');
   await import('../styles.css');
   createRoot(root).render(<StrictMode><App /></StrictMode>);

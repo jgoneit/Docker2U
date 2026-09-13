@@ -19,8 +19,8 @@ const environment: Environment = {
   dockerPath: '/opt/homebrew/bin/docker', dockerConfigPath: '/Users/test/.docker', clientVersion: '29.8.0',
   serverVersion: '29.8.0', apiVersion: '1.54', engineId: 'engine-1', osType: 'linux', architecture: 'aarch64', mutationAllowed: true, error: null, diagnostics: [],
 };
-const backend: Container = { handle: 'handle-1', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'backend', image: 'company-api:1', state: 'running', health: 'healthy', ports: ['127.0.0.1:8080->8080/tcp'], composeProject: null, composeService: null, createdAt: '2026-09-05T03:00:00Z' };
-const redis: Container = { ...backend, handle: 'handle-2', fullId: 'b'.repeat(64), shortId: 'b'.repeat(12), name: 'redis', image: 'redis:7', state: 'exited', health: 'none', ports: [] };
+const backend: Container = { handle: 'handle-1', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'backend', image: 'company-api:1', state: 'running', health: 'healthy', healthConfigured: true, ports: ['127.0.0.1:8080->8080/tcp'], composeProject: null, composeService: null, createdAt: '2026-09-05T03:00:00Z' };
+const redis: Container = { ...backend, handle: 'handle-2', fullId: 'b'.repeat(64), shortId: 'b'.repeat(12), name: 'redis', image: 'redis:7', state: 'exited', health: 'none', healthConfigured: false, ports: [] };
 function list(generation = 1, containers = [backend, redis], sessionId = 'session-1'): ContainerList {
   return { sessionId, generation, containers: containers.map(container => ({ ...container, handle: `${container.handle}-g${generation}` })), refreshedAt: '2026-09-05T04:20:00Z', stale: false };
 }

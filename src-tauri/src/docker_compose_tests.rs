@@ -773,6 +773,7 @@ fn compose_project_log_identity_failure_cancels_a_quiet_running_operation() {
         image: "fixture".into(),
         state: "running".into(),
         health: None,
+        health_configured: None,
         ports: vec![],
         created_at: "2026-09-13T00:00:00Z".into(),
         started_at: None,

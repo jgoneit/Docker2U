@@ -6,7 +6,7 @@ import { api, type Container, type ContainerList, type LogStreamRead, type Mutat
 
 vi.mock('./api', async original => ({ ...await original<typeof import('./api')>(), api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), startLogStream: vi.fn(), readLogStream: vi.fn(), stopLogStream: vi.fn(), getContainerStats: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() } }));
 const mock = vi.mocked(api);
-const alpha: Container = { handle: 'alpha', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'alpha', image: 'fixture', state: 'running', health: null, ports: [], composeProject: null, composeService: null, createdAt: '' };
+const alpha: Container = { handle: 'alpha', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'alpha', image: 'fixture', state: 'running', health: null, healthConfigured: null, ports: [], composeProject: null, composeService: null, createdAt: '' };
 const beta: Container = { ...alpha, handle: 'beta', fullId: 'b'.repeat(64), shortId: 'b'.repeat(12), name: 'beta' };
 const inventory = (generation: number): ContainerList => ({ sessionId: 'one', generation, containers: [alpha, beta].map(container => ({ ...container, handle: `${container.name}-g${generation}` })), refreshedAt: '', stale: false });
 const succeeded: MutationResult = { outcome: 'succeeded', message: 'done', command: 'fixture restart', stderr: '', reconciliation: 'succeeded', mutationBlocked: false };

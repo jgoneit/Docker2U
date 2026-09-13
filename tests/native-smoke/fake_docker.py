@@ -15,7 +15,8 @@ _compose_spec.loader.exec_module(compose)
 
 LIMIT = 2 * 1024 * 1024
 END = b"\nNATIVE_SMOKE_END\n"
-INSPECT_FORMAT = '{"Id":{{json .Id}},"Name":{{json .Name}},"Image":{{json .Config.Image}},"Created":{{json .Created}},"StartedAt":{{json .State.StartedAt}},"Tty":{{json .Config.Tty}},"State":{{json .State.Status}},"Health":{{with index .State "Health"}}{{json .Status}}{{else}}null{{end}},"Ports":{{json (index .NetworkSettings "Ports")}},"ComposeProject":{{with index .Config.Labels "com.docker.compose.project"}}{{json .}}{{else}}null{{end}},"ComposeService":{{with index .Config.Labels "com.docker.compose.service"}}{{json .}}{{else}}null{{end}}}'
+INSPECT_FORMAT = '{"Id":{{json .Id}},"Name":{{json .Name}},"Image":{{json .Config.Image}},"Created":{{json .Created}},"StartedAt":{{json .State.StartedAt}},"Tty":{{json .Config.Tty}},"State":{{json .State.Status}},"HealthConfigured":{{$config := .Config}}{{if eq (printf "%T" $config) "map[string]interface {}"}}{{$health := index $config "Healthcheck"}}{{$healthType := printf "%T" $health}}{{if eq $healthType "<nil>"}}false{{else if eq $healthType "map[string]interface {}"}}{{$test := index $health "Test"}}{{$testType := printf "%T" $test}}{{if eq $testType "<nil>"}}false{{else if or (eq $testType "[]interface {}") (eq $testType "[]string")}}{{if eq (len $test) 0}}false{{else}}{{$kind := index $test 0}}{{if eq (printf "%T" $kind) "string"}}{{if or (eq $kind "CMD") (eq $kind "CMD-SHELL")}}true{{else if eq $kind "NONE"}}false{{else}}null{{end}}{{else}}null{{end}}{{end}}{{else}}null{{end}}{{else}}null{{end}}{{else}}null{{end}},"Health":{{with index .State "Health"}}{{json .Status}}{{else}}null{{end}},"Ports":{{json (index .NetworkSettings "Ports")}},"ComposeProject":{{with index .Config.Labels "com.docker.compose.project"}}{{json .}}{{else}}null{{end}},"ComposeService":{{with index .Config.Labels "com.docker.compose.service"}}{{json .}}{{else}}null{{end}}}'
+MOUNTS_FORMAT = '{"Id":{{json .Id}},"Mounts":[{{range $i,$mount := .Mounts}}{{if $i}},{{end}}{"Type":{{json $mount.Type}},"Source":{{json $mount.Source}},"Destination":{{json $mount.Destination}},"RW":{{json $mount.RW}},"Name":{{json $mount.Name}}}{{end}}]}'
 DETAILS_FORMAT = '{"Id":{{json .Id}},"State":{{json .State.Status}},"ExitCode":{{json (index .State "ExitCode")}},"StartedAt":{{json (index .State "StartedAt")}},"FinishedAt":{{json (index .State "FinishedAt")}},"OOMKilled":{{json (index .State "OOMKilled")}},"RestartCount":{{json .RestartCount}},"HealthConfigured":{{$config := .Config}}{{if eq (printf "%T" $config) "map[string]interface {}"}}{{$health := index $config "Healthcheck"}}{{$healthType := printf "%T" $health}}{{if eq $healthType "<nil>"}}false{{else if eq $healthType "map[string]interface {}"}}{{$test := index $health "Test"}}{{$testType := printf "%T" $test}}{{if eq $testType "<nil>"}}false{{else if or (eq $testType "[]interface {}") (eq $testType "[]string")}}{{if eq (len $test) 0}}false{{else}}{{$kind := index $test 0}}{{if eq (printf "%T" $kind) "string"}}{{if or (eq $kind "CMD") (eq $kind "CMD-SHELL")}}true{{else if eq $kind "NONE"}}false{{else}}null{{end}}{{else}}null{{end}}{{end}}{{else}}null{{end}}{{else}}null{{end}}{{else}}null{{end}},"Health":{{with index .State "Health"}}{"Status":{{json .Status}},"FailingStreak":{{json .FailingStreak}},"Log":[{{range $i,$entry := .Log}}{{if $i}},{{end}}{"Start":{{json $entry.Start}},"End":{{json $entry.End}},"ExitCode":{{json $entry.ExitCode}},"Output":{{json $entry.Output}}}{{end}}]}{{else}}null{{end}},"NetworkMode":{{json (index .HostConfig "NetworkMode")}},"Ports":{{json (index .NetworkSettings "Ports")}},"Networks":{{with index .NetworkSettings "Networks"}}{ {{$first := true}}{{range $name,$network := .}}{{if not $first}},{{end}}{{$first = false}}{{json $name}}:{"Aliases":{{json $network.Aliases}},"IPAddress":{{json $network.IPAddress}},"GlobalIPv6Address":{{json $network.GlobalIPv6Address}}}{{end}} }{{else}}null{{end}}}'
 IDS = [format(number, "064x") for number in [1, 2, 3]]
 STOP_REQUESTED = False
@@ -143,6 +144,20 @@ def run(root, arguments):
                               {"HostIp": "0.0.0.0", "HostPort": "15432"}, {"HostIp": "::", "HostPort": "15432"}], "53/udp": None},
                           "Networks": {"native-smoke-default": {"Aliases": ["native-api"], "IPAddress": "172.18.0.2", "GlobalIPv6Address": "fd00::2"}}}))
         return 0
+    if len(args) >= 5 and args[:4] == ["container", "inspect", "--format", MOUNTS_FORMAT]:
+        targets = args[4:]
+        if len(targets) > 100 or len(set(targets)) != len(targets) or any(identifier not in identifiers for identifier in targets):
+            raise ValueError("fixture rejected unknown, duplicate or oversized mount targets")
+        for identifier in targets:
+            number = int(identifier, 16)
+            mounts = [{"Type": "bind", "Source": "/synthetic/설정 폴더/" + "long-directory-" * 8 + "/settings.yaml", "Destination": "/app/settings.yaml", "RW": False, "Name": None}]
+            if number != 3:
+                mounts.append({"Type": "volume", "Source": "/var/lib/docker/volumes/native-shared-data/_data", "Destination": "/data", "RW": number != 2, "Name": "native-shared-data"})
+            if number == 2:
+                mounts.append({"Type": "tmpfs", "Source": None, "Destination": "/tmp", "RW": True, "Name": None})
+            print(json.dumps({"Id": identifier, "Mounts": mounts}))
+        record(root, phase="mounts-payload", fullIds=targets, count=len(targets))
+        return 0
     if len(args) >= 5 and args[:4] == ["container", "inspect", "--format", INSPECT_FORMAT]:
         for identifier in args[4:]:
             if identifier not in identifiers:
@@ -151,7 +166,7 @@ def run(root, arguments):
                 print(json.dumps(next(row for row in compose_rows if row["Id"] == identifier)))
                 continue
             number = int(identifier, 16)
-            print(json.dumps({"Id": identifier, "Name": "/native-smoke-" + str(number), "Image": "native-smoke:synthetic", "Created": "2026-09-06T00:00:00Z", "StartedAt": "2026-09-08T00:00:00Z", "Tty": number == 2, "State": "running", "Health": "healthy", "Ports": None,
+            print(json.dumps({"Id": identifier, "Name": "/native-smoke-" + str(number), "Image": "native-smoke:synthetic", "Created": "2026-09-06T00:00:00Z", "StartedAt": "2026-09-08T00:00:00Z", "Tty": number == 2, "State": "running", "Health": "healthy", "HealthConfigured": True, "Ports": None,
                               "ComposeProject": "native-smoke-project" if number < 3 else None, "ComposeService": {1: "api", 2: "redis"}.get(number)}))
         return 0
     if len(args) >= 7 and args[:6] == ["container", "stats", "--no-stream", "--no-trunc", "--format", "{{json .}}"]:

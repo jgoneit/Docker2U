@@ -5,12 +5,12 @@ function labels(info: TestInfo) {
   return ko ? {
     add: '프로젝트 추가', register: '프로젝트 등록', pick: 'Compose 파일 선택', name: '프로젝트 이름', cwd: '작업 폴더', env: '환경 파일 · 선택 사항',
     review: '구성 확인', save: '등록', up: '프로젝트 실행', upReview: '프로젝트 실행 확인', run: '실행', stop: '프로젝트 중지', stopReview: '프로젝트 중지 확인', stopConfirm: '중지',
-    progress: '프로젝트 작업', output: '실제 작업 출력', close: '닫기', recent: '최근 프로젝트 작업', done: '완료', unknown: '결과 확인 필요', cancel: '작업 취소 요청',
+    progress: '프로젝트 작업', output: '실제 작업 출력', close: '닫기', recent: '최근 프로젝트 작업', done: '명령 실행 완료', unknown: '결과 확인 필요', cancel: '작업 취소 요청',
     noContainers: '아직 컨테이너가 없습니다', settings: '프로젝트 설정', forget: '등록 해제', forgetTitle: '프로젝트 등록 해제', link: '구성 연결',
   } : {
     add: 'Add project', register: 'Register project', pick: 'Choose Compose file', name: 'Project name', cwd: 'Working directory', env: 'Environment file · optional',
     review: 'Review configuration', save: 'Register', up: 'Run project', upReview: 'Review project run', run: 'Run', stop: 'Stop project', stopReview: 'Review project stop', stopConfirm: 'Stop',
-    progress: 'Project operation', output: 'Operation output', close: 'Close', recent: 'Recent project operation', done: 'Completed', unknown: 'Result needs checking', cancel: 'Request cancellation',
+    progress: 'Project operation', output: 'Operation output', close: 'Close', recent: 'Recent project operation', done: 'Command completed', unknown: 'Result needs checking', cancel: 'Request cancellation',
     noContainers: 'No containers yet', settings: 'Project settings', forget: 'Remove registration', forgetTitle: 'Remove project registration', link: 'Link configuration',
   };
 }
@@ -126,4 +126,47 @@ test('linking an existing project preserves the row identity and frozen log sear
   await expect(page.getByRole('button', { name: en ? 'Resume view' : '화면 재개', exact: true })).toHaveAttribute('aria-pressed', 'true');
   expect(await page.evaluate(() => (window as unknown as { __docker2uObservationCalls: Record<string, number> }).__docker2uObservationCalls.configureLogs)).toBe(subscriptions);
   await expect(page.locator('.container-row')).toHaveCount(4);
+});
+
+for (const tab of ['logs', 'diagnostics'] as const) {
+  test(`keeps a successful command separate from unhealthy services and navigates to ${tab} with focus`, async ({ page }, info) => {
+    const w = labels(info), en = info.project.metadata.language === 'en';
+    await page.goto('/src/test/visual.html?toolbar=hidden&scenario=compose&composeHealth=unhealthy');
+    await expect(page.locator('.container-row')).toHaveCount(4);
+    await register(page, info); await start(page, info);
+    const dialog = page.getByRole('dialog', { name: w.progress, exact: true });
+    await expect(dialog.getByRole('status')).toContainText(w.done);
+    const web = dialog.locator('.compose-observed-containers > li').filter({ hasText: 'compose-demo-web-1' });
+    await expect(web).toContainText(en ? 'Unhealthy' : '비정상');
+    await expect(web).toContainText(en ? 'Running' : '실행 중');
+    await expect(dialog).toContainText(en ? 'Command completion does not mean services are ready.' : '명령이 완료되어도 서비스 준비가 끝난 것은 아닙니다.');
+    await expect(dialog.locator('.compose-observation-heading time')).toHaveAttribute('datetime', /\d{4}-\d{2}-\d{2}T/);
+    await expect(dialog.locator('.compose-observed-containers > li').filter({ hasText: 'compose-demo-db-1' })).toContainText(en ? 'Health not configured' : 'Health 미설정');
+    const inspect = tab === 'logs' ? en ? 'View logs for compose-demo-web-1' : 'compose-demo-web-1 로그 보기' : en ? 'View diagnostics for compose-demo-web-1' : 'compose-demo-web-1 진단 보기';
+    await web.getByRole('button', { name: inspect, exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await expect(page.locator('.container-row').filter({ hasText: 'compose-demo-web-1' })).toHaveAttribute('aria-selected', 'true');
+    const destination = page.locator(`[data-detail-tab="${tab}"]`);
+    await expect(destination).toHaveAttribute('aria-selected', 'true');
+    await expect(destination).toBeFocused();
+    if (tab === 'logs') await expect(page.locator('.project-log-row').first()).toContainText('compose-demo-web-1');
+    else {
+      await expect(page.locator('.container-insights')).toHaveAttribute('aria-busy', 'false');
+      await expect(page.locator('.container-insights .insights-error')).toHaveCount(0);
+      await expect(page.locator('.container-insights .insights-body')).toBeVisible();
+    }
+    expect((await calls(page)).start).toBe(1);
+    expect((await calls(page)).cancel ?? 0).toBe(0);
+  });
+}
+
+test('shows an unstarted registered project without inventing storage observations', async ({ page }, info) => {
+  const en = info.project.metadata.language === 'en';
+  await open(page); await register(page, info);
+  await page.getByRole('tab', { name: en ? 'Storage' : '저장소', exact: true }).click();
+  const panel = page.getByRole('region', { name: en ? 'Storage mounts' : '저장소 연결', exact: true });
+  await expect(panel).toContainText(en ? 'This project has no observed containers, so actual storage mounts are not available yet.' : '이 프로젝트의 실제 컨테이너가 없어 연결된 저장소를 확인할 수 없습니다.');
+  await expect(panel.locator('.storage-mount')).toHaveCount(0);
+  await expect(panel).not.toContainText(en ? 'Engine reported no mounts.' : 'Engine에서 보고한 마운트가 없습니다.');
+  expect((await calls(page)).start ?? 0).toBe(0);
 });

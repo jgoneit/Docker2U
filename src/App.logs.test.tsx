@@ -9,7 +9,7 @@ import type { FrontendSession } from './frontendSession';
 vi.mock('./api', async importOriginal => ({ ...await importOriginal<typeof import('./api')>(), api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), startLogStream: vi.fn(), readLogStream: vi.fn(), stopLogStream: vi.fn(), getContainerStats: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() } }));
 const mock = vi.mocked(api);
 const environment: Environment = { status: 'ready', sessionId: 'session-1', contextName: 'local', endpoint: 'unix:///local.sock', dockerPath: '/local/docker', dockerConfigPath: '/local/config', clientVersion: '29', serverVersion: '29', apiVersion: '1.54', engineId: 'engine-1', osType: 'linux', architecture: 'arm64', mutationAllowed: true, error: null, diagnostics: [] };
-const containers: Container[] = ['alpha', 'beta', 'gamma'].map((name, index) => ({ handle: name, fullId: String(index + 1).repeat(64), shortId: String(index + 1).repeat(12), composeProject: null, composeService: null, name, image: 'local/service:1', state: 'running', health: 'healthy', ports: [], createdAt: '2026-09-06T00:00:00Z' }));
+const containers: Container[] = ['alpha', 'beta', 'gamma'].map((name, index) => ({ handle: name, fullId: String(index + 1).repeat(64), shortId: String(index + 1).repeat(12), composeProject: null, composeService: null, name, image: 'local/service:1', state: 'running', health: 'healthy', healthConfigured: true, ports: [], createdAt: '2026-09-06T00:00:00Z' }));
 function list(generation = 1, rows = containers, sessionId = 'session-1'): ContainerList {
   return { sessionId, generation, containers: rows.map(container => ({ ...container, handle: `${container.handle}-${generation}` })), refreshedAt: '2026-09-06T00:00:00Z', stale: false };
 }

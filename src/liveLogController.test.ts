@@ -3,7 +3,7 @@ import type { Container, ContainerList } from './api';
 import { emptyLogState, LiveLogController, type LiveLogState, type LogTransport } from './liveLogController';
 import { appendLogText, LOG_BUFFER_BYTES } from './logSnapshot';
 
-const a: Container = { handle: 'a1', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), composeProject: null, composeService: null, name: 'alpha', image: 'alpine', state: 'running', health: null, ports: [], createdAt: '' };
+const a: Container = { handle: 'a1', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), composeProject: null, composeService: null, name: 'alpha', image: 'alpine', state: 'running', health: null, healthConfigured: null, ports: [], createdAt: '' };
 const b: Container = { ...a, handle: 'b1', fullId: 'b'.repeat(64), name: 'beta' };
 const list: ContainerList = { sessionId: 'session', generation: 1, containers: [a, b], refreshedAt: '', stale: false };
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }

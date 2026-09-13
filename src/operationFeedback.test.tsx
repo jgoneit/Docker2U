@@ -12,7 +12,7 @@ function single(outcome: Operation['outcome'] = 'succeeded', patch: Partial<Oper
   return { kind: 'single', operation: { ...target, fullId: 'a'.repeat(64), name: 'api-1', action: 'start', outcome, reconciliation: 'succeeded', mutationBlocked: false, message: 'fixture', command: 'fixture', stderr: '', ...patch } };
 }
 function bulk(outcomes: BulkMutationItem['outcome'][]): CompletedOperation {
-  const containers: Container[] = outcomes.map((_, index) => ({ handle: String(index), fullId: String(index).repeat(64), shortId: String(index).repeat(12), name: `container-${index}`, image: 'fixture', state: 'running', health: null, ports: [], composeProject: null, composeService: null, createdAt: '' }));
+  const containers: Container[] = outcomes.map((_, index) => ({ handle: String(index), fullId: String(index).repeat(64), shortId: String(index).repeat(12), name: `container-${index}`, image: 'fixture', state: 'running', health: null, healthConfigured: null, ports: [], composeProject: null, composeService: null, createdAt: '' }));
   return { kind: 'bulk', operation: { ...target, action: 'stop', containers, needsReconnect: false, result: { sessionId: 'session-a', generation: 1, action: 'stop', mutationBlocked: false, items: outcomes.map((outcome, index) => {
     const container = containers[index]!;
     return { handle: container.handle, fullId: container.fullId, name: container.name, outcome, message: 'fixture', result: ['succeeded', 'failed', 'resultUnknown'].includes(outcome) ? { outcome: outcome as Operation['outcome'], reconciliation: 'succeeded', mutationBlocked: false, message: '', command: '', stderr: '' } : null };

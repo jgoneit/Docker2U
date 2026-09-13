@@ -10,7 +10,7 @@ vi.mock('./observationApi', async original => ({ ...await original<typeof import
   projectLogApi: { configure: vi.fn(), query: vi.fn(), retry: vi.fn(), stop: vi.fn() },
 }));
 
-const web: Container = { handle: 'ha', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'web', image: 'fixture', state: 'running', health: null, ports: [], composeProject: 'demo', composeService: 'web', createdAt: '' };
+const web: Container = { handle: 'ha', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'web', image: 'fixture', state: 'running', health: null, healthConfigured: null, ports: [], composeProject: 'demo', composeService: 'web', createdAt: '' };
 const worker = { ...web, handle: 'hb', fullId: 'b'.repeat(64), name: 'worker', composeService: 'worker' };
 const containers = [web, worker];
 const timestamp = '2026-09-12T00:00:00Z';

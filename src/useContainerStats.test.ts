@@ -4,7 +4,7 @@ import { api, type Container, type ContainerList, type ContainerStats } from './
 import { useContainerStats } from './useContainerStats';
 vi.mock('./api', async original => ({ ...await original<typeof import('./api')>(), api: { getContainerStats: vi.fn() } }));
 const collect = vi.mocked(api.getContainerStats);
-const container: Container = { handle: 'a', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'api', image: 'app', state: 'running', health: null, ports: [], composeProject: 'orders', composeService: 'api', createdAt: '' };
+const container: Container = { handle: 'a', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'api', image: 'app', state: 'running', health: null, healthConfigured: null, ports: [], composeProject: 'orders', composeService: 'api', createdAt: '' };
 const other = { ...container, handle: 'b', fullId: 'b'.repeat(64), name: 'worker' };
 const snapshot: ContainerList = { sessionId: 'one', generation: 1, containers: [container, other], refreshedAt: '', stale: false };
 const reply = (rows = [container], id = 'one', generation = 1): ContainerStats => ({ sessionId: id, generation, sampledAt: '2026-09-07T00:00:00Z', error: null, items: rows.map(row => ({ handle: row.handle, fullId: row.fullId, available: true, cpuPercent: 125.5, memoryUsage: '64MiB / 2GiB', memoryPercent: 3.125 })) });

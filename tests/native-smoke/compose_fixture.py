@@ -122,7 +122,7 @@ def dispatch(root, arguments, record, stopping):
                 "Id": hashlib.sha256((name + ":" + service + ":" + str(generation)).encode()).hexdigest(), "Name": "/" + name + "-" + service + "-1",
                 "Image": "native-compose:fixture", "Created": "2026-09-13T00:00:00Z",
                 "StartedAt": "2026-09-13T00:00:01Z", "Tty": False, "State": "running",
-                "Health": "healthy" if service == "api" else None, "Ports": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": "18080"}]} if service == "api" else None,
+                "HealthConfigured": service == "api", "Health": "healthy" if service == "api" else None, "Ports": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": "18080"}]} if service == "api" else None,
                 "ComposeProject": name, "ComposeService": service,
                 "WorkingDirectory": str(directory), "ConfigFiles": str(source),
                 "EnvironmentFile": flags.get("--env-file", ""),

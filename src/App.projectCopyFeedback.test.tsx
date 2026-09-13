@@ -14,7 +14,7 @@ vi.mock('./observationApi', async original => ({ ...await original<typeof import
   observationApi: { available: vi.fn(), configure: vi.fn(), read: vi.fn(), hold: vi.fn(), release: vi.fn() },
   projectLogApi: { configure: vi.fn(), query: vi.fn(), retry: vi.fn(), stop: vi.fn() },
 }));
-const container: Container = { handle: 'web-1', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'web', composeProject: 'demo', composeService: 'web', state: 'running', health: null, image: 'fixture', ports: [], createdAt: '' };
+const container: Container = { handle: 'web-1', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'web', composeProject: 'demo', composeService: 'web', state: 'running', health: null, healthConfigured: null, image: 'fixture', ports: [], createdAt: '' };
 const inventory: ContainerList = { sessionId: 'one', generation: 1, containers: [container], refreshedAt: '2026-09-12T00:00:00Z', stale: false };
 const observation: ObservationRead = { sessionId: 'one', sequence: 1, scope: { kind: 'all' }, inventory, resources: [], events: [], resourceTruncated: false, eventTruncated: false, inventoryError: null, statsError: null, eventError: null, eventStatus: 'following' };
 const page: ProjectLogPage = { sessionId: 'one', project: 'demo', revision: 2, maxSequence: 2, totalRows: 2, offset: 0, droppedRows: 0, needsSelection: false, error: null, retainedFrom: '2026-09-12T00:00:00Z', retainedTo: '2026-09-12T00:00:01Z',

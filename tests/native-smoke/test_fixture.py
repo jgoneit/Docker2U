@@ -112,6 +112,22 @@ class FixtureIsolationTests(unittest.TestCase):
         self.assertEqual([row["ComposeProject"] for row in rows], ["native-smoke-project", "native-smoke-project", None])
         self.assertEqual([row["ComposeService"] for row in rows], ["api", "redis", None])
 
+    def test_mount_metadata_is_bounded_and_shared_across_projects(self):
+        source = (REPO / "src-tauri/src/docker_mounts.rs").read_text()
+        current_format = source.split('const MOUNTS_FORMAT: &str = r#"', 1)[1].split('"#;', 1)[0]
+        self.assertEqual(docker.MOUNTS_FORMAT, current_format)
+        result = self.cli(self.host + ["container", "inspect", "--format", current_format, *docker.IDS])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual([row["Id"] for row in rows], docker.IDS)
+        self.assertEqual({row["Mounts"][0]["Source"] for row in rows}, {rows[0]["Mounts"][0]["Source"]})
+        self.assertTrue(rows[0]["Mounts"][1]["RW"])
+        self.assertFalse(rows[1]["Mounts"][1]["RW"])
+        self.assertEqual(rows[1]["Mounts"][2]["Type"], "tmpfs")
+        self.assertTrue(all(set(row) == {"Id", "Mounts"} for row in rows))
+        rejected = self.cli(self.host + ["container", "inspect", "--format", current_format, docker.IDS[0], docker.IDS[0]])
+        self.assertNotEqual(rejected.returncode, 0)
+
     def test_details_accepts_only_the_current_bounded_single_target_inspect(self):
         source = (REPO / "src-tauri/src/docker_details.rs").read_text()
         current_format = source.split('const DETAILS_FORMAT: &str = r#"', 1)[1].split('"#;', 1)[0]
