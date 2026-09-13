@@ -31,8 +31,8 @@ export const readableStates = new Set(['created', 'running', 'paused', 'restarti
 export type Operation = MutationResult & ConnectionTarget & { fullId: string; name: string; action: Action; frontendError?: FrontendErrorDescriptor };
 export type Confirmation = ConnectionTarget & { action: 'stop' | 'restart'; sessionId: string; generation: number; returnFocus?: HTMLElement }
   & ({ container: Container; containers?: never } | { containers: Container[]; container?: never });
-export type CopyLabel = 'logs' | 'fullId' | 'diagnostics' | 'command' | 'address' | 'healthOutput';
-export type DetailTab = 'logs' | 'diagnostics' | 'connectivity' | 'history';
+export type CopyLabel = 'logs' | 'fullId' | 'diagnostics' | 'command' | 'address' | 'healthOutput' | 'path';
+export type DetailTab = 'logs' | 'diagnostics' | 'connectivity' | 'storage' | 'history';
 export type CopyText = (text: string, label: CopyLabel) => Promise<void>;
 
 export function formatTime(value?: string, language: Language = 'ko') {
@@ -188,8 +188,8 @@ export function ContainerDetail({ container, snapshot, logs, logsError, loadingL
 }) {
   const t = useI18n(componentMessages);
   const tabId = useId();
-  const tabs: DetailTab[] = historyEnabled ? ['logs', 'diagnostics', 'connectivity', 'history'] : ['logs', 'diagnostics', 'connectivity'];
-  const tabLabels = { logs: 'tabLogs', diagnostics: 'tabDiagnostics', connectivity: 'tabConnectivity', history: 'tabHistory' } as const;
+  const tabs: DetailTab[] = historyEnabled ? ['logs', 'diagnostics', 'connectivity', 'storage', 'history'] : ['logs', 'diagnostics', 'connectivity', 'storage'];
+  const tabLabels = { logs: 'tabLogs', diagnostics: 'tabDiagnostics', connectivity: 'tabConnectivity', storage: 'tabStorage', history: 'tabHistory' } as const;
   function tabKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
     const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : null;
     if (next === null) return;
@@ -207,7 +207,7 @@ export function ContainerDetail({ container, snapshot, logs, logsError, loadingL
   }
   return <div className={`container-detail${logContent && activeTab === 'logs' ? ' project-log-detail' : ''}`}>
     <section className="recovery-panel detail-toolbar" aria-label={t('recovery')}>
-      <div className="detail-tabs" role="tablist" aria-label={t('detailTabs')}>{tabs.map((tab, index) => <button key={tab} type="button" role="tab" id={`${tabId}-${tab}-tab`} aria-selected={activeTab === tab} aria-controls={`${tabId}-${tab}-panel`} tabIndex={activeTab === tab ? 0 : -1} onClick={() => onTabChange?.(tab)} onKeyDown={event => tabKeyDown(event, index)}>{t(tabLabels[tab])}</button>)}</div>
+      <div className="detail-tabs" role="tablist" aria-label={t('detailTabs')}>{tabs.map((tab, index) => <button key={tab} data-detail-tab={tab} type="button" role="tab" id={`${tabId}-${tab}-tab`} aria-selected={activeTab === tab} aria-controls={`${tabId}-${tab}-panel`} tabIndex={activeTab === tab ? 0 : -1} onClick={() => onTabChange?.(tab)} onKeyDown={event => tabKeyDown(event, index)}>{t(tabLabels[tab])}</button>)}</div>
       <div className="recovery-actions"><button className="action-button action-start" disabled={actionsDisabled || !['created', 'exited'].includes(container.state)} onClick={() => requestAction('start')}><Play size={14} aria-hidden="true" />{t('start')}</button><button className="action-button action-stop" disabled={actionsDisabled || container.state !== 'running'} onClick={event => requestConfirmation(event, 'stop')}><Square size={13} aria-hidden="true" />{t('stop')}</button><button className="action-button action-restart" disabled={actionsDisabled || container.state !== 'running'} onClick={event => requestConfirmation(event, 'restart')}><RefreshCw size={14} aria-hidden="true" />{t('restart')}</button></div>
     </section>
     <div className={`detail-tab-panel${logContent ? ' project-log-panel' : ''}`} id={`${tabId}-logs-panel`} role="tabpanel" aria-labelledby={`${tabId}-logs-tab`} hidden={activeTab !== 'logs'}>

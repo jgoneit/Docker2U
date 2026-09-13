@@ -1,0 +1,16 @@
+.compose-service-observations { margin: 12px 0; min-width: 0; }
+.compose-observation-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; }
+.compose-observation-heading h3 { font-size: 12px; font-weight: 600; }
+.compose-observation-heading p { margin: 0; color: var(--text-muted); font-size: 11px; }
+.compose-observed-services, .compose-observed-containers { list-style: none; margin: 0; padding: 0; }
+.compose-observed-services { margin-top: 8px; max-height: 260px; overflow: auto; }
+.compose-observed-service { padding: 10px 0; border-bottom: 1px solid var(--border-subtle); }
+.compose-observed-service h4 { margin: 0 0 8px; font-size: 12px; overflow-wrap: anywhere; }
+.compose-observed-service > .compose-hint { margin: 0; }
+.compose-observed-containers > li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 12px; align-items: center; padding: 7px 0; }
+.compose-container-observation { flex: 1 1 240px; min-width: 0; }
+.compose-container-observation > strong { display: block; margin-bottom: 5px; font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
+.compose-container-status { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; font-size: 11px; }
+.compose-container-links { display: flex; flex-wrap: wrap; gap: 6px; }
+.compose-container-links button { font-size: 11px; padding: 5px 8px; }
+@media (max-height: 700px) { .compose-observed-services { max-height: 170px; } }

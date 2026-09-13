@@ -1,6 +1,7 @@
 export const observationMessages = {
   projectView: { ko: '프로젝트 보기', en: 'View project' },
   backProject: { ko: '프로젝트로 돌아가기', en: 'Back to project' },
+  storage: { ko: '저장소', en: 'Storage' },
   logs: { ko: '통합 로그', en: 'Combined logs' }, history: { ko: '이력', en: 'History' },
   project: { ko: '프로젝트', en: 'Project' }, noProject: { ko: '프로젝트 없음', en: 'No project' },
   memory: { ko: '메모리', en: 'Memory' }, service: { ko: '서비스', en: 'Service' }, container: { ko: '컨테이너', en: 'Container' },

@@ -1,0 +1,32 @@
+.storage-panel { min-width: 0; color: var(--text); font-size: 12px; line-height: 1.6; }
+.storage-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; padding: 6px 0; }
+.storage-toolbar p { min-width: 0; margin: 0; color: var(--text-muted); overflow-wrap: anywhere; }
+.storage-toolbar button { flex-shrink: 0; padding: 5px 8px; }
+.storage-hint, .storage-notice { color: var(--text-muted); overflow-wrap: anywhere; }
+.storage-hint { margin: 5px 0; }
+.storage-warning { margin: 6px 0; padding: 6px 9px; border-radius: 5px; color: var(--warning); background: var(--warning-bg); overflow-wrap: anywhere; }
+.storage-error { margin: 6px 0; color: var(--danger); overflow-wrap: anywhere; }
+.storage-error summary { cursor: pointer; }
+.storage-mounts, .storage-usages { list-style: none; margin: 0; padding: 0; min-width: 0; }
+.storage-mount { min-width: 0; margin: 10px 0; padding: 12px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--inset); scroll-margin-block: 12px; }
+.storage-mount[data-highlighted="true"] { border-color: var(--link); background: var(--selected); }
+.storage-mount-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 8px; }
+.storage-type { padding: 1px 6px; border: 1px solid var(--border-subtle); border-radius: 4px; color: var(--text); background: var(--surface); font-weight: 600; }
+.storage-access { color: var(--text-muted); }
+.storage-access[data-readonly="true"] { color: var(--link); }
+.storage-facts { display: grid; gap: 7px; margin: 0; }
+.storage-facts > div { min-width: 0; }
+.storage-facts dt, .storage-destination > span:first-child { color: var(--text-muted); }
+.storage-facts dd { min-width: 0; margin: 0; }
+.storage-path { display: flex; align-items: flex-start; gap: 6px; min-width: 0; max-width: 100%; }
+.storage-path code { min-width: 0; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.storage-path button, .storage-usage-heading > button { flex-shrink: 0; padding: 4px; color: var(--link); background: transparent; }
+.storage-sharing { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border-subtle); }
+.storage-sharing > summary { cursor: pointer; color: var(--link); }
+.storage-usage { min-width: 0; padding: 8px 0; border-top: 1px solid var(--border-subtle); }
+.storage-usage:first-child { border-top: 0; }
+.storage-usage-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.storage-usage-heading > span { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
+.storage-usage-heading .storage-hint { margin: 0; }
+.storage-destination { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 10px; min-width: 0; }
+.storage-destination > .storage-path { flex: 1 1 220px; }

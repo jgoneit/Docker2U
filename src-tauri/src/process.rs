@@ -16,13 +16,15 @@ pub const STDOUT_LIMIT: usize = 8 * 1024 * 1024;
 pub const STDERR_LIMIT: usize = 256 * 1024;
 pub const LOG_LIMIT: usize = 2 * 1024 * 1024;
 
-/// Opt-in process policy for Compose; legacy follows have no deadline.
+/// Optional deadline and cancellation policy; legacy follows have no deadline.
 #[derive(Clone, Default)]
 pub struct ProcessOptions {
     pub cwd: Option<PathBuf>,
     pub deadline: Option<Instant>,
     pub cancel: Arc<AtomicBool>,
     pub isolate_compose_env: bool,
+    /// Shared stdout/stderr storage budget for one-shot structured capture only.
+    pub capture_limit: Option<usize>,
 }
 
 impl ProcessOptions {
@@ -280,6 +282,7 @@ impl Drop for OwnedFollowChild {
 
 #[derive(Default)]
 struct Capture {
+    remaining: Option<usize>,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
     logs: VecDeque<u8>,
@@ -308,8 +311,14 @@ impl Capture {
             } else {
                 (&mut self.stdout, STDOUT_LIMIT)
             };
-            let available = limit.saturating_sub(buffer.len());
-            buffer.extend_from_slice(&bytes[..available.min(bytes.len())]);
+            let available = limit
+                .saturating_sub(buffer.len())
+                .min(self.remaining.unwrap_or(usize::MAX));
+            let retained = available.min(bytes.len());
+            buffer.extend_from_slice(&bytes[..retained]);
+            if let Some(remaining) = &mut self.remaining {
+                *remaining -= retained;
+            }
             self.truncated |= bytes.len() > available;
         }
     }
@@ -569,7 +578,10 @@ impl Runner {
             child,
             registry: self.children.clone(),
         };
-        let capture = Arc::new(Mutex::new(Capture::default()));
+        let capture = Arc::new(Mutex::new(Capture {
+            remaining: if logs { None } else { options.capture_limit },
+            ..Capture::default()
+        }));
         let read_failed = Arc::new(AtomicBool::new(false));
         let mut readers = Vec::new();
         for (pipe, is_stderr) in [

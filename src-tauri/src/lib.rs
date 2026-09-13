@@ -7,8 +7,8 @@ use docker::{
     Action, ApiError, BulkMutation, ComposeAction, ComposeOperation, ComposeOperationPreview,
     ComposeOperationRead, ComposeProject, ComposeProjectInput, ComposeProjectPreview,
     ContainerDetails, ContainerList, Core, Environment, LogStreamChunk, LogStreamStarted, Logs,
-    Mutation, ObservationHold, ObservationRead, ObservationScope, ProjectLogPage, ProjectLogQuery,
-    StatsSnapshot,
+    MountInventory, Mutation, ObservationHold, ObservationRead, ObservationScope, ProjectLogPage,
+    ProjectLogQuery, StatsSnapshot,
 };
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
@@ -96,6 +96,15 @@ async fn get_container_details(
 ) -> Result<ContainerDetails, ApiError> {
     let core = core.inner().clone();
     worker(move || core.get_container_details(&session_id, generation, &handle)).await
+}
+#[tauri::command]
+async fn get_mount_inventory(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    refresh: bool,
+) -> Result<MountInventory, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.get_mount_inventory(&session_id, refresh)).await
 }
 #[tauri::command]
 async fn get_container_stats(
@@ -348,6 +357,7 @@ pub fn run() {
             list_containers,
             get_recent_logs,
             get_container_details,
+            get_mount_inventory,
             get_container_stats,
             start_log_stream,
             read_log_stream,
@@ -400,6 +410,7 @@ mod ipc_tests {
                 "allow-list-containers",
                 "allow-get-recent-logs",
                 "allow-get-container-details",
+                "allow-get-mount-inventory",
                 "allow-get-container-stats",
                 "allow-start-log-stream",
                 "allow-read-log-stream",

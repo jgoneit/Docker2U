@@ -2101,6 +2101,7 @@ mod tests {
                 image: "fixture".into(),
                 state: "running".into(),
                 health: None,
+                health_configured: None,
                 ports: vec![],
                 created_at: Utc::now().to_rfc3339(),
                 started_at: None,

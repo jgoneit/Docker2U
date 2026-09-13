@@ -1,12 +1,14 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { AlertTriangle, Check, FileCode2, FolderOpen, LoaderCircle, Play, Settings, Square, Terminal, X } from 'lucide-react';
 import { coreError, type Container, type CoreError, type ConnectionTarget } from './api';
 import { composeApi, type ComposeAction, type ComposeOperation, type ComposePreparation, type ComposeProject, type ComposeProjectInput, type ComposeProjectPreview, type ComposeServicePreview } from './composeApi';
-import { ErrorDetails } from './components';
+import { ErrorDetails, Health, State, formatTime } from './components';
 import { useI18n } from './i18n';
 import { composeMessages } from './messages/compose';
+import { usePreferences } from './preferences';
+import './composeProgress.css';
 
-function ComposeModal({ title, children, onClose, closeDisabled = false }: { title: string; children: ReactNode; onClose: () => void; closeDisabled?: boolean }) {
+function ComposeModal({ title, children, onClose, closeDisabled = false, restoreFocus }: { title: string; children: ReactNode; onClose: () => void; closeDisabled?: boolean; restoreFocus?: RefObject<boolean> }) {
   const t = useI18n(composeMessages);
   const id = useId();
   const dialog = useRef<HTMLDivElement>(null);
@@ -15,7 +17,7 @@ function ComposeModal({ title, children, onClose, closeDisabled = false }: { tit
     const active = document.activeElement;
     if (!dialog.current?.contains(active) || (active instanceof HTMLElement && active.matches(':disabled'))) dialog.current?.querySelector<HTMLElement>('input:not(:disabled), button:not(:disabled)')?.focus();
   });
-  useEffect(() => () => { if (trigger.current?.isConnected) trigger.current.focus(); }, []);
+  useEffect(() => () => { if (restoreFocus?.current !== false && trigger.current?.isConnected) trigger.current.focus(); }, [restoreFocus]);
   return <div className="modal-backdrop"><div ref={dialog} className="compose-dialog" role="dialog" aria-modal="true" aria-labelledby={id} onKeyDown={event => {
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (!closeDisabled) onClose(); }
     if (event.key !== 'Tab') return;
@@ -113,29 +115,59 @@ export function ComposePrepareDialog({ project, action, preparation, engine, loa
     <div className="dialog-actions"><button onClick={onClose}>{t('cancel')}</button>{error && <button disabled={loading || starting} onClick={onRetry}>{t('retry')}</button>}<button className={action === 'up' ? 'primary-button' : 'danger-button'} disabled={!preparation || loading || starting || !!error} onClick={onStart}>{starting ? <LoaderCircle className="spin" size={14} aria-hidden="true" /> : action === 'up' ? <Play size={14} aria-hidden="true" /> : <Square size={14} aria-hidden="true" />}{t(action === 'up' ? 'runConfirm' : 'stopConfirm')}</button></div>
   </ComposeModal>;
 }
-export function ComposeProgressDialog({ operation, recentOperations, onSelectOperation, text, truncated, readError, previousSession, services, containers, cancelling, refreshFailed, onClose, onCancel, onRetry }: {
+export function ComposeProgressDialog({ operation, recentOperations, onSelectOperation, text, truncated, readError, previousSession, services, containers, observedAt, stale, cancelling, refreshFailed, onClose, onCancel, onRetry, onInspect }: {
   operation: ComposeOperation; recentOperations: ComposeOperation[]; onSelectOperation: (id: string) => void; text: string; truncated: boolean; readError: CoreError | null; previousSession: boolean; services: ComposeServicePreview[]; containers: Container[];
-  cancelling: boolean; refreshFailed: boolean; onClose: () => void; onCancel: () => void; onRetry: () => void;
+  observedAt: string | null; stale: boolean; cancelling: boolean; refreshFailed: boolean; onClose: () => void; onCancel: () => void; onRetry: () => void; onInspect: (fullId: string, tab: 'logs' | 'diagnostics') => void;
 }) {
   const t = useI18n(composeMessages);
+  const { language } = usePreferences();
   const output = useRef<HTMLPreElement>(null);
   const follows = useRef(true);
+  const restoreFocus = useRef(true);
   useLayoutEffect(() => { if (follows.current && output.current) output.current.scrollTop = output.current.scrollHeight; }, [text]);
-  const observedServices = services.length ? services : [...new Set(containers.filter(item => item.composeProject === operation.projectName).map(item => item.composeService).filter((name): name is string => !!name))].map(name => ({ name, image: null, build: false, profiles: [] }));
+  const projectContainers = containers.filter(item => item.composeProject === operation.projectName);
+  const observedServices = [...new Set([...services.map(service => service.name), ...projectContainers.map(item => item.composeService).filter((name): name is string => !!name)])];
+  const hasObservation = !!observedAt && Number.isFinite(Date.parse(observedAt));
+  const canInspect = !previousSession && !stale && hasObservation;
   const state = operation.outcome ?? (operation.phase === 'reconciling' ? 'reconciling' : 'running');
-  return <ComposeModal title={t('operation')} onClose={onClose}>
+  function close() { restoreFocus.current = true; onClose(); }
+  function inspect(fullId: string, tab: 'logs' | 'diagnostics') {
+    if (!canInspect || !projectContainers.some(container => container.fullId === fullId)) return;
+    // The destination owns focus when navigation closes this view.
+    restoreFocus.current = false;
+    onInspect(fullId, tab);
+  }
+  function health(container: Container) {
+    if (container.healthConfigured === false) return <span className="health health-none">{t('healthUnconfigured')}</span>;
+    if (container.healthConfigured !== true) return <span className="health health-unknown">{t('healthConfigurationUnknown')}</span>;
+    if (!container.health || container.health === 'none') return <span className="health health-unknown">{t('healthNoResult')}</span>;
+    return <Health value={container.health} />;
+  }
+  return <ComposeModal title={t('operation')} onClose={close} restoreFocus={restoreFocus}>
     {recentOperations.length > 1 && <nav className="compose-recent-list" aria-label={t('recentList')}>{recentOperations.map(item => <button key={item.id} aria-pressed={item.id === operation.id} onClick={() => onSelectOperation(item.id)}>{item.projectName} · {t(item.action === 'up' ? 'up' : 'stop')} · {t(item.outcome ?? 'running')}</button>)}</nav>}
-    <div className="compose-operation-heading"><h3>{operation.projectName}</h3><span className={`compose-outcome compose-${state}`} role="status">{t(state)}</span></div>
+    <div className="compose-operation-heading"><h3>{operation.projectName}</h3><span className={'compose-outcome compose-' + state} role="status">{t(state)}</span></div>
     <p className="compose-hint">{t(operation.action === 'up' ? 'up' : 'stop')} · {t('closeHint')}</p>
+    {!previousSession && <p className="compose-hint">{t('commandResultHint')}</p>}
     {previousSession && <p className="compose-warning" role="status">{t('previousSession')}</p>}
-    {!previousSession && <section className="compose-service-preview"><h3>{t('observedServices')}</h3><ul>{observedServices.map(service => { const observed = containers.filter(item => item.composeProject === operation.projectName && item.composeService === service.name); return <li key={service.name}><strong>{service.name}</strong><span>{observed.length ? observed.map(item => `${item.name}: ${item.state}`).join(', ') : t('pendingService')}</span></li>; })}</ul></section>}
+    {!previousSession && <section className="compose-service-observations" aria-label={t('observedServices')}>
+      <div className="compose-observation-heading"><h3>{t('observedServices')}</h3>{hasObservation && <p>{t('observedAt')} <time dateTime={observedAt!} title={observedAt!}>{formatTime(observedAt!, language)}</time></p>}</div>
+      {!hasObservation ? <p className="compose-warning" role="status">{t('inventoryUnavailable')}</p> : stale && <p className="compose-warning" role="status">{t('inventoryStale')}</p>}
+      {!observedServices.length && <p className="compose-hint">{t('noObservedServices')}</p>}
+      <ul className="compose-observed-services">{observedServices.map(service => {
+        const observed = projectContainers.filter(container => container.composeService === service);
+        return <li className="compose-observed-service" key={service}><h4>{service}</h4>{!observed.length ? <p className="compose-hint">{t('pendingService')}</p> : <ul className="compose-observed-containers">{observed.map(container => <li key={container.fullId} data-container-id={container.fullId} aria-label={t('containerStatus', { name: container.name })}>
+          <div className="compose-container-observation"><strong title={container.fullId}>{container.name}</strong><div className="compose-container-status"><State value={container.state} />{health(container)}</div></div>
+          <div className="compose-container-links"><button type="button" disabled={!canInspect} aria-label={t('inspectLogsFor', { name: container.name })} onClick={() => inspect(container.fullId, 'logs')}>{t('inspectLogs')}</button><button type="button" disabled={!canInspect} aria-label={t('inspectDiagnosticsFor', { name: container.name })} onClick={() => inspect(container.fullId, 'diagnostics')}>{t('inspectDiagnostics')}</button></div>
+        </li>)}</ul>}</li>;
+      })}</ul>
+    </section>}
     <div className="compose-output-heading"><Terminal size={15} aria-hidden="true" /><h3>{t('output')}</h3></div><pre ref={output} tabIndex={0} className="compose-output" aria-label={t('output')} onScroll={() => { const node = output.current; if (node) follows.current = node.scrollHeight - node.clientHeight - node.scrollTop < 24; }}>{text || t('waitingOutput')}</pre>
     {truncated && <p className="compose-hint">{t('outputTrimmed')}</p>}
     {operation.error && <div className="inline-error" role="alert"><p>{operation.error.message}</p><ErrorDetails error={operation.error} /></div>}
     {readError && <div className="inline-error" role="alert"><p>{t('readFailed')}</p><ErrorDetails error={readError} />{!previousSession && <button onClick={onRetry}>{t('retry')}</button>}</div>}
     {refreshFailed && <p className="compose-warning" role="status">{t('refreshFailed')}</p>}
     {operation.cancelRequested && operation.phase !== 'finished' && <p className="compose-hint" role="status">{t('cancelRequested')}</p>}
-    <div className="dialog-actions">{operation.phase !== 'finished' && !previousSession && <button className="danger-button" disabled={cancelling || operation.cancelRequested} onClick={onCancel}>{t('cancelOperation')}</button>}<button onClick={onClose}>{t('close')}</button></div>
+    <div className="dialog-actions">{operation.phase !== 'finished' && !previousSession && <button className="danger-button" disabled={cancelling || operation.cancelRequested} onClick={onCancel}>{t('cancelOperation')}</button>}<button onClick={close}>{t('close')}</button></div>
   </ComposeModal>;
 }
 export function ComposeForgetDialog({ project, busy, error, onClose, onConfirm }: { project: ComposeProject; busy: boolean; error: CoreError | null; onClose: () => void; onConfirm: () => void }) {

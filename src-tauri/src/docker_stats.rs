@@ -305,6 +305,7 @@ mod tests {
             image: "fixture".into(),
             state: "running".into(),
             health: None,
+            health_configured: None,
             ports: vec![],
             created_at: "2026-09-07T00:00:00Z".into(),
             started_at: None,
