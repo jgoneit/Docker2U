@@ -1,8 +1,11 @@
 # Compose 상태 표시·저장소 탐색 검증 기록
 
-날짜: 2026-09-13  
-기준: 원격 main과 일치한 `d25e86c6691c8a4ed2af7ab8d2c027b0b461a0c1`  
-구현 브랜치: `codex/compose-storage-v1`  
+날짜: 2026-09-13
+
+기준: 원격 main과 일치한 `d25e86c6691c8a4ed2af7ab8d2c027b0b461a0c1`
+
+구현 브랜치: `codex/compose-storage-v1`
+
 구현 위치: `/private/tmp/docker2u-compose-storage-v1-20260913`
 
 ## 변경과 경계
