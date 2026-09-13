@@ -536,11 +536,27 @@ test('uses manual keyboard tabs while preserving a paused live log search and it
   await expect(content).toBeHidden();
   await expect.poll(async () => (await fixtureCalls(page)).getContainerDetails).toBe(1);
   const toolbar = await page.locator('.detail-toolbar').evaluate(element => {
+    const bounds = element.getBoundingClientRect();
     const tabs = element.querySelector('[role="tablist"]')!.getBoundingClientRect();
     const actions = element.querySelector('.recovery-actions')!.getBoundingClientRect();
-    return { tabTop: tabs.top, tabBottom: tabs.bottom, actionTop: actions.top, actionBottom: actions.bottom };
+    const controls = [...element.querySelectorAll('[role="tab"], .recovery-actions button')].map(button => {
+      const rect = button.getBoundingClientRect();
+      return { name: button.getAttribute('aria-label') ?? button.textContent, top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right, width: rect.width, height: rect.height };
+    });
+    return {
+      controls,
+      clipped: controls.filter(rect => rect.width <= 0 || rect.height <= 0
+        || rect.left < Math.max(bounds.left, 0) - 1 || rect.right > Math.min(bounds.right, innerWidth) + 1
+        || rect.top < Math.max(bounds.top, 0) - 1 || rect.bottom > Math.min(bounds.bottom, innerHeight) + 1),
+      overlapWidth: Math.min(tabs.right, actions.right) - Math.max(tabs.left, actions.left),
+      overlapHeight: Math.min(tabs.bottom, actions.bottom) - Math.max(tabs.top, actions.top),
+    };
   });
-  expect(Math.max(toolbar.tabTop, toolbar.actionTop)).toBeLessThan(Math.min(toolbar.tabBottom, toolbar.actionBottom));
+  expect(toolbar.controls.length).toBeGreaterThan(0);
+  expect(toolbar.clipped).toEqual([]);
+  // Controls may wrap to another row; neither row may cover the other group.
+  expect(toolbar.overlapWidth <= 1 || toolbar.overlapHeight <= 1).toBe(true);
+  for (const control of await page.locator('.detail-toolbar').locator('[role="tab"], .recovery-actions button').all()) await expect(control).toBeVisible();
   await expectStatusbarFits(page);
   await diagnosticsTab.focus();
   await page.keyboard.press('End');

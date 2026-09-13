@@ -20,6 +20,11 @@ test.beforeEach(async ({ page }, info) => {
     theme: info.project.metadata.theme, language: info.project.metadata.language,
   });
 });
+test.afterEach(async ({}, info) => {
+  if (info.status !== info.expectedStatus) {
+    for (const error of info.errors) console.error(`[image-export failure] ${info.project.name} · ${info.title}\n${error.stack ?? error.message ?? error.value}`);
+  }
+});
 async function open(page: Page, mode: ExportMode = 'success', scenario = 'normal') {
   await page.goto(`/src/test/visual.html?toolbar=hidden&scenario=${scenario}&imageExportMode=${mode}`);
   await expect(page.locator('.container-row')).toHaveCount(4);
