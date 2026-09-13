@@ -31,6 +31,7 @@ export interface Container {
   image: string;
   state: string;
   health: string | null;
+  healthConfigured: boolean | null;
   ports: string[];
   createdAt: string;
   startedAt?: string | null;

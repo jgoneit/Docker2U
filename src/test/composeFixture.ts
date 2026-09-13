@@ -1,4 +1,4 @@
-import { api, type Container } from '../api';
+import { api, type Container, type ContainerList } from '../api';
 import { composeApi, type ComposeOperation, type ComposePreparation, type ComposeProject, type ComposeProjectInput, type ComposeProjectPreview, type ComposeServicePreview } from '../composeApi';
 
 /** Visual development fixture only: every Compose transport is replaced, no native command is run. */
@@ -15,11 +15,25 @@ export function installComposeFixture() {
   let sequence = 0;
   const services: ComposeServicePreview[] = [{ name: 'web', image: 'fixture.invalid/web:local', build: true, profiles: [] }, { name: 'db', image: 'fixture.invalid/db:local', build: false, profiles: [] }];
   const count = (key: string) => { calls[key] = (calls[key] ?? 0) + 1; };
+  let lastInventory: ContainerList | null = null;
+  const originalDetails = api.getContainerDetails;
   const originalList = api.listContainers;
   Object.assign(api, { listContainers: async (sessionId: string) => {
     const result = await originalList(sessionId);
-    return { ...result, containers: [...result.containers, ...[...synthetic.values()].flat().map(item => ({ ...item, handle: `${sessionId}-${result.generation}-${item.fullId}` }))] };
+    lastInventory = { ...result, containers: [...result.containers, ...[...synthetic.values()].flat().map(item => ({ ...item, handle: `${sessionId}-${result.generation}-${item.fullId}` }))] };
+    return lastInventory;
   } });
+  api.getContainerDetails = async (sessionId, generation, handle) => {
+    const target = lastInventory?.sessionId === sessionId && lastInventory.generation === generation
+      ? lastInventory.containers.find(item => item.handle === handle && [...synthetic.values()].flat().some(row => row.fullId === item.fullId)) : null;
+    if (!target) return originalDetails(sessionId, generation, handle);
+    return { sessionId, generation, handle, fullId: target.fullId, observedAt: new Date().toISOString(),
+      diagnostics: { state: target.state, exitCode: target.state === 'exited' ? 0 : null, startedAt: target.createdAt,
+        finishedAt: target.state === 'exited' ? new Date().toISOString() : null, oomKilled: false, restartCount: 0,
+        healthAvailable: true, healthConfigured: target.healthConfigured,
+        health: target.health ? { status: target.health, failingStreak: target.health === 'unhealthy' ? 1 : 0, recentFailures: [] } : null },
+      connectivity: { networkMode: 'bridge', portsAvailable: true, networksAvailable: true, ports: [], networks: [] } };
+  };
   function settle(job: { operation: ComposeOperation; mode: Mode; deadline: number }) {
     const op = job.operation;
     if (op.phase === 'finished' || Date.now() < job.deadline) return;
@@ -27,7 +41,7 @@ export function installComposeFixture() {
     op.exitCode = op.cancelRequested ? null : job.mode === 'failed' ? 1 : 0; op.finishedAt = new Date().toISOString(); op.reconciliation = 'succeeded';
     op.observedContainers = 2;
     if (op.outcome === 'failed') op.error = { code: 'ComposeFailed', message: 'Synthetic second service startup failed.' };
-    synthetic.set(op.projectName, services.map((service, i) => ({ handle: 'replaced-on-read', fullId: `${op.projectId}-${service.name}`.padEnd(64, 'f'), shortId: `${op.projectId}-${i}`, name: `${op.projectName}-${service.name}-1`, composeProject: op.projectName, composeService: service.name, state: op.action === 'stop' || (op.outcome === 'failed' && i === 1) ? 'exited' : 'running', image: service.image!, health: null, ports: [], createdAt: op.startedAt })));
+    synthetic.set(op.projectName, services.map((service, i) => ({ handle: 'replaced-on-read', fullId: `${op.projectId}-${service.name}`.padEnd(64, 'f'), shortId: `${op.projectId}-${i}`, name: `${op.projectName}-${service.name}-1`, composeProject: op.projectName, composeService: service.name, state: op.action === 'stop' || (op.outcome === 'failed' && i === 1) ? 'exited' : 'running', image: service.image!, health: i === 0 && op.action !== 'stop' ? (new URLSearchParams(location.search).get('composeHealth') ?? 'healthy') : null, healthConfigured: i === 0, ports: [], createdAt: op.startedAt })));
   }
   Object.assign(window, { __docker2uComposeFixture: { calls, setMode: (value: Mode) => { mode = value; }, finish: () => { for (const job of jobs.values()) job.deadline = 0; }, projects } });
   Object.assign(composeApi, {

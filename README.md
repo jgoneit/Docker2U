@@ -65,6 +65,7 @@ Computer Use 권한 허용 후 Finder에서 재빌드한 앱을 실행해 실제
   BYOR(Bring Your Own Runtime) 제품이다.
 - macOS 알파는 Container·Compose 프로젝트 조회, 실시간 로그, 현재 CPU·메모리, Start·Stop·Restart를 제공한다. [범위와 검증 경계](docs/MACOS-LIVE-INSIGHTS.md)를 참고한다.
 - 로컬 Compose 파일 등록과 프로젝트 실행·중지를 추가한다. [Compose 프로젝트 실행 범위](docs/COMPOSE-PROJECT-CONTROLS.md)를 따른다.
+- 명령 종료와 현재 서비스 State·Health를 구분하고, 프로젝트·컨테이너의 실제 마운트와 공유 관계를 읽기 전용으로 조회한다. [상태 표시와 저장소 탐색](docs/COMPOSE-STORAGE.md)을 참고한다.
 - 원격 endpoint, 범용 shell, Terminal/Exec, Delete/Prune, Compose 파일 편집은 제외한다.
 - 기술 스택은 Rust + Tauri 2 + React + TypeScript strict로 정의한다.
 - 사용자가 제공한 React 패널의 어두운 테마, 검색·필터, 목록·상세 분할을 유지한다.

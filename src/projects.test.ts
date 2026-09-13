@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import type { Container } from './api';
 import { groupContainers, matchesContainer, parseProjectFilter, projectFilterValue } from './projects';
-const row = (name: string, composeProject: string | null = null, composeService: string | null = null): Container => ({ handle: name, fullId: name, shortId: name, name, image: 'image', state: 'running', health: null, ports: [], composeProject, composeService, createdAt: '' });
+const row = (name: string, composeProject: string | null = null, composeService: string | null = null): Container => ({ handle: name, fullId: name, shortId: name, name, image: 'image', state: 'running', health: null, healthConfigured: null, ports: [], composeProject, composeService, createdAt: '' });
 it('sorts projects then container names, preserves standalone group and does not mutate source', () => {
   const rows = [row('z', 'beta'), row('b', 'alpha'), row('a', 'alpha'), row('single'), row('empty', '')];
   expect(groupContainers(rows).map(group => [group.name, group.containers.map(item => item.name)])).toEqual([['alpha', ['a', 'b']], ['beta', ['z']], [null, ['empty', 'single']]]);

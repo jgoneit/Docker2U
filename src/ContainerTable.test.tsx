@@ -14,9 +14,9 @@ import type { ResourceSample } from './useContainerStats';
 import { useContainerStats } from './useContainerStats';
 
 const api: Container = { handle: 'api-handle', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'api', image: 'api:1',
-  state: 'running', health: 'healthy', ports: ['0.0.0.0:8080→8080/tcp'], composeProject: 'backend', composeService: 'api', createdAt: '2026-09-07T00:00:00Z' };
-const worker: Container = { ...api, handle: 'worker-handle', fullId: 'b'.repeat(64), shortId: 'b'.repeat(12), name: 'worker', ports: [], health: 'unhealthy' };
-const standalone: Container = { ...api, handle: 'solo-handle', fullId: 'c'.repeat(64), shortId: 'c'.repeat(12), name: 'standalone', composeProject: null, health: null, state: 'exited', ports: [] };
+  state: 'running', health: 'healthy', healthConfigured: true, ports: ['0.0.0.0:8080→8080/tcp'], composeProject: 'backend', composeService: 'api', createdAt: '2026-09-07T00:00:00Z' };
+const worker: Container = { ...api, handle: 'worker-handle', fullId: 'b'.repeat(64), shortId: 'b'.repeat(12), name: 'worker', ports: [], health: 'unhealthy', healthConfigured: true };
+const standalone: Container = { ...api, handle: 'solo-handle', fullId: 'c'.repeat(64), shortId: 'c'.repeat(12), name: 'standalone', composeProject: null, health: null, healthConfigured: null, state: 'exited', ports: [] };
 
 function sample(container: Container, values: Partial<ResourceSample> = {}): ResourceSample {
   return { handle: container.handle, fullId: container.fullId, cpuPercent: 0, memoryUsage: '64MiB / 2GiB', memoryPercent: 3.125,

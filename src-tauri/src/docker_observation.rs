@@ -1116,6 +1116,7 @@ impl Core {
         }
     }
     pub(super) fn invalidate_session_observations(&self, id: &str, error: &ApiError) {
+        self.cancel_mount_reads(Some(id));
         self.cancel_compose_session(id);
         let service = self
             .observation
@@ -1367,6 +1368,7 @@ mod tests {
             image: "fixture".into(),
             state: "running".into(),
             health: None,
+            health_configured: None,
             ports: vec![],
             created_at: now.clone(),
             started_at: Some(now.clone()),
@@ -1582,6 +1584,7 @@ mod tests {
                 image: "fixture".into(),
                 state: if index == 2 { "exited" } else { "running" }.into(),
                 health: None,
+                health_configured: None,
                 ports: vec![],
                 created_at: now.clone(),
                 started_at: None,
@@ -1660,6 +1663,7 @@ mod tests {
             image: "app".into(),
             state: "exited".into(),
             health: None,
+            health_configured: None,
             ports: vec![],
             created_at: String::new(),
             started_at: None,

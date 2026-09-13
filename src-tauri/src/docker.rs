@@ -15,6 +15,8 @@ mod compose;
 mod details;
 #[path = "engine_reader.rs"]
 mod engine_reader;
+#[path = "docker_mounts.rs"]
+mod mounts;
 #[path = "docker_observation.rs"]
 mod observation;
 #[path = "docker_project_logs.rs"]
@@ -28,6 +30,7 @@ pub use compose::{
     ComposeProjectInput, ComposeProjectPreview,
 };
 pub use details::ContainerDetails;
+pub use mounts::MountInventory;
 pub use observation::{ObservationHold, ObservationRead, ObservationScope};
 pub use project_logs::{ProjectLogPage, ProjectLogQuery};
 pub use stats::StatsSnapshot;
@@ -38,7 +41,7 @@ pub use stream::{LogStreamChunk, LogStreamStarted};
 mod tests;
 
 const MINIMUM_MACOS_MAJOR: u32 = 14;
-const INSPECT_FORMAT: &str = r#"{"Id":{{json .Id}},"Name":{{json .Name}},"Image":{{json .Config.Image}},"Created":{{json .Created}},"StartedAt":{{json .State.StartedAt}},"Tty":{{json .Config.Tty}},"State":{{json .State.Status}},"Health":{{with index .State "Health"}}{{json .Status}}{{else}}null{{end}},"Ports":{{json (index .NetworkSettings "Ports")}},"ComposeProject":{{with index .Config.Labels "com.docker.compose.project"}}{{json .}}{{else}}null{{end}},"ComposeService":{{with index .Config.Labels "com.docker.compose.service"}}{{json .}}{{else}}null{{end}}}"#;
+const INSPECT_FORMAT: &str = r#"{"Id":{{json .Id}},"Name":{{json .Name}},"Image":{{json .Config.Image}},"Created":{{json .Created}},"StartedAt":{{json .State.StartedAt}},"Tty":{{json .Config.Tty}},"State":{{json .State.Status}},"HealthConfigured":{{$config := .Config}}{{if eq (printf "%T" $config) "map[string]interface {}"}}{{$health := index $config "Healthcheck"}}{{$healthType := printf "%T" $health}}{{if eq $healthType "<nil>"}}false{{else if eq $healthType "map[string]interface {}"}}{{$test := index $health "Test"}}{{$testType := printf "%T" $test}}{{if eq $testType "<nil>"}}false{{else if or (eq $testType "[]interface {}") (eq $testType "[]string")}}{{if eq (len $test) 0}}false{{else}}{{$kind := index $test 0}}{{if eq (printf "%T" $kind) "string"}}{{if or (eq $kind "CMD") (eq $kind "CMD-SHELL")}}true{{else if eq $kind "NONE"}}false{{else}}null{{end}}{{else}}null{{end}}{{end}}{{else}}null{{end}}{{else}}null{{end}}{{else}}null{{end}},"Health":{{with index .State "Health"}}{{json .Status}}{{else}}null{{end}},"Ports":{{json (index .NetworkSettings "Ports")}},"ComposeProject":{{with index .Config.Labels "com.docker.compose.project"}}{{json .}}{{else}}null{{end}},"ComposeService":{{with index .Config.Labels "com.docker.compose.service"}}{{json .}}{{else}}null{{end}}}"#;
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -111,6 +114,7 @@ pub struct Container {
     pub image: String,
     pub state: String,
     pub health: Option<String>,
+    pub health_configured: Option<bool>,
     pub ports: Vec<String>,
     pub created_at: String,
     pub started_at: Option<String>,
@@ -564,10 +568,15 @@ pub struct Core {
     project_logs: Arc<Mutex<project_logs::ProjectLogManager>>,
     compose_registry: Arc<Mutex<compose::ComposeRegistry>>,
     compose_operations: Arc<Mutex<compose::ComposeOperationManager>>,
+    mount_inventory: Arc<Mutex<mounts::MountInventoryManager>>,
     #[cfg(test)]
     config: Option<RuntimeConfig>,
     #[cfg(test)]
     mutation_timeout: Option<Duration>,
+    #[cfg(test)]
+    mount_timeout: Option<Duration>,
+    #[cfg(test)]
+    mount_output_limit: Option<usize>,
     #[cfg(test)]
     host: Option<Result<HostInfo>>,
     #[cfg(test)]
@@ -690,6 +699,7 @@ impl Core {
             state.session = None;
         }
         self.cancel_observation();
+        self.cancel_mount_reads(None);
         self.cancel_all_compose_and_wait();
         self.cancel_project_logs();
         self.cancel_log_stream();
@@ -899,6 +909,7 @@ impl Core {
         };
         // Reserve reconnection before retiring workers so a Busy result cannot
         // stop a still-current background observer or race a new mutation.
+        self.cancel_mount_reads(None);
         self.cancel_all_compose_and_wait();
         self.stop_observation();
         self.cancel_project_logs();
@@ -1120,6 +1131,7 @@ impl Core {
                     image: required(&row, "Image")?.into(),
                     state: state.into(),
                     health: Some(health.into()),
+                    health_configured: row.get("HealthConfigured").and_then(Value::as_bool),
                     ports,
                     created_at: created.into(),
                     started_at: row

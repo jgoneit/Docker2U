@@ -6,7 +6,7 @@ import type { LogSnapshot } from './logSnapshot';
 import { PreferencesProvider } from './preferences';
 import { createStandaloneLogViewCache, type StandaloneLogViewCache } from './standaloneLogViewCache';
 
-const alpha: Container = { handle: 'alpha-1', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), composeProject: null, composeService: null, name: 'same-name', image: 'image', state: 'running', health: null, ports: [], createdAt: '' };
+const alpha: Container = { handle: 'alpha-1', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), composeProject: null, composeService: null, name: 'same-name', image: 'image', state: 'running', health: null, healthConfigured: null, ports: [], createdAt: '' };
 const beta: Container = { ...alpha, handle: 'beta-1', fullId: 'b'.repeat(64), shortId: 'b'.repeat(12) };
 const snapshot: ContainerList = { sessionId: 'session-1', generation: 1, containers: [alpha, beta], refreshedAt: '', stale: false };
 function frame(container = alpha, text = 'historical marker\nold alpha text', sequence = 1): LogSnapshot {

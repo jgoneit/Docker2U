@@ -73,6 +73,7 @@ export const appMessages = {
   fullId: { ko: '전체 ID', en: 'Full ID' },
   command: { ko: '명령', en: 'Command' },
   address: { ko: '접속 주소', en: 'Connection address' },
+  path: { ko: '경로', en: 'Path' },
   healthOutput: { ko: '상태 검사 출력', en: 'Healthcheck output' },
   closeOperationDetails: { ko: '최근 작업 결과 상세 닫기', en: 'Close recent operation details' },
   operationTime: { ko: '작업 완료 시각', en: 'Operation completed at' },

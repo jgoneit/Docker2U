@@ -8,7 +8,7 @@ import { PreferencesProvider, usePreferences } from './preferences';
 import type { Container, ContainerList, CoreError } from './api';
 import type { LogSnapshot } from './logSnapshot';
 
-const container: Container = { handle: 'handle-1', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), composeProject: null, composeService: null, name: 'backend-with-a-long-unchanged-name', image: 'company-api:1', state: 'running', health: 'healthy', ports: [], createdAt: '2026-09-05T03:00:00Z' };
+const container: Container = { handle: 'handle-1', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), composeProject: null, composeService: null, name: 'backend-with-a-long-unchanged-name', image: 'company-api:1', state: 'running', health: 'healthy', healthConfigured: true, ports: [], createdAt: '2026-09-05T03:00:00Z' };
 const snapshot: ContainerList = { sessionId: 'session-1', generation: 1, containers: [container], refreshedAt: '2026-09-05T04:20:00Z', stale: false };
 const raw = `${Array.from({ length: 299 }, (_, index) => `${index + 1} unchanged <info> 출력`).join('\n')}\n300 FINAL raw line ${'x'.repeat(500)}`;
 const logs: LogSnapshot = { fetchedAt: '2026-09-05T04:21:22Z', sessionId: 'session-1', generation: 1, handle: 'handle-1', text: raw, truncated: false, byteCount: raw.length, command: 'docker logs target', stderr: '' };

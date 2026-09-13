@@ -9,7 +9,7 @@ vi.mock('./api', async original => ({ ...await original<typeof import('./api')>(
   readLogStream: vi.fn(), stopLogStream: vi.fn(), getContainerStats: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn(),
 } }));
 const mock = vi.mocked(api);
-const container: Container = { handle: 'snapshot-target', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'snapshot-target', image: 'fixture', state: 'exited', health: null, ports: [], composeProject: null, composeService: null, createdAt: '' };
+const container: Container = { handle: 'snapshot-target', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'snapshot-target', image: 'fixture', state: 'exited', health: null, healthConfigured: null, ports: [], composeProject: null, composeService: null, createdAt: '' };
 const snapshot: ContainerList = { sessionId: 'one', generation: 1, containers: [container], refreshedAt: '2026-09-08T00:00:00Z', stale: false };
 const receipt = (text: string): RecentLogs => ({ sessionId: 'one', generation: 1, handle: container.handle, text, truncated: false, byteCount: text.length, command: 'fixture recent logs', stderr: '' });
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(yes => { resolve = yes; }); return { promise, resolve }; }

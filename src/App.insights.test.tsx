@@ -7,7 +7,7 @@ import { installSnapshotStreams } from './test/snapshotStreams';
 import { containerDetailsFixture } from './test/containerDetailsFixture';
 vi.mock('./api', async original => ({ ...await original<typeof import('./api')>(), api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), startLogStream: vi.fn(), readLogStream: vi.fn(), stopLogStream: vi.fn(), getContainerStats: vi.fn(), getContainerDetails: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() } }));
 const mock = vi.mocked(api);
-const row = (name: string, project: string | null, service: string | null, state = 'running'): Container => ({ handle: name, fullId: name.padEnd(64, 'a'), shortId: name.padEnd(12, 'a'), name, image: 'fixture', state, health: null, ports: [], composeProject: project, composeService: service, createdAt: '' });
+const row = (name: string, project: string | null, service: string | null, state = 'running'): Container => ({ handle: name, fullId: name.padEnd(64, 'a'), shortId: name.padEnd(12, 'a'), name, image: 'fixture', state, health: null, healthConfigured: null, ports: [], composeProject: project, composeService: service, createdAt: '' });
 const rows = [row('zulu', 'beta', 'worker'), row('redis', 'alpha', 'redis', 'exited'), row('api', 'alpha', 'backend'), row('single', null, null)];
 beforeEach(() => {
   vi.resetAllMocks(); installSnapshotStreams(mock);

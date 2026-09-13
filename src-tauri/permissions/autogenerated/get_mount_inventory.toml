@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-mount-inventory"
+description = "Enables the get_mount_inventory command without any pre-configured scope."
+commands.allow = ["get_mount_inventory"]
+
+[[permission]]
+identifier = "deny-get-mount-inventory"
+description = "Denies the get_mount_inventory command without any pre-configured scope."
+commands.deny = ["get_mount_inventory"]

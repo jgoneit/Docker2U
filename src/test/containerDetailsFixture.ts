@@ -2,7 +2,7 @@ import type { Container, ContainerList } from '../api';
 import type { ContainerDetails } from '../containerDetailsTypes';
 
 export const detailsContainer: Container = { handle: 'details-a', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'database',
-  image: 'postgres:17', state: 'exited', health: null, ports: [], createdAt: '', composeProject: 'orders', composeService: 'database' };
+  image: 'postgres:17', state: 'exited', health: null, healthConfigured: null, ports: [], createdAt: '', composeProject: 'orders', composeService: 'database' };
 export const detailsSnapshot: ContainerList = { sessionId: 'one', generation: 1, containers: [detailsContainer], refreshedAt: '2026-09-08T03:00:00Z', stale: false };
 export function containerDetailsFixture(container = detailsContainer, snapshot = detailsSnapshot): ContainerDetails {
   return { sessionId: snapshot.sessionId, generation: snapshot.generation, handle: container.handle, fullId: container.fullId, observedAt: '2026-09-08T03:00:10Z',

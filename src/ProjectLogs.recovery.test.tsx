@@ -11,7 +11,7 @@ vi.mock('./observationApi', async importOriginal => ({ ...await importOriginal<t
   projectLogApi: { configure: vi.fn(), query: vi.fn(), retry: vi.fn(), stop: vi.fn() },
 }));
 const failure = { code: 'ObservationTransport', message: 'temporary collection failure' };
-const container: Container = { handle: 'ha', fullId: 'a', shortId: 'a', name: 'web', composeProject: 'demo', composeService: 'web', state: 'running', health: null, image: 'web', ports: [], createdAt: '' };
+const container: Container = { handle: 'ha', fullId: 'a', shortId: 'a', name: 'web', composeProject: 'demo', composeService: 'web', state: 'running', health: null, healthConfigured: null, image: 'web', ports: [], createdAt: '' };
 const page = (sessionId = 'one', project = 'demo'): ProjectLogPage => ({ sessionId, project, revision: 1, maxSequence: 140, totalRows: 40, offset: 0, droppedRows: 0, needsSelection: false, error: null, retainedFrom: null, retainedTo: null,
   sources: [{ sourceId: 'a', fullId: 'a', containerName: 'web', serviceName: 'web', selected: true, status: 'following', error: null, droppedRows: 0 }],
   rows: Array.from({ length: 40 }, (_, index) => ({ rowId: `r${101 + index}`, sequence: 101 + index, sourceId: 'a', fullId: 'a', serviceName: 'web', containerName: 'web', timestamp: '2026-09-12T00:00:00.000Z', receivedAt: '2026-09-12T00:00:00.000Z', pipe: 'stdout', text: `needle ${101 + index}`, truncated: false })),

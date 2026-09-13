@@ -409,6 +409,7 @@ fn compose_options(
         deadline: Some(deadline),
         cancel,
         isolate_compose_env: true,
+        capture_limit: None,
     }
 }
 fn version_supported(version: &str) -> bool {

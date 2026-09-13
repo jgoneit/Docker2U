@@ -218,6 +218,59 @@ fn bounds_structured_capture_and_keeps_draining_until_exit() {
 }
 
 #[test]
+fn structured_capture_budget_is_shared_across_stdout_and_stderr() {
+    let fixture = Fixture::new(
+        "/bin/dd if=/dev/zero bs=65536 count=2 2>/dev/null &\n(/bin/dd if=/dev/zero bs=65536 count=2 2>/dev/null) >&2 &\nwait\nexit 23",
+    );
+    for limit in [0, 17, 100_000] {
+        let options = ProcessOptions {
+            capture_limit: Some(limit),
+            deadline: Some(Instant::now() + Duration::from_secs(5)),
+            ..ProcessOptions::default()
+        };
+        let output = Runner::default()
+            .run_with_options(&fixture.executable, &[], &[], &options, false)
+            .unwrap();
+        assert_eq!(
+            output.code,
+            Some(23),
+            "capture must keep draining after the budget is exhausted"
+        );
+        assert_eq!(output.stdout.len() + output.stderr.len(), limit);
+        assert!(output.truncated && !output.interrupted);
+        assert!(output.logs.is_empty());
+    }
+}
+
+#[test]
+fn structured_capture_budget_carries_only_remaining_bytes_to_the_next_call() {
+    let first = Fixture::new("printf '123'\nprintf '45' >&2");
+    let second = Fixture::new("printf 'abcdef'\nprintf 'ghijkl' >&2");
+    let mut remaining = 8;
+    let mut retained = 0;
+    let runner = Runner::default();
+    for (index, fixture) in [first, second].iter().enumerate() {
+        let options = ProcessOptions {
+            capture_limit: Some(remaining),
+            deadline: Some(Instant::now() + Duration::from_secs(5)),
+            ..ProcessOptions::default()
+        };
+        let output = runner
+            .run_with_options(&fixture.executable, &[], &[], &options, false)
+            .unwrap();
+        let bytes = output.stdout.len() + output.stderr.len();
+        assert!(bytes <= remaining);
+        remaining -= bytes;
+        retained += bytes;
+        assert_eq!(output.code, Some(0));
+        assert_eq!(output.truncated, index == 1);
+        assert!(!output.interrupted);
+    }
+    assert_eq!(retained, 8);
+    assert_eq!(remaining, 0);
+}
+
+#[test]
 fn logs_keep_the_last_two_mib_from_both_streams() {
     let fixture = Fixture::new(
         "printf 'old-prefix-must-disappear'\n/bin/dd if=/dev/zero bs=1048576 count=3 2>/dev/null\nprintf 'recent-stdout-tail'\nprintf 'recent-stderr-tail' >&2",

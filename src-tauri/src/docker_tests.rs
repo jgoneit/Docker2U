@@ -15,6 +15,8 @@ mod bulk;
 mod details;
 #[path = "docker_insights_tests.rs"]
 mod insights;
+#[path = "docker_mounts_tests.rs"]
+mod mounts;
 #[path = "docker_observation_tests.rs"]
 mod observation;
 
@@ -187,6 +189,20 @@ if a[1]=='ls':
     if mode=='malformed': print('{')
     sys.exit()
 if a[1]=='inspect':
+    if '"Mounts"' in a[3]:
+        if mode=='held_mounts':
+            (p/'reading-mounts').write_text(str(os.getpid()))
+            while not (p/'release-mounts').exists(): time.sleep(.005)
+        if mode=='mounts_fail': print('container disappeared',file=sys.stderr);sys.exit(1)
+        if mode=='mounts_denied': print('permission denied while reading mounts',file=sys.stderr);sys.exit(1)
+        if mode=='mounts_missing': sys.exit()
+        for ident in a[4:]:
+            row={'Id':ident,'Mounts':[{'Type':'volume','Source':'/engine/data','Destination':'/data','RW':True,'Name':'shared-data'},{'Type':'bind','Source':'/source/config','Destination':'/config','RW':False,'Name':None}]}
+            if mode=='mounts_wrong_id': row['Id']='f'*64
+            if mode=='mounts_duplicate': row['Id']=a[4]
+            if mode=='mounts_unavailable': row['Mounts']=None
+            print(json.dumps(row,separators=(',',':')))
+        sys.exit()
     if '"OOMKilled"' in a[3]:
         assert len(a)==5, repr(a)
         if mode=='held_details':
@@ -213,7 +229,7 @@ if a[1]=='inspect':
     state=(p/'state').read_text() if (p/'state').exists() else 'exited'
     states=json.loads((p/'states').read_text()) if (p/'states').exists() else {}
     for ident in a[4:]:
-        print(json.dumps({'Id':'f'*64 if mode=='wrong_id' else ident,'Name':"/test;$(touch forbidden)",'Image':'busybox:test','Created':'2026-09-05T08:00:00Z','State':states.get(ident,state),'Health':None,'Ports':None,'ComposeProject':'team-dev' if mode=='compose' else None,'ComposeService':'api' if mode=='compose' else None}))
+        print(json.dumps({'Id':'f'*64 if mode=='wrong_id' else ident,'Name':"/test;$(touch forbidden)",'Image':'busybox:test','Created':'2026-09-05T08:00:00Z','State':states.get(ident,state),'Health':None,'HealthConfigured':json.loads((p/'health-configured').read_text()) if (p/'health-configured').exists() else False,'Ports':None,'ComposeProject':'team-dev' if mode=='compose' else None,'ComposeService':'api' if mode=='compose' else None}))
     sys.exit()
 if a[1]=='logs':
     sys.stdout.write('hello\x1b[31m red\x1b[0m\n');sys.stdout.flush()

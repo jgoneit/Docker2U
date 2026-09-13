@@ -10,7 +10,7 @@ vi.mock('./api', async original => ({ ...await original<typeof import('./api')>(
   readLogStream: vi.fn(), stopLogStream: vi.fn(), getContainerStats: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn(),
 } }));
 const mock = vi.mocked(api);
-const rows: Container[] = ['alpha', 'beta'].map((name, index) => ({ handle: name, fullId: String(index + 1).repeat(64), shortId: String(index + 1).repeat(12), name, image: 'fixture', state: 'running', health: null, ports: [], composeProject: null, composeService: null, createdAt: '' }));
+const rows: Container[] = ['alpha', 'beta'].map((name, index) => ({ handle: name, fullId: String(index + 1).repeat(64), shortId: String(index + 1).repeat(12), name, image: 'fixture', state: 'running', health: null, healthConfigured: null, ports: [], composeProject: null, composeService: null, createdAt: '' }));
 const raw = 'raw log line\nLAST_LINE';
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 const advance = (milliseconds: number) => act(async () => { await vi.advanceTimersByTimeAsync(milliseconds); });
