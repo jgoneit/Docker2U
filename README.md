@@ -48,6 +48,7 @@ Computer Use 권한 허용 후 Finder에서 재빌드한 앱을 실행해 실제
 - [Docker2U 개발 정의서](docs/DEVELOPMENT-DEFINITION.md)
 - [macOS 로컬 알파 구현·검증 기준](docs/MACOS-ALPHA.md)
 - [프로젝트 통합 로그·자원 및 상태 이력](docs/PROJECT-OBSERVATION.md)
+- [컨테이너 이미지 내보내기](docs/IMAGE-EXPORT.md)
 
 개발 정의서는 다음 내용을 하나의 기준으로 관리한다.
 
@@ -66,6 +67,8 @@ Computer Use 권한 허용 후 Finder에서 재빌드한 앱을 실행해 실제
 - macOS 알파는 Container·Compose 프로젝트 조회, 실시간 로그, 현재 CPU·메모리, Start·Stop·Restart를 제공한다. [범위와 검증 경계](docs/MACOS-LIVE-INSIGHTS.md)를 참고한다.
 - 로컬 Compose 파일 등록과 프로젝트 실행·중지를 추가한다. [Compose 프로젝트 실행 범위](docs/COMPOSE-PROJECT-CONTROLS.md)를 따른다.
 - 명령 종료와 현재 서비스 State·Health를 구분하고, 프로젝트·컨테이너의 실제 마운트와 공유 관계를 읽기 전용으로 조회한다. [상태 표시와 저장소 탐색](docs/COMPOSE-STORAGE.md)을 참고한다.
+- 등록 프로젝트에서 서비스마다 이미지 다운로드·빌드·준비 생략을 선택하고 해당 서비스만 재생성한다. [선택 서비스 변경 반영](docs/COMPOSE-APPLY.md)과 [검증 경계](docs/COMPOSE-APPLY-AUDIT.md)를 참고한다.
+- 실행·중지 컨테이너가 사용하는 실제 이미지를 `.tar`로 저장한다. 볼륨 데이터와 실행 후 변경한 파일은 포함하지 않는다. [이미지 내보내기](docs/IMAGE-EXPORT.md)를 참고한다.
 - 원격 endpoint, 범용 shell, Terminal/Exec, Delete/Prune, Compose 파일 편집은 제외한다.
 - 기술 스택은 Rust + Tauri 2 + React + TypeScript strict로 정의한다.
 - 사용자가 제공한 React 패널의 어두운 테마, 검색·필터, 목록·상세 분할을 유지한다.
