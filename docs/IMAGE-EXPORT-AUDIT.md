@@ -91,3 +91,6 @@ CLI 결과와 PR의 최종 HEAD CI 결과는 PR 본문과 작업 최종 응답�
 
 이번 게시 범위는 커밋·브랜치 게시·PR 생성·CI 확인이다. main 병합, Release,
 설치 앱 교체는 포함하지 않는다.
+
+최초 PR CI의 결과와 후속 fixture·도구막대 회귀 보완은
+[CI 후속 검증 기록](IMAGE-EXPORT-CI-AUDIT.md)에 별도로 보존한다.
