@@ -62,9 +62,60 @@ pub struct ProjectLogQuery {
     pub through_sequence: Option<u64>,
     #[serde(default)]
     pub anchor_row_id: Option<String>,
+    pub time_from: Option<String>,
+    pub time_to: Option<String>,
+    pub anchor_time: Option<String>,
 }
 fn page_size() -> usize {
     500
+}
+
+#[derive(Default)]
+struct LogTimeWindow {
+    from: Option<i64>,
+    to: Option<i64>,
+    anchor: Option<i64>,
+}
+
+impl ProjectLogQuery {
+    fn time_window(&self) -> Result<LogTimeWindow> {
+        let parse = |value: &Option<String>| {
+            value
+                .as_ref()
+                .map(|value| {
+                    (value.len() <= 128)
+                        .then(|| nanos(value))
+                        .flatten()
+                        .ok_or_else(|| {
+                            ApiError::new(
+                                "InvalidSelection",
+                                "Log times must be supported RFC3339 timestamps",
+                            )
+                        })
+                })
+                .transpose()
+        };
+        let window = LogTimeWindow {
+            from: parse(&self.time_from)?,
+            to: parse(&self.time_to)?,
+            anchor: parse(&self.anchor_time)?,
+        };
+        if window
+            .from
+            .zip(window.to)
+            .is_some_and(|(from, to)| from > to)
+            || window.anchor.is_some_and(|anchor| {
+                window.from.is_some_and(|from| anchor < from)
+                    || window.to.is_some_and(|to| anchor > to)
+            })
+        {
+            return Err(ApiError::new(
+                "InvalidSelection",
+                "Log time bounds must be ordered and contain the anchor",
+            ));
+        }
+        Ok(window)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -525,16 +576,24 @@ impl ProjectLogManager {
         }
     }
 
+    #[cfg(test)]
     fn page(&mut self, query: &ProjectLogQuery) -> ProjectLogPage {
+        self.page_in_window(query, query.time_window().unwrap())
+    }
+
+    fn page_in_window(&mut self, query: &ProjectLogQuery, time: LogTimeWindow) -> ProjectLogPage {
         self.prune();
         let active_project = self.project.as_deref() == Some(&query.project);
         let needle = query.keyword.to_lowercase();
         let source_ids = query.source_ids.iter().collect::<HashSet<_>>();
-        let matches = self
+        // Coverage describes retained rows for this source/keyword/sequence view,
+        // even when the requested incident interval has no rows. Collection loss
+        // counters remain project totals; archived gaps cannot be source-attributed.
+        let retained = self
             .ring
             .rows
-            .values()
-            .filter(|stored| {
+            .iter()
+            .filter(|(_, stored)| {
                 stored.project == query.project
                     && query
                         .after_sequence
@@ -546,15 +605,29 @@ impl ProjectLogManager {
                     && (needle.is_empty() || stored.row.text.to_lowercase().contains(&needle))
             })
             .collect::<Vec<_>>();
+        let matches = retained
+            .iter()
+            .copied()
+            .filter(|(key, _)| {
+                time.from.is_none_or(|from| key.0 >= from) && time.to.is_none_or(|to| key.0 <= to)
+            })
+            .collect::<Vec<_>>();
         let total = matches.len();
         let limit = query.limit.clamp(1, 500);
         let anchored = query.anchor_row_id.as_ref().and_then(|anchor| {
             matches
                 .iter()
-                .position(|stored| &stored.row.row_id == anchor)
+                .position(|(_, stored)| &stored.row.row_id == anchor)
         });
         let offset = if let Some(offset) = anchored.or(query.offset) {
             offset.min(total.saturating_sub(1))
+        } else if let Some(anchor) = time.anchor.filter(|_| query.anchor_row_id.is_none()) {
+            let nearest = matches
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, (key, _))| key.0.abs_diff(anchor))
+                .map(|(index, _)| index);
+            nearest.map_or(0, |nearest| centered_offset(&matches, nearest, limit))
         } else {
             // A byte-limited latest page must end at the newest row, including
             // when only a few long lines fit in the IPC payload.
@@ -563,7 +636,7 @@ impl ProjectLogManager {
                 .iter()
                 .rev()
                 .take(limit)
-                .take_while(|stored| {
+                .take_while(|(_, stored)| {
                     bytes += stored.bytes;
                     bytes <= PAGE_BYTES
                 })
@@ -575,11 +648,11 @@ impl ProjectLogManager {
             .iter()
             .skip(offset)
             .take(limit)
-            .take_while(|stored| {
+            .take_while(|(_, stored)| {
                 bytes += stored.bytes;
                 bytes <= PAGE_BYTES
             })
-            .map(|stored| stored.row.clone())
+            .map(|(_, stored)| stored.row.clone())
             .collect();
         let mut sources = self
             .sources
@@ -627,24 +700,46 @@ impl ProjectLogManager {
                 .get(&query.project)
                 .map_or(0, |metadata| metadata.dropped_rows),
             needs_selection: active_project && self.needs_selection,
-            retained_from: matches.first().map(|stored| {
-                stored
-                    .row
-                    .timestamp
-                    .clone()
-                    .unwrap_or_else(|| stored.row.received_at.clone())
-            }),
-            retained_to: matches.last().map(|stored| {
-                stored
-                    .row
-                    .timestamp
-                    .clone()
-                    .unwrap_or_else(|| stored.row.received_at.clone())
-            }),
+            retained_from: retained
+                .first()
+                .map(|(_, stored)| retained_time(&stored.row)),
+            retained_to: retained
+                .last()
+                .map(|(_, stored)| retained_time(&stored.row)),
             anchor_lost: query.anchor_row_id.is_some() && anchored.is_none(),
             error: active_project.then(|| self.error.clone()).flatten(),
         }
     }
+}
+
+fn retained_time(row: &ProjectLogRow) -> String {
+    row.timestamp
+        .as_ref()
+        .filter(|value| nanos(value).is_some())
+        .unwrap_or(&row.received_at)
+        .clone()
+}
+
+/// Grow a contiguous page around the closest timestamp, balancing the number
+/// of rows on either side. Byte limits must never push the anchor off the page.
+fn centered_offset(rows: &[(&OrderKey, &StoredRow)], anchor: usize, limit: usize) -> usize {
+    let mut start = anchor;
+    let mut end = anchor + 1;
+    let mut bytes = rows[anchor].1.bytes;
+    while end - start < limit {
+        let left = start > 0 && bytes + rows[start - 1].1.bytes <= PAGE_BYTES;
+        let right = end < rows.len() && bytes + rows[end].1.bytes <= PAGE_BYTES;
+        if left && (!right || anchor - start <= end - anchor - 1) {
+            start -= 1;
+            bytes += rows[start].1.bytes;
+        } else if right {
+            bytes += rows[end].1.bytes;
+            end += 1;
+        } else {
+            break;
+        }
+    }
+    start
 }
 
 fn latest_query(project: String) -> ProjectLogQuery {
@@ -657,6 +752,9 @@ fn latest_query(project: String) -> ProjectLogQuery {
         after_sequence: None,
         through_sequence: None,
         anchor_row_id: None,
+        time_from: None,
+        time_to: None,
+        anchor_time: None,
     }
 }
 
@@ -895,6 +993,7 @@ impl Core {
 
     pub fn query_project_logs(&self, id: &str, query: &ProjectLogQuery) -> Result<ProjectLogPage> {
         self.active(id)?;
+        let time = query.time_window()?;
         // The live fanout cap does not cap retained source IDs after recreation.
         if query.keyword.len() > 4096
             || query.project.len() > 4096
@@ -910,7 +1009,7 @@ impl Core {
                 "Project logs belong to a previous session",
             ));
         }
-        Ok(manager.page(query))
+        Ok(manager.page_in_window(query, time))
     }
 
     pub(super) fn sync_project_log_inventory(&self, inventory: &ContainerList) {

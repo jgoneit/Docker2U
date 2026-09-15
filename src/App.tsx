@@ -15,9 +15,11 @@ import { ContainerInsights } from './ContainerInsights';
 import { useLiveLogs } from './useLiveLogs';
 import { useContainerStats } from './useContainerStats';
 import { useObservation } from './useObservation';
-import { observationApi, type ObservationHold } from './observationApi';
+import { observationApi, type ObservationEvent, type ObservationHold } from './observationApi';
 import { useProjectLogCollection, ProjectLogs, createProjectLogViewCache } from './ProjectLogs';
-import { ObservationHistory } from './ObservationHistory';
+import { ObservationHistory, HistoryViewCache } from './ObservationHistory';
+import { useIncidentReview, type IncidentTab } from './useIncidentReview';
+import { incidentMessages } from './messages/incident';
 import { StoragePanel } from './StoragePanel';
 import { useMountInventory } from './useMountInventory';
 import { createStandaloneLogViewCache } from './standaloneLogViewCache';
@@ -66,12 +68,17 @@ function AppContent() {
   const ot = useI18n(observationMessages);
   const ct = useI18n(composeMessages);
   const et = useI18n(imageExportMessages);
+  const it = useI18n(incidentMessages);
   const { language } = usePreferences();
   const pane = usePaneResize();
   const feedback = useOperationFeedback();
   const [tabs, setTabs] = useState<Record<string, DetailTab>>({});
   const logViewCache = useRef(createProjectLogViewCache()).current;
   const standaloneLogViewCache = useRef(createStandaloneLogViewCache()).current;
+  const historyViewCache = useRef(new HistoryViewCache()).current;
+  const [incidentOrigin, setIncidentOrigin] = useState<{ sessionId: string; target: Exclude<NavigationTarget, null>; outerScroll: number } | null>(null);
+  const pendingIncidentReturn = useRef<number | null>(null);
+  const [incidentReturnVersion, setIncidentReturnVersion] = useState(0);
   const [environment, setEnvironment] = useState<Environment | null>(null);
   const [connecting, setConnecting] = useState(true);
   const [environmentError, setEnvironmentError] = useState<CoreError | null>(null);
@@ -237,6 +244,47 @@ function AppContent() {
   }, [reconcileTarget]);
   const observation = useObservation({ sessionId: environment?.sessionId ?? null, scope: allProjects,
     enabled: !connecting && !reconnectRequired, onInventory: acceptObservationInventory, onError: onStatsError });
+  const incident = useIncidentReview(connecting || reconnectRequired ? null : environment?.sessionId ?? null, observation.view, onLogError);
+  const incidentHere = !!incident.state && incidentOrigin?.sessionId === incident.state.sessionId
+    && JSON.stringify(incidentOrigin.target) === targetKey && activeTab === 'history';
+  const incidentCurrentAvailable = !!incident.state && !connecting && !reconnectRequired && !!snapshot && !snapshot.stale
+    && snapshot.sessionId === incident.state.sessionId && snapshot.containers.some(item => item.fullId === incident.state?.event.fullId);
+  function selectIncident(event: ObservationEvent) {
+    if (!session.current || !selectionRef.current || reconnectRequired) return;
+    setIncidentOrigin({ sessionId: session.current, target: selectionRef.current, outerScroll: document.getElementById('detail-pane')?.scrollTop ?? 0 });
+    incident.select(event);
+  }
+  function closeIncident() { incident.close(); setIncidentOrigin(null); }
+  function inspectIncident(tab: IncidentTab) {
+    if (!incidentCurrentAvailable || !incident.state?.event.fullId) return;
+    setIncidentOrigin(previous => previous ? { ...previous, outerScroll: document.getElementById('detail-pane')?.scrollTop ?? 0 } : null);
+    inspectContainer(incident.state.event.fullId, tab);
+  }
+  function returnToIncident() {
+    if (!incident.state || !incidentOrigin || incidentOrigin.sessionId !== session.current) return;
+    let target = incidentOrigin.target;
+    const originId = target.kind === 'container' ? target.fullId : null;
+    if (originId && !snapshot?.containers.some(item => item.fullId === originId)) {
+      target = { kind: 'project', name: incident.state.event.composeProject! };
+      const saved = historyViewCache.get(JSON.stringify(incidentOrigin.target));
+      if (saved) historyViewCache.set(JSON.stringify(target), saved);
+      setIncidentOrigin({ ...incidentOrigin, target });
+    }
+    pendingIncidentReturn.current = incident.state.event.sequence;
+    selectTarget(target); setActiveTab('history'); setIncidentReturnVersion(value => value + 1);
+  }
+  useLayoutEffect(() => {
+    if (!incidentHere || pendingIncidentReturn.current === null) return;
+    const trigger = document.querySelector<HTMLButtonElement>(`.observation-history [data-event-sequence="${pendingIncidentReturn.current}"]`);
+    if (!trigger) return;
+    const pane = document.getElementById('detail-pane'); if (pane) pane.scrollTop = incidentOrigin?.outerScroll ?? 0;
+    trigger.focus({ preventScroll: true }); pendingIncidentReturn.current = null;
+  }, [incidentHere, incidentReturnVersion, incidentOrigin]);
+  const incidentHistoryProps = {
+    incident: incidentHere ? incident : undefined, onSelectEvent: reconnectRequired ? undefined : selectIncident,
+    onCloseIncident: closeIncident, onNavigateIncident: inspectIncident, currentAvailable: incidentCurrentAvailable,
+    viewCache: historyViewCache, viewKey: targetKey, visible: activeTab === 'history',
+  };
   const stats = nativeObservation ? { sampleFor: observation.sampleFor, error: observation.view?.statsError ?? observation.error } : legacyStats;
   const projectLogs = useProjectLogCollection(environment?.sessionId ?? null, observedProject, !connecting && !reconnectRequired, onLogError);
   async function releaseObservationHold() {
@@ -279,7 +327,7 @@ function AppContent() {
     } catch (original) { onStatsError(original, coreError(original), targetSession); }
     finally { await releaseObservationHold(); setPreparingAction(false); }
   }
-  function inspectContainer(fullId: string, tab: 'logs' | 'diagnostics' | 'storage', mountKey?: string) {
+  function inspectContainer(fullId: string, tab: 'logs' | 'diagnostics' | 'connectivity' | 'storage', mountKey?: string) {
     const current = currentSnapshot.current;
     if (!current || current.sessionId !== session.current || current.stale || reconnectRequired
       || !current.containers.some(item => item.fullId === fullId)) return;
@@ -382,6 +430,7 @@ function AppContent() {
     session.current = null;
     logViewCache.clear();
     standaloneLogViewCache.clear();
+    historyViewCache.clear(); setIncidentOrigin(null); pendingIncidentReturn.current = null;
     currentSnapshot.current = null;
     ++listSequence.current;
     refreshBusy.current = false;
@@ -428,7 +477,7 @@ function AppContent() {
     } finally {
       if (epoch.current === requestEpoch) setConnecting(false);
     }
-  }, [clearLogs, refresh, selectContainer, logViewCache, standaloneLogViewCache]);
+  }, [clearLogs, refresh, selectContainer, logViewCache, standaloneLogViewCache, historyViewCache]);
   useEffect(() => {
     // Defer one microtask so development StrictMode's discarded mount never opens a session.
     let active = true;
@@ -642,7 +691,8 @@ function AppContent() {
             {compose.available && projectView && observedProject && <ComposeProjectControls project={registeredProject} name={observedProject} count={projectContainers.length} disabled={compose.busy || preparingAction || mutating || mutationBlocked || !ready || !environment?.mutationAllowed || !!snapshot?.stale} editDisabled={compose.busy || preparingAction || mutating} onPrepare={action => { if (registeredProject) { if (action === 'apply') void compose.openApply(registeredProject); else void compose.prepare(registeredProject, action); } }} onEdit={() => compose.openEditor(registeredProject, observedProject)} />}
             {targetHidden && <p className="selection-hidden-notice" role="status">{t('selectionHidden')}</p>}
           </div>
-          {connecting ? <div className="startup-panel"><div className="startup-icon"><LoaderCircle className="spin" size={30} aria-hidden="true" /></div><h3>{t('checkingLocal')}</h3><p>{t('checkingCli')}</p></div> : !ready ? <div className="startup-panel"><div className="startup-icon"><Cable size={32} aria-hidden="true" /></div><span className="eyebrow">{t('localEnvironment')}</span><h3>{t(connectionTitle)}</h3><p>{t(connectionHelp)}</p>{connectionError && <div role="alert"><ErrorDetails error={connectionError} /></div>}{!!environment?.diagnostics.length && <details className="technical-details"><summary>{t('originalDiagnostics')}</summary>{environment.diagnostics.map((message, index) => <p key={index}>{message}</p>)}</details>}<button className="primary-button" onClick={() => void connect()}><RefreshCw size={14} aria-hidden="true" />{t('reconnect')}</button></div> : projectView && snapshot ? <div className={`project-detail${projectTab === 'logs' ? ' project-log-detail' : ''}`}><div className="detail-tabs project-tabs" role="tablist" aria-label={ot('project')}>{(['logs', 'storage', 'history'] as const).map(tab => <button key={tab} role="tab" id={`project-${tab}-tab`} aria-controls={`project-${tab}-panel`} tabIndex={projectTab === tab ? 0 : -1} aria-selected={projectTab === tab} onKeyDown={event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const projectTabs = ['logs', 'storage', 'history'] as const; const index = projectTabs.indexOf(tab); const next = event.key === 'Home' ? 'logs' : event.key === 'End' ? 'history' : projectTabs[(index + (event.key === 'ArrowRight' ? 1 : 2)) % 3]!; setProjectTab(next); document.getElementById(`project-${next}-tab`)?.focus(); } }} onClick={() => setProjectTab(tab)}>{ot(tab)}</button>)}</div><div id="project-storage-panel" className="detail-tab-panel" role="tabpanel" aria-labelledby="project-storage-tab" hidden={projectTab !== 'storage'}>{projectTab === 'storage' && storagePanel}</div><div id="project-history-panel" className="detail-tab-panel" role="tabpanel" aria-labelledby="project-history-tab" hidden={projectTab !== 'history'}><ObservationHistory onRetry={reconnectRequired ? undefined : () => void observation.retryEvents()} retrying={observation.retryingEvents} observation={observation.view} scope={project} containers={projectContainers} /></div><div id="project-logs-panel" className="detail-tab-panel project-log-panel" role="tabpanel" aria-labelledby="project-logs-tab" hidden={projectTab !== 'logs'}>{observedProject ? <ProjectLogs {...projectCopyProps} viewCache={logViewCache} key={`${snapshot.sessionId}/${observedProject}`} sessionId={snapshot.sessionId} project={observedProject} containers={projectContainers} visible={projectTab === 'logs'} initialPage={projectLogs.page} configure={projectLogs.configure} retry={projectLogs.retry} retrying={projectLogs.retrying} error={projectLogs.error} onError={onLogError} /> : <p className="observation-hint">{ot('allProjectsHint')}</p>}</div></div> : selected && snapshot ? <ContainerDetail exportAction={exportAction} logViewCache={standaloneLogViewCache} activeTab={activeTab} onTabChange={setActiveTab} historyEnabled={true} logContent={nativeObservation && observedProject ? <ProjectLogs {...projectCopyProps} viewCache={logViewCache} key={`${snapshot.sessionId}/${observedProject}/${selected.fullId}`} sessionId={snapshot.sessionId} project={observedProject} containers={projectContainers} fullId={selected.fullId} initialPage={projectLogs.page} configure={projectLogs.configure} retry={projectLogs.retry} retrying={projectLogs.retrying} error={projectLogs.error} visible={activeTab === 'logs'} onError={onLogError} /> : undefined} insights={activeTab === 'storage' ? storagePanel : activeTab === 'history' ? <ObservationHistory onRetry={reconnectRequired ? undefined : () => void observation.retryEvents()} retrying={observation.retryingEvents} observation={observation.view} scope={project} containers={projectContainers} fullId={selected.fullId} /> : activeTab !== 'logs' ? <>{activeTab === 'connectivity' && <ContainerInformation container={selected} snapshot={snapshot} copy={copy} resourceSample={stats.sampleFor(selected)} />}<ContainerInsights tab={activeTab} {...details} disabled={!detailsEnabled || !!snapshot.stale} copy={copy} /></> : undefined} operationFeedback={<OperationFeedback model={feedback} detailsId="latest-operation-details" onOpenDetails={openOperationDetails} />} container={selected} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} mutationBlocked={compose.busy || mutationBlocked || preparingAction || observation.restoring} mutationAllowed={!!environment?.mutationAllowed} liveStatus={liveStatus} loadLogs={loadLogs} clearLogs={clearDisplayedLogs} requestAction={requestAction} copy={copy} copyFeedback={copyFeedback} copyFeedbackTone={copyFeedbackTone} copyFeedbackId={clipboardMessage?.id} copyFeedbackHighlighted={clipboardMessage?.highlighted} copyFeedbackHighlightUntil={clipboardMessage?.highlightUntil} logsExpanded={logsExpanded} onLogsExpandedChange={setLogsExpanded} /> : <div className="startup-panel"><div className="startup-icon"><BrandMark size={56} /></div><h3>{t(refreshing ? 'loadingContainers' : snapshot?.containers.length === 0 ? 'noContainers' : 'selectContainer')}</h3><p>{t(snapshot?.containers.length === 0 ? 'startServices' : 'selectHelp')}</p></div>}
+          {incident.state && incidentOrigin && !incidentHere && <div className="incident-return"><button onClick={returnToIncident}>{it('back')}</button><span>{incident.state.event.name ?? incident.state.event.composeService} · <time dateTime={incident.state.event.occurredAt}>{new Date(incident.state.event.occurredAt).toLocaleTimeString(language === 'ko' ? 'ko-KR' : 'en-US')}</time></span></div>}
+          {connecting ? <div className="startup-panel"><div className="startup-icon"><LoaderCircle className="spin" size={30} aria-hidden="true" /></div><h3>{t('checkingLocal')}</h3><p>{t('checkingCli')}</p></div> : !ready ? <div className="startup-panel"><div className="startup-icon"><Cable size={32} aria-hidden="true" /></div><span className="eyebrow">{t('localEnvironment')}</span><h3>{t(connectionTitle)}</h3><p>{t(connectionHelp)}</p>{connectionError && <div role="alert"><ErrorDetails error={connectionError} /></div>}{!!environment?.diagnostics.length && <details className="technical-details"><summary>{t('originalDiagnostics')}</summary>{environment.diagnostics.map((message, index) => <p key={index}>{message}</p>)}</details>}<button className="primary-button" onClick={() => void connect()}><RefreshCw size={14} aria-hidden="true" />{t('reconnect')}</button></div> : projectView && snapshot ? <div className={`project-detail${projectTab === 'logs' ? ' project-log-detail' : ''}`}><div className="detail-tabs project-tabs" role="tablist" aria-label={ot('project')}>{(['logs', 'storage', 'history'] as const).map(tab => <button key={tab} role="tab" id={`project-${tab}-tab`} aria-controls={`project-${tab}-panel`} tabIndex={projectTab === tab ? 0 : -1} aria-selected={projectTab === tab} onKeyDown={event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const projectTabs = ['logs', 'storage', 'history'] as const; const index = projectTabs.indexOf(tab); const next = event.key === 'Home' ? 'logs' : event.key === 'End' ? 'history' : projectTabs[(index + (event.key === 'ArrowRight' ? 1 : 2)) % 3]!; setProjectTab(next); document.getElementById(`project-${next}-tab`)?.focus(); } }} onClick={() => setProjectTab(tab)}>{ot(tab)}</button>)}</div><div id="project-storage-panel" className="detail-tab-panel" role="tabpanel" aria-labelledby="project-storage-tab" hidden={projectTab !== 'storage'}>{projectTab === 'storage' && storagePanel}</div><div id="project-history-panel" className="detail-tab-panel" role="tabpanel" aria-labelledby="project-history-tab" hidden={projectTab !== 'history'}><ObservationHistory key={`${snapshot.sessionId}/${targetKey}/${incidentReturnVersion}`} {...incidentHistoryProps} onRetry={reconnectRequired ? undefined : () => void observation.retryEvents()} retrying={observation.retryingEvents} observation={observation.view} scope={project} containers={projectContainers} /></div><div id="project-logs-panel" className="detail-tab-panel project-log-panel" role="tabpanel" aria-labelledby="project-logs-tab" hidden={projectTab !== 'logs'}>{observedProject ? <ProjectLogs {...projectCopyProps} viewCache={logViewCache} key={`${snapshot.sessionId}/${observedProject}`} sessionId={snapshot.sessionId} project={observedProject} containers={projectContainers} visible={projectTab === 'logs'} initialPage={projectLogs.page} configure={projectLogs.configure} retry={projectLogs.retry} retrying={projectLogs.retrying} error={projectLogs.error} onError={onLogError} /> : <p className="observation-hint">{ot('allProjectsHint')}</p>}</div></div> : selected && snapshot ? <ContainerDetail exportAction={exportAction} logViewCache={standaloneLogViewCache} activeTab={activeTab} onTabChange={setActiveTab} historyEnabled={true} logContent={nativeObservation && observedProject ? <ProjectLogs {...projectCopyProps} viewCache={logViewCache} key={`${snapshot.sessionId}/${observedProject}/${selected.fullId}`} sessionId={snapshot.sessionId} project={observedProject} containers={projectContainers} fullId={selected.fullId} initialPage={projectLogs.page} configure={projectLogs.configure} retry={projectLogs.retry} retrying={projectLogs.retrying} error={projectLogs.error} visible={activeTab === 'logs'} onError={onLogError} /> : undefined} insights={activeTab === 'storage' ? storagePanel : activeTab === 'history' ? <ObservationHistory key={`${snapshot.sessionId}/${targetKey}/${incidentReturnVersion}`} {...incidentHistoryProps} onRetry={reconnectRequired ? undefined : () => void observation.retryEvents()} retrying={observation.retryingEvents} observation={observation.view} scope={project} containers={projectContainers} fullId={selected.fullId} /> : activeTab !== 'logs' ? <>{activeTab === 'connectivity' && <ContainerInformation container={selected} snapshot={snapshot} copy={copy} resourceSample={stats.sampleFor(selected)} />}<ContainerInsights tab={activeTab} {...details} disabled={!detailsEnabled || !!snapshot.stale} copy={copy} /></> : undefined} operationFeedback={<OperationFeedback model={feedback} detailsId="latest-operation-details" onOpenDetails={openOperationDetails} />} container={selected} snapshot={snapshot} logs={logs} logsError={logsError} loadingLogs={loadingLogs} logRequestPending={logRequestPending} refreshing={refreshing} mutating={mutating} mutationBlocked={compose.busy || mutationBlocked || preparingAction || observation.restoring} mutationAllowed={!!environment?.mutationAllowed} liveStatus={liveStatus} loadLogs={loadLogs} clearLogs={clearDisplayedLogs} requestAction={requestAction} copy={copy} copyFeedback={copyFeedback} copyFeedbackTone={copyFeedbackTone} copyFeedbackId={clipboardMessage?.id} copyFeedbackHighlighted={clipboardMessage?.highlighted} copyFeedbackHighlightUntil={clipboardMessage?.highlightUntil} logsExpanded={logsExpanded} onLogsExpandedChange={setLogsExpanded} /> : <div className="startup-panel"><div className="startup-icon"><BrandMark size={56} /></div><h3>{t(refreshing ? 'loadingContainers' : snapshot?.containers.length === 0 ? 'noContainers' : 'selectContainer')}</h3><p>{t(snapshot?.containers.length === 0 ? 'startServices' : 'selectHelp')}</p></div>}
         </section>
       </main>
       <footer className="app-footer"><span><span className="footer-dot" />{t('footer')}</span>{compose.operation && <button className="compose-statusbar" data-active={compose.busy || undefined} aria-label={ct('recent')} title={ct('progress')} onClick={() => { if (!exports.modalRef.current && !settingsOpen && !confirmation && !logsExpanded) compose.openProgress(); }}>{compose.busy ? <LoaderCircle size={13} className="spin" aria-hidden="true" /> : <Terminal size={13} aria-hidden="true" />}<span>{compose.feedbackOperation?.projectName} · {ct(compose.feedbackOperation?.sessionId !== environment?.sessionId ? 'previousSession' : compose.feedbackOperation?.outcome ?? (compose.feedbackOperation?.phase === 'reconciling' ? 'reconciling' : 'running'))}</span></button>}{(exportStatus || exports.unresolved || exports.failedStart) && <button ref={exportRecentTrigger} className="image-export-statusbar" data-active={exports.busy || undefined} aria-label={et('recent')} title={et('progress')} onClick={event => openExportProgress(event.currentTarget)}>{exports.busy ? <LoaderCircle size={13} className="spin" aria-hidden="true" /> : <Download size={13} aria-hidden="true" />}<span>{exports.unresolved ? et('unresolved') : exports.failedStart ? et('notStarted') : `${exportStatus?.containerName} · ${et(exportStatus?.outcome ?? (exportStatus?.phase === 'finished' ? 'failed' : exportStatus?.phase ?? 'queued'))}`}</span></button>}<OperationFeedback model={feedback} detailsId="latest-operation-details" recentButtonRef={recentOperationTrigger} onOpenDetails={openOperationDetails} announce={!logsExpanded} /><CopyFeedback className="clipboard-feedback" message={copyFeedback} tone={copyFeedbackTone} notificationId={clipboardMessage?.id} highlighted={clipboardMessage?.highlighted} highlightUntil={clipboardMessage?.highlightUntil} /></footer>

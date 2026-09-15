@@ -109,6 +109,9 @@ fn real_engine_observation_read_only() {
         after_sequence: None,
         through_sequence: None,
         anchor_row_id: None,
+        time_from: None,
+        time_to: None,
+        anchor_time: None,
     };
     let started_at = Instant::now();
     let deadline = started_at + Duration::from_secs(20);
