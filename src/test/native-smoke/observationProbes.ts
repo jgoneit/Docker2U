@@ -3,6 +3,7 @@ import { observationApi, projectLogApi, type ObservationRead, type ProjectLogPag
 
 // Test-only observers of real IPC. No production result, timer or request is mocked.
 let environment: Environment | null = null;
+export function nativeObservationEnvironment() { return environment; }
 const getEnvironment = api.getEnvironment;
 api.getEnvironment = async () => { const result = await getEnvironment(); environment = result; return result; };
 const visibility: { state: string; at: number }[] = [];

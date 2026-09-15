@@ -189,7 +189,7 @@ describe('connection and visible selection clarity', () => {
     await user.click(screen.getByRole('button', { name: '새로고침' }));
     screen.getByRole('treeitem', { name: 'backend 상세' }).focus();
     await act(async () => pending.resolve(list(2, remaining ? [redis] : [])));
-    expect(remaining ? screen.getByRole('treeitem', { name: '프로젝트 없음' }) : screen.getByRole('textbox', { name: '컨테이너 검색' })).toHaveFocus();
+    expect(remaining ? screen.getByRole('treeitem', { name: '독립 컨테이너' }) : screen.getByRole('textbox', { name: '컨테이너 검색' })).toHaveFocus();
     expect(screen.queryByRole('region', { name: '서비스 복구' })).not.toBeInTheDocument();
   });
 

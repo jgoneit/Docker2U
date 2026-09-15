@@ -952,6 +952,11 @@ impl Core {
 
     pub fn stop_project_logs(&self, id: &str) -> Result<()> {
         self.active(id)?;
+        #[cfg(test)]
+        if let Some(barrier) = &self.log_registration_barrier {
+            barrier.wait();
+            barrier.wait();
+        }
         let tasks = {
             let mut manager = self.project_logs.lock().unwrap();
             // A stop queued before reconnect must not retire the new collector.
@@ -3405,4 +3410,432 @@ mod tests {
         assert!(core.observation.lock().unwrap().is_none());
         assert!(core.engine_reader.lock().unwrap().is_none());
     }
+    fn standalone_query() -> StandaloneLogQuery {
+        serde_json::from_value(serde_json::json!({})).unwrap()
+    }
+
+    fn core_with_standalone() -> (Core, Vec<Container>) {
+        let (core, mut containers) = core_with_project();
+        for container in &mut containers {
+            container.compose_project = None;
+            container.compose_service = None;
+            // Inventory-only capacity assertions do not need a socket transport.
+            container.state = "removing".into();
+        }
+        core.state.lock().unwrap().session.as_mut().unwrap().handles = containers
+            .iter()
+            .map(|container| (container.handle.clone(), container.clone()))
+            .collect();
+        (core, containers)
+    }
+
+    #[test]
+    fn old_session_stop_cannot_retire_a_reconnected_standalone_collector() {
+        let (mut core, containers) = core_with_standalone();
+        core.configure_standalone_logs("s", None).unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        core.log_registration_barrier = Some(barrier.clone());
+        let stopping = core.clone();
+        let pending = std::thread::spawn(move || stopping.stop_project_logs("s"));
+        barrier.wait();
+        core.state.lock().unwrap().session.as_mut().unwrap().id = "new-session".into();
+        {
+            let mut manager = core.project_logs.lock().unwrap();
+            manager.session_id = "new-session".into();
+            manager.scope = Some(LogScope::Standalone);
+        }
+        barrier.wait();
+        assert_eq!(pending.join().unwrap().unwrap_err().code, "StaleSession");
+        let page = core
+            .query_standalone_logs("new-session", &standalone_query())
+            .unwrap();
+        assert_eq!(page.sources.len(), containers.len());
+        assert_eq!(
+            core.project_logs.lock().unwrap().scope,
+            Some(LogScope::Standalone)
+        );
+    }
+
+    #[test]
+    fn standalone_wire_keeps_project_null_and_rejects_a_project_selector() {
+        let (core, _) = core_with_standalone();
+        let page = core.configure_standalone_logs("s", None).unwrap();
+        let wire = serde_json::to_value(page).unwrap();
+        assert!(wire.get("project").is_some_and(serde_json::Value::is_null));
+        assert_eq!(wire["sessionId"], "s");
+        assert_eq!(wire["needsSelection"], true);
+        assert!(
+            serde_json::from_value::<StandaloneLogQuery>(serde_json::json!({"project":"p"}))
+                .is_err()
+        );
+        assert!(serde_json::from_value::<ProjectLogQuery>(serde_json::json!({})).is_err());
+        assert_eq!(standalone_query().limit, 500);
+        assert_eq!(
+            core.retry_project_logs("s").unwrap_err().code,
+            "InvalidSelection"
+        );
+        core.configure_project_logs("s", "standalone", None)
+            .unwrap();
+        let project = core.retry_project_logs("s").unwrap();
+        assert_eq!(
+            serde_json::to_value(project).unwrap()["project"],
+            "standalone"
+        );
+        assert_eq!(
+            core.retry_standalone_logs("s").unwrap_err().code,
+            "InvalidSelection"
+        );
+        core.stop_project_logs("s").unwrap();
+        assert!(core.project_logs.lock().unwrap().scope.is_none());
+    }
+
+    #[test]
+    fn standalone_time_query_is_isolated_paged_and_does_not_configure_collection() {
+        let (core, containers) = core_with_standalone();
+        core.configure_project_logs("s", "standalone", Some(vec![]))
+            .unwrap();
+        let time = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let id = &containers[0].full_id;
+        let other = &containers[1].full_id;
+        {
+            let mut manager = core.project_logs.lock().unwrap();
+            for index in 0..7 {
+                manager.ring.append(
+                    LogScope::Standalone,
+                    &source(id),
+                    log(&time, &format!("line {index}")),
+                );
+            }
+            let mut fallback = log(&time, "received timestamp");
+            fallback.timestamp = None;
+            fallback.received_at = time.clone();
+            manager
+                .ring
+                .append(LogScope::Standalone, &source(id), fallback);
+            manager.ring.append(
+                LogScope::Standalone,
+                &source(other),
+                log(&time, "wrong full ID"),
+            );
+            manager
+                .ring
+                .append("standalone", &source(id), log(&time, "wrong scope"));
+        }
+        let mut query = standalone_query();
+        query.source_ids = vec![id.clone()];
+        query.time_from = Some(time.clone());
+        query.time_to = Some(time.clone());
+        query.anchor_time = Some(time.clone());
+        query.offset = Some(0);
+        query.limit = 3;
+        let first = core.query_standalone_logs("s", &query).unwrap();
+        assert_eq!(first.total_rows, 8);
+        assert_eq!(
+            first
+                .rows
+                .iter()
+                .map(|row| row.text.as_str())
+                .collect::<Vec<_>>(),
+            ["line 0", "line 1", "line 2"]
+        );
+        query.offset = None;
+        query.after_sequence = first.rows.last().map(|row| row.sequence);
+        let next = core.query_standalone_logs("s", &query).unwrap();
+        assert_eq!(next.total_rows, 5);
+        assert_eq!(next.rows[0].text, "line 3");
+        query.offset = Some(0);
+        query.after_sequence = next.rows.last().map(|row| row.sequence);
+        let last = core.query_standalone_logs("s", &query).unwrap();
+        assert_eq!(last.rows.len(), 2);
+        assert!(last.rows[1].timestamp.is_none());
+        assert_eq!(last.rows[1].received_at, time);
+        query.after_sequence = None;
+        query.time_from = Some((Utc::now() + chrono::Duration::hours(1)).to_rfc3339());
+        query.time_to = None;
+        query.anchor_time = None;
+        let empty = core.query_standalone_logs("s", &query).unwrap();
+        assert!(empty.rows.is_empty());
+        assert_eq!(empty.retained_from.as_deref(), Some(time.as_str()));
+        let manager = core.project_logs.lock().unwrap();
+        assert_eq!(manager.scope, Some(LogScope::from("standalone")));
+        assert_eq!(manager.explicit, Some(HashSet::new()));
+        assert!(manager.sources.is_empty());
+    }
+
+    #[test]
+    fn standalone_filters_reject_invalid_times_short_ids_and_foreign_handles() {
+        let (core, containers) = core_with_standalone();
+        let mut composed = containers[0].clone();
+        composed.handle = "compose".into();
+        composed.full_id = "e".repeat(64);
+        composed.compose_project = Some("p".into());
+        core.state
+            .lock()
+            .unwrap()
+            .session
+            .as_mut()
+            .unwrap()
+            .handles
+            .insert(composed.handle.clone(), composed);
+        assert_eq!(
+            core.configure_standalone_logs("s", Some(vec!["compose".into()]))
+                .unwrap_err()
+                .code,
+            "InvalidSelection"
+        );
+        assert_eq!(
+            core.configure_standalone_logs("s", Some(vec!["h0".into(), "h0".into()]))
+                .unwrap_err()
+                .code,
+            "InvalidSelection"
+        );
+        assert_eq!(
+            core.configure_project_logs("s", "p", Some(vec!["h0".into()]))
+                .unwrap_err()
+                .code,
+            "InvalidSelection"
+        );
+        core.configure_standalone_logs("s", None).unwrap();
+        let mut query = standalone_query();
+        query.source_ids = vec![containers[0].short_id.clone()];
+        assert_eq!(
+            core.query_standalone_logs("s", &query).unwrap_err().code,
+            "InvalidSelection"
+        );
+        query.source_ids.clear();
+        query.time_from = Some("invalid".into());
+        assert_eq!(
+            core.query_standalone_logs("s", &query).unwrap_err().code,
+            "InvalidSelection"
+        );
+        query.time_from = Some("2026-01-02T00:00:00Z".into());
+        query.time_to = Some("2026-01-01T00:00:00Z".into());
+        assert_eq!(
+            core.query_standalone_logs("s", &query).unwrap_err().code,
+            "InvalidSelection"
+        );
+    }
+
+    #[test]
+    fn standalone_auto_capacity_resumes_at_64_and_manual_selection_never_follows_names() {
+        let (core, containers) = core_with_standalone();
+        assert!(
+            core.configure_standalone_logs("s", None)
+                .unwrap()
+                .needs_selection
+        );
+        core.sync_project_log_containers("s", containers[..64].to_vec());
+        let at_64 = core
+            .query_standalone_logs("s", &standalone_query())
+            .unwrap();
+        assert!(!at_64.needs_selection);
+        assert_eq!(
+            at_64
+                .sources
+                .iter()
+                .filter(|source| source.selected)
+                .count(),
+            64
+        );
+        core.sync_project_log_containers("s", containers.clone());
+        let at_65 = core
+            .query_standalone_logs("s", &standalone_query())
+            .unwrap();
+        assert!(at_65.needs_selection);
+        assert!(at_65.sources.iter().all(|source| !source.selected));
+        core.sync_project_log_containers("s", containers[..64].to_vec());
+        assert_eq!(
+            core.query_standalone_logs("s", &standalone_query())
+                .unwrap()
+                .sources
+                .iter()
+                .filter(|source| source.selected)
+                .count(),
+            64
+        );
+        core.configure_standalone_logs("s", Some(vec!["h0".into()]))
+            .unwrap();
+        let mut replacement = containers.clone();
+        replacement[0].full_id = "f".repeat(64);
+        replacement[0].handle = "new-h0".into();
+        core.sync_project_log_containers("s", replacement);
+        let replaced = core
+            .query_standalone_logs("s", &standalone_query())
+            .unwrap();
+        assert!(!replaced.needs_selection);
+        assert!(replaced.sources.iter().all(|source| !source.selected));
+        assert!(replaced.sources.iter().any(|source| source.full_id == containers[0].full_id && source.status == "removed"));
+        assert!(
+            replaced
+                .sources
+                .iter()
+                .any(|source| source.full_id == "f".repeat(64)
+                    && source.container_name == containers[0].name)
+        );
+    }
+
+    #[test]
+    fn standalone_deleted_last_container_keeps_exact_retained_identity_and_rejects_late_output() {
+        let (core, containers) = core_with_standalone();
+        core.configure_standalone_logs("s", Some(vec!["h0".into()]))
+            .unwrap();
+        let id = &containers[0].full_id;
+        let time = Utc::now().to_rfc3339();
+        {
+            let mut manager = core.project_logs.lock().unwrap();
+            manager.sources.insert(id.clone(), managed_source(id));
+            manager.receive("s", id, 7, ReaderMessage::Log(log(&time, "before delete")));
+        }
+        core.sync_project_log_containers("s", vec![]);
+        {
+            let mut manager = core.project_logs.lock().unwrap();
+            manager.receive(
+                "s",
+                id,
+                7,
+                ReaderMessage::Log(log(&time, "late obsolete output")),
+            );
+        }
+        let page = core
+            .query_standalone_logs("s", &standalone_query())
+            .unwrap();
+        assert_eq!(page.rows.len(), 1);
+        assert_eq!(page.rows[0].text, "before delete");
+        assert_eq!(page.rows[0].full_id, *id);
+        assert_eq!(page.sources[0].status, "removed");
+        core.stop_project_logs("s").unwrap();
+        assert_eq!(
+            core.query_standalone_logs("s", &standalone_query())
+                .unwrap()
+                .rows
+                .len(),
+            1
+        );
+        assert!(
+            core.query_project_logs("s", &latest_query("p".into()))
+                .unwrap()
+                .rows
+                .is_empty()
+        );
+        core.shutdown();
+        assert_eq!(
+            core.query_standalone_logs("s", &standalone_query())
+                .unwrap_err()
+                .code,
+            "StaleSession"
+        );
+    }
+
+    #[test]
+    fn standalone_retention_expiry_preserves_tail_and_lost_anchor() {
+        let mut manager = ProjectLogManager::default();
+        let old = (Utc::now() - chrono::Duration::days(2)).to_rfc3339();
+        for index in 0..301 {
+            manager.ring.append(
+                LogScope::Standalone,
+                &source("a"),
+                log(&old, &format!("old {index}")),
+            );
+        }
+        let mut query = standalone_query().scoped();
+        query.anchor_row_id = Some("a:1".into());
+        let page = manager.page_in_window(&query, query.time_window().unwrap());
+        assert_eq!(page.total_rows, 300);
+        assert!(page.anchor_lost);
+        assert_eq!(page.rows[0].text, "old 1");
+        manager
+            .ring
+            .append("p", &source("b"), log(&old, "project tail"));
+        assert_eq!(manager.page(&latest_query("p".into())).total_rows, 1);
+    }
+
+    #[test]
+    fn standalone_socket_scope_switch_retires_reader_and_fences_reserved_registration() {
+        let fixture = RecoveryEngine::new(false, false);
+        {
+            let mut state = fixture.core.state.lock().unwrap();
+            let container = state
+                .session
+                .as_mut()
+                .unwrap()
+                .handles
+                .get_mut("h0")
+                .unwrap();
+            container.compose_project = None;
+            container.compose_service = None;
+        }
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        {
+            let mut manager = fixture.core.project_logs.lock().unwrap();
+            manager.session_id = "s".into();
+            manager.start_registration_barrier = Some(barrier.clone());
+        }
+        let configuring = fixture.core.clone();
+        let pending = std::thread::spawn(move || configuring.configure_standalone_logs("s", None));
+        barrier.wait();
+        let old_token =
+            fixture.core.project_logs.lock().unwrap().sources[&fixture.container.full_id].token;
+        fixture.core.configure_project_logs("s", "p", None).unwrap();
+        barrier.wait();
+        pending.join().unwrap().unwrap();
+        let mut manager = fixture.core.project_logs.lock().unwrap();
+        manager.receive(
+            "s",
+            &fixture.container.full_id,
+            old_token,
+            ReaderMessage::Log(log(&Utc::now().to_rfc3339(), "obsolete scope")),
+        );
+        assert_eq!(manager.scope, Some(LogScope::from("p")));
+        assert!(manager.sources.is_empty());
+        assert!(manager.ring.rows.is_empty());
+        drop(manager);
+        assert_eq!(fixture.log_requests(), 0);
+    }
+
+    #[test]
+    fn standalone_quiet_socket_retry_preserves_reader_and_stop_releases_it() {
+        let fixture = RecoveryEngine::new(false, true);
+        {
+            let mut state = fixture.core.state.lock().unwrap();
+            let container = state
+                .session
+                .as_mut()
+                .unwrap()
+                .handles
+                .get_mut("h0")
+                .unwrap();
+            container.compose_project = None;
+            container.compose_service = None;
+        }
+        fixture.core.configure_standalone_logs("s", None).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            let page = fixture
+                .core
+                .query_standalone_logs("s", &standalone_query())
+                .unwrap();
+            if page.sources[0].status == "following" {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        for _ in 0..3 {
+            fixture.core.retry_standalone_logs("s").unwrap();
+        }
+        assert_eq!(fixture.log_requests(), 1);
+        fixture.core.stop_project_logs("s").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while fixture.closed.load(std::sync::atomic::Ordering::SeqCst) != 1 {
+            assert!(
+                Instant::now() < deadline,
+                "server did not observe reader closure"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
 }
+
+#[cfg(all(test, unix))]
+#[path = "docker_standalone_live_tests.rs"]
+mod standalone_live_tests;
