@@ -244,3 +244,41 @@ it('restores a deleted-container incident into an already mounted project histor
   expect(document.querySelector('.incident-detail')).toHaveAttribute('data-incident-sequence', '401');
   expect(document.querySelector('.observation-history')?.scrollTop).toBe(95);
 });
+
+it.each([
+  ['project', 'older'], ['project', 'latest'], ['container', 'older'], ['container', 'latest'],
+] as const)('closes the selected incident when %s history moves to %s and permits a fresh round trip', async (scope, direction) => {
+  const { observed } = incidentFixture();
+  const many = { ...observed, sequence: 602, events: Array.from({ length: 601 }, (_, index) => ({ ...observed.events[0]!, sequence: index + 1 })) };
+  vi.mocked(observationApi.configure).mockResolvedValue(many); vi.mocked(observationApi.read).mockResolvedValue(many);
+  render(<App />); await ready();
+  if (scope === 'project') fireEvent.click(screen.getByRole('treeitem', { name: 'demo 프로젝트' }));
+  fireEvent.click(screen.getByRole('tab', { name: '이력' }));
+  const pageButton = (name: string) => within(document.querySelector<HTMLElement>('.history-event-pages')!).getByRole('button', { name });
+  if (direction === 'latest') fireEvent.click(pageButton('이전 기록'));
+  const original = document.querySelector<HTMLButtonElement>('.history-event-trigger')!;
+  const originalSequence = original.dataset.eventSequence;
+  fireEvent.click(original);
+  await screen.findByRole('button', { name: '사건 상세 닫기' });
+  const paging = pageButton(direction === 'older' ? '이전 기록' : '최신 위치');
+  paging.focus(); fireEvent.click(paging);
+  expect(document.querySelector('.incident-detail')).not.toBeInTheDocument();
+  expect(document.querySelector(`[data-event-sequence="${originalSequence}"]`)).not.toBeInTheDocument();
+  expect(paging).toHaveFocus();
+
+  // Leaving history must not expose a return action for an incident its paging discarded.
+  fireEvent.click(screen.getByRole('tab', { name: scope === 'project' ? '통합 로그' : '로그' }));
+  expect(document.querySelector('.incident-return')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('tab', { name: '이력' }));
+  const next = document.querySelector<HTMLButtonElement>('.history-event-trigger')!;
+  const nextSequence = next.dataset.eventSequence;
+  fireEvent.click(next);
+  await screen.findByRole('button', { name: '사건 상세 닫기' });
+  fireEvent.click(screen.getByRole('button', { name: '전후 5분' }));
+  fireEvent.click(screen.getByRole('button', { name: '현재 진단' }));
+  await waitFor(() => expect(screen.getByRole('tab', { name: '상태 진단' })).toHaveAttribute('aria-selected', 'true'));
+  fireEvent.click(screen.getByRole('button', { name: '사건으로 돌아가기' }));
+  expect(document.querySelector('.incident-detail')).toHaveAttribute('data-incident-sequence', nextSequence);
+  expect(screen.getByRole('button', { name: '전후 5분' })).toHaveAttribute('aria-pressed', 'true');
+  expect(document.querySelector(`[data-event-sequence="${nextSequence}"]`)).toHaveFocus();
+});
