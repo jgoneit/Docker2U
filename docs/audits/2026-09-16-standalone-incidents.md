@@ -2,7 +2,7 @@
 
 작성일: 2026-09-16 (Asia/Seoul)
 
-- 기준 커밋: `a832e9df96e1b2a95583c08acca47c09e1f3dece`
+- 최초 구현 기준: `a832e9df96e1b2a95583c08acca47c09e1f3dece`; 최종 선행 PR 기준: `7dc75ea0a800eebc7e24df6d2b8ba5e7c6328cac`
 - 작업 브랜치: `codex/standalone-incident-v1`
 - 상태: 자동 검사, 최종 네이티브 후보, 실제 Engine 검사를 통과했다. Seal Acceptance와 최종 커밋의 CI·설치 기록은 PR과 로컬 build record에 별도로 결합한다.
 - 이 문서의 `.cache/` 경로는 작업 디렉터리에 보존한 로컬 실행 증거다. 저장소에 해당 원본 로그가 포함된다는 뜻은 아니다.
@@ -30,14 +30,14 @@
 
 | 검사 | 결과 | 증거 |
 | --- | --- | --- |
-| 프런트 전체 | 58개 파일, 886개 테스트 통과 | `.cache/standalone-frontend-all-after.log` |
+| 프런트 전체 | 선행 PR 검사 보강 반영 후 58개 파일, 887개 테스트 통과 | `.cache/standalone-checks/frontend-full-after-rebase.log` |
 | Python native fixture | 79개 테스트 통과, 16.017초 | `python3 -B -m unittest discover -s tests/native-smoke -p 'test_*.py'` 실행 출력 |
 | Rust 전체 최종 실행 | 287개 통과, 실패 0개, 무시 10개; main/doc tests 통과 | `.cache/standalone-rust-tests-final.log` |
 | 신규 브라우저 초기 집중 검사 | 최소 창 한국어·라이트에서 7개 통과 | `.cache/standalone-checks/browser-seven-initial.log` |
 | 브라우저 최종 회귀 | 234개 통과, 4.7분 | `.cache/standalone-checks/browser-regression-final.log` |
 | 실제 Engine 전용 검사 | 1개 통과, 15.09초 | `.cache/standalone-checks/real-engine.log` |
 
-최종 브라우저 실행은 기존 observation·incident·terminal 검사와 독립 컨테이너 검사 7개를 포함한다. 한국어/영어 × 라이트/다크 × 1024×680/1280×800의 8개 조합과 영어·라이트 1600×1000의 1개 조합을 실행했다. 신규 검사는 그룹 선택과 펼침 분리, 그룹·자식 수집 유지, 독립 화면 상태, 사건 기록 고정과 상세 복귀, 삭제·동명 재생성·빈 목록, 재연결, 전체 ID 필터, 로그 비우기·복사 피드백을 확인한다.
+위 234개 브라우저 회귀 실행은 기존 observation·incident·terminal 검사와 독립 컨테이너 검사 7개를 포함한다. 한국어/영어 × 라이트/다크 × 1024×680/1280×800의 8개 조합과 영어·라이트 1600×1000의 1개 조합을 실행했다. 신규 검사는 그룹 선택과 펼침 분리, 그룹·자식 수집 유지, 독립 화면 상태, 사건 기록 고정과 상세 복귀, 삭제·동명 재생성·빈 목록, 재연결, 전체 ID 필터, 로그 비우기·복사 피드백을 확인한다.
 
 프런트 단위 검사에는 jsdom의 canvas 미구현 안내가 출력됐다. 해당 통과 결과는 실제 xterm 또는 WKWebView 렌더링 증거로 사용하지 않는다. Rust의 무시된 10개 검사가 모두 실행됐다는 주장도 하지 않는다. 별도로 실행한 실제 Engine 검사는 아래에 구분한다.
 
@@ -99,6 +99,8 @@
 검사는 사건 전후 2분·사건 anchor 조회가 기존 수집 설정을 유지하는지, 새 ID의 로그가 원래 ID 응답에 섞이지 않는지, Compose를 수집 중에도 독립 보관 자료를 읽을 수 있는지 확인했다. 반대 범위의 ID를 요청했을 때 빈 결과를 반환하는 것도 확인했다. 테스트의 정리 결과는 이번 검사에서 추가한 컨테이너와 변경한 health 상태에 해당하며, 별도 상위 fixture의 최종 정리까지 포함하는 주장은 아니다.
 
 이 결과는 통제된 검사 컨테이너의 실제 health 사건과 보관 조회 증거다. 자연 발생 운영 장애나 모든 장애 유형의 원인 분석을 검증한 것은 아니다. 물리 키보드·IME 입력, 최종 설치 앱 화면, 전체 서비스 장시간 부하 검증으로 확대 해석하지 않는다.
+
+선행 PR의 키보드·측정 검사 보강을 반영한 뒤 기존 browser fixture의 독립 그룹 레이블도 새 이름으로 갱신했다. 제품 소스는 바뀌지 않았다. 전체 브라우저 CI 결과는 최종 커밋의 PR 실행에 결합한다.
 
 ## 최종 네이티브 후보
 
