@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-write-container-terminal"
+description = "Enables the write_container_terminal command without any pre-configured scope."
+commands.allow = ["write_container_terminal"]
+
+[[permission]]
+identifier = "deny-write-container-terminal"
+description = "Denies the write_container_terminal command without any pre-configured scope."
+commands.deny = ["write_container_terminal"]

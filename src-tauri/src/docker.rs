@@ -27,6 +27,8 @@ mod project_logs;
 mod stats;
 #[path = "docker_stream.rs"]
 mod stream;
+#[path = "docker_terminal.rs"]
+mod terminal;
 pub use compose::{
     ComposeAction, ComposeApplyPreview, ComposeOperation, ComposeOperationPreview,
     ComposeOperationRead, ComposeProject, ComposeProjectInput, ComposeProjectPreview,
@@ -39,6 +41,7 @@ pub use observation::{ObservationHold, ObservationRead, ObservationScope};
 pub use project_logs::{ProjectLogPage, ProjectLogQuery};
 pub use stats::StatsSnapshot;
 pub use stream::{LogStreamChunk, LogStreamStarted};
+pub use terminal::{TerminalDescriptor, TerminalEvent, TerminalShell, TerminalSink};
 
 #[cfg(all(test, unix))]
 #[path = "docker_live_compose_apply_test.rs"]
@@ -580,6 +583,7 @@ pub struct Core {
     compose_operations: Arc<Mutex<compose::ComposeOperationManager>>,
     mount_inventory: Arc<Mutex<mounts::MountInventoryManager>>,
     image_exports: Arc<Mutex<image_export::ImageExportManager>>,
+    terminals: Arc<Mutex<terminal::TerminalManager>>,
     #[cfg(test)]
     config: Option<RuntimeConfig>,
     #[cfg(test)]
@@ -714,6 +718,7 @@ impl Core {
             state.session = None;
         }
         self.cancel_observation();
+        self.cancel_all_terminals();
         self.cancel_mount_reads(None);
         self.cancel_all_image_exports_and_wait();
         self.cancel_all_compose_and_wait();
@@ -925,6 +930,7 @@ impl Core {
         };
         // Reserve reconnection before retiring workers so a Busy result cannot
         // stop a still-current background observer or race a new mutation.
+        self.cancel_all_terminals();
         self.cancel_mount_reads(None);
         self.cancel_all_image_exports_and_wait();
         self.cancel_all_compose_and_wait();
@@ -933,7 +939,10 @@ impl Core {
         self.engine_reader.lock().unwrap().take();
         self.cancel_log_stream();
         let mut result = Environment::default();
-        let target = self.diagnose(&mut result);
+        let target = self.diagnose(&mut result).and_then(|target| {
+            let terminal_target = terminal::ExecTarget::new(&target)?;
+            Ok((target, terminal_target))
+        });
         let mut state = self.state.lock().unwrap();
         state.diagnosing = false;
         if state.epoch != epoch {
@@ -943,8 +952,9 @@ impl Core {
             ));
         }
         match target {
-            Ok(target) => {
+            Ok((target, terminal_target)) => {
                 let id = uuid::Uuid::new_v4().to_string();
+                self.terminals.lock().unwrap().bind(&id, terminal_target);
                 result.session_id = Some(id.clone());
                 result.status = "ready".into();
                 result.mutation_allowed = true;
@@ -1273,6 +1283,7 @@ impl Core {
         };
         drop(state);
         if let Ok(snapshot) = &result {
+            self.reconcile_terminals(snapshot);
             self.sync_project_log_inventory(snapshot);
         } else if let Err(error) = &result {
             self.invalidate_observation(id, error);
@@ -1542,6 +1553,7 @@ impl Core {
             session
                 .target
                 .engine_args(&["container", action.name(), &container.full_id]);
+        self.disconnect_terminal_targets(&session.id, std::slice::from_ref(&container.full_id));
         let command = command_label(&session.target.docker, &arguments);
         #[cfg(test)]
         let timeout = self.mutation_timeout.unwrap_or(Duration::from_secs(30));

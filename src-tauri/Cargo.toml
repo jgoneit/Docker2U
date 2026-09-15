@@ -24,7 +24,7 @@ bytes = "1"
 http-body-util = "0.1"
 hyper = { version = "1", default-features = false, features = ["client", "http1"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
-tokio = { version = "1", features = ["net", "rt", "sync", "time"] }
+tokio = { version = "1", features = ["net", "rt", "sync", "time", "io-util", "macros"] }
 tauri-plugin-dialog = "2.7.3"
 sha2 = "0.10"
 

@@ -1116,6 +1116,7 @@ impl Core {
         }
     }
     pub(super) fn invalidate_session_observations(&self, id: &str, error: &ApiError) {
+        self.invalidate_terminals(id, error);
         self.cancel_mount_reads(Some(id));
         self.cancel_compose_session(id);
         let service = self

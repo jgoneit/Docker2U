@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-start-container-terminal"
+description = "Enables the start_container_terminal command without any pre-configured scope."
+commands.allow = ["start_container_terminal"]
+
+[[permission]]
+identifier = "deny-start-container-terminal"
+description = "Denies the start_container_terminal command without any pre-configured scope."
+commands.deny = ["start_container_terminal"]

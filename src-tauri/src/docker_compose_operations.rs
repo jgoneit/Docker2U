@@ -1078,6 +1078,7 @@ impl Core {
             entered.wait();
             release.wait();
         }
+        self.disconnect_compose_terminals(&prepared.session.id, &prepared.project.name, None);
         let process = {
             let state = self.state.lock().unwrap();
             let snapshot = job.snapshot();
@@ -1239,6 +1240,13 @@ impl Core {
             if let Some((entered, release)) = &self.compose_pre_spawn_barriers {
                 entered.wait();
                 release.wait();
+            }
+            if stage.kind == ComposeStageKind::Recreate {
+                self.disconnect_compose_terminals(
+                    &prepared.session.id,
+                    &prepared.project.name,
+                    Some(&stage.services),
+                );
             }
             let started = {
                 // Session retirement and every stage launch share the same short boundary.

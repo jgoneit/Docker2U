@@ -22,6 +22,7 @@ export const incidentMessages = {
   current: { ko: '현재 정보 확인', en: 'Inspect current information' },
   currentHint: { ko: '아래 정보는 현재 상태이며 사건 당시의 기록과 다를 수 있습니다.', en: 'The information below is current and may differ from the incident records.' },
   currentUnavailable: { ko: '현재 목록에서 동일한 컨테이너를 찾을 수 없어 현재 정보로 이동할 수 없습니다.', en: 'The same container is no longer in the current inventory, so current details are unavailable.' },
+  terminal: { ko: '현재 터미널', en: 'Current terminal' },
   diagnostics: { ko: '현재 진단', en: 'Current diagnostics' },
   connectivity: { ko: '현재 접속', en: 'Current connectivity' },
   storage: { ko: '현재 저장소', en: 'Current storage' },

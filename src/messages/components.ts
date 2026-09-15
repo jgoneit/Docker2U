@@ -32,6 +32,7 @@ export const componentMessages = {
   issueStage: { ko: '발생 단계', en: 'Stage' }, issueOrigin: { ko: '출처', en: 'Origin' }, issueCode: { ko: '오류 코드', en: 'Error code' }, issueTime: { ko: '문제 확인 시각', en: 'Issue recorded at' }, noErrorCode: { ko: '코드 없음', en: 'No error code' },
   stageStats: { ko: '자원 조회', en: 'Resource request' },
   stageDetails: { ko: '컨테이너 상세 조회', en: 'Container details request' },
+  tabTerminal: { ko: '터미널', en: 'Terminal' },
   tabStorage: { ko: '저장소', en: 'Storage' },
   tabHistory: { ko: '이력', en: 'History' }, tabLogs: { ko: '로그', en: 'Logs' }, tabDiagnostics: { ko: '상태 진단', en: 'Diagnostics' }, tabConnectivity: { ko: '접속 정보', en: 'Connections' },
   detailTabs: { ko: '컨테이너 상세 보기', en: 'Container detail views' },

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { coreError, type CoreError } from './api';
 import { projectLogApi, type ObservationEvent, type ObservationRead, type ProjectLogPage, type ProjectLogQuery, type ResourcePoint } from './observationApi';
 
-export type IncidentTab = 'diagnostics' | 'connectivity' | 'storage';
+export type IncidentTab = 'terminal' | 'diagnostics' | 'connectivity' | 'storage';
 export type IncidentWindow = 1 | 2 | 5;
 export const INCIDENT_PAGE_SIZE = 160;
 const QUERY_TIMEOUT_MS = 10_000;
