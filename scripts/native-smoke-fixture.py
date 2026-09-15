@@ -93,7 +93,8 @@ def archive_trace(manifest):
     report = {**manifest, "cliEvents": len(events), "rejectedCommands": rejected,
               "dockerExecution": "isolated Python fixture with synthetic Compose state; no real Docker CLI is discovered or invoked",
               "uiReports": ui_reports, "requiredCoverageComplete": expected <= coverage,
-              "observationCoverageComplete": {("worker", name) for name in OBSERVATION_STEPS} <= coverage}
+              "observationCoverageComplete": {("worker", name) for name in OBSERVATION_STEPS} <= coverage,
+              "terminalCoverageComplete": ("worker", "terminal-roundtrip") in coverage}
     write_json(evidence / "report.json", report)
     return report
 
@@ -111,6 +112,14 @@ OBSERVATION_STEPS = {
     "observation-baseline": ["captured native project observation baseline"],
     "observation-restore": ["verified native background collection and restore"],
 }
+
+TERMINAL_FIELDS = {
+    "native terminal connected": {"startRequests", "outputEvents", "outputBytes", "ackedSequence", "running", "screenVisible", "ansiObserved"},
+    "native terminal commands rendered": {"unicodeVisible", "interruptVisible", "sizeVisible", "resizeCols", "resizeRows", "outputEvents", "outputBytes", "ackedSequence"},
+    "native terminal retained across navigation": {"startRequests", "sameEmulator", "switchedContainerId", "hiddenOutputEvents", "retainedOutputVisible"},
+    "native terminal exited": {"status", "exitCode", "startRequests", "outputEvents", "outputBytes", "ackedSequence"},
+}
+TERMINAL_STEPS = {"terminal-roundtrip": [OBSERVATION_STEPS["observation-baseline"][0], *TERMINAL_FIELDS]}
 
 COMPOSE_METADATA_FIELDS = {
     "compose picker": {"kind", "selected"},
@@ -205,6 +214,73 @@ def validate_observation(probe, by_name, attempt, steps, events, manifest):
                    and hidden < row.get("producedAtMs", 0) <= row["timeMs"]
                    and any(receipt["fullId"] == row.get("fullId") and row["producedAtMs"] <= receipt["at"] for receipt in receipts) for row in events):
             raise ValueError("Hidden Core receipts lack owned API output: " + phase)
+
+
+def validate_terminal(by_name, attempt, events, manifest):
+    """Bind rendered fixture evidence to one native exec; never accept raw input."""
+    required = TERMINAL_STEPS["terminal-roundtrip"]
+    if [row["name"] for row in attempt[1:-1]] != required:
+        raise ValueError("Terminal steps are duplicated, unknown, or out of order")
+    validate_observation("observation-baseline", by_name, attempt, attempt, events, manifest)
+    baseline = by_name[required[0]]["detail"]
+    full_id, other_id = (format(number, "064x") for number in (1, 2))
+    values = [by_name[name].get("detail", {}) for name in TERMINAL_FIELDS]
+    connected, commands, retained, exited = values
+    terminal_id = connected.get("terminalId")
+    if not isinstance(terminal_id, str) or not 0 < len(terminal_id) <= 256:
+        raise ValueError("Terminal lacks a bounded native session identifier")
+    previous = None
+    for (name, fields), value in zip(TERMINAL_FIELDS.items(), values):
+        if not isinstance(value, dict) or set(value) != fields | {"sessionId", "terminalId", "fullId"}:
+            raise ValueError("Terminal metadata fields are missing or include unapproved payload")
+        if value["sessionId"] != baseline["sessionId"] or value["terminalId"] != terminal_id or value["fullId"] != full_id:
+            raise ValueError("Terminal changed its native session or full container ID")
+        for key in fields & {"running", "screenVisible", "ansiObserved", "unicodeVisible", "interruptVisible", "sizeVisible", "sameEmulator", "retainedOutputVisible"}:
+            if value[key] is not True:
+                raise ValueError("Terminal lacks rendered evidence: " + key)
+        for key in fields & {"startRequests", "outputEvents", "outputBytes", "ackedSequence", "hiddenOutputEvents", "resizeRows", "resizeCols"}:
+            if type(value[key]) is not int or not 1 <= value[key] <= 2 ** 53 - 1:
+                raise ValueError("Terminal has an invalid native counter: " + key)
+        if "startRequests" in fields and value["startRequests"] != 1:
+            raise ValueError("Terminal unexpectedly requested another exec")
+        if "outputEvents" in fields:
+            if not value["ackedSequence"] <= value["outputEvents"] <= value["outputBytes"]:
+                raise ValueError("Terminal output counters lack native acknowledgement")
+            if previous and (value["outputEvents"] <= previous["outputEvents"] or value["outputBytes"] <= previous["outputBytes"] or value["ackedSequence"] < previous["ackedSequence"]):
+                raise ValueError("Terminal output did not advance across the probe")
+            previous = value
+    if (commands["resizeCols"], commands["resizeRows"]) != (113, 37) or retained["switchedContainerId"] != other_id:
+        raise ValueError("Terminal resize or container navigation was not observed")
+    if exited["status"] != "exited" or type(exited["exitCode"]) is not int or exited["exitCode"] != 7:
+        raise ValueError("Terminal lacks the native process exit status")
+    begin, end = attempt[0]["timeMs"], attempt[-1]["timeMs"]
+    rows = [row for row in events if begin <= row.get("timeMs", 0) <= end and row.get("fullId") == full_id]
+    created = [row for row in rows if row.get("phase") == "api-terminal-created"]
+    started = [row for row in rows if row.get("phase") == "api-terminal-started"]
+    if len(created) != 1 or len(started) != 1:
+        raise ValueError("Terminal lacks exactly one owned native exec creation and upgrade")
+    creation, upgrade = created[0], started[0]
+    exec_id, pid = creation.get("execId"), creation.get("pid")
+    if (not isinstance(exec_id, str) or len(exec_id) != 64 or any(char not in "0123456789abcdef" for char in exec_id)
+            or type(pid) is not int or pid < 1 or (manifest.get("controllerPid") is not None and pid != manifest["controllerPid"])
+            or creation.get("shell") not in ("/bin/sh", "/bin/bash")
+            or upgrade.get("execId") != exec_id or upgrade.get("pid") != pid
+            or not by_name[required[0]]["timeMs"] <= creation["timeMs"] <= upgrade["timeMs"] <= by_name[required[1]]["timeMs"]):
+        raise ValueError("Terminal exec does not belong to the owned native upgrade")
+
+    def native(phase, first, last, **metadata):
+        return any(row.get("phase") == phase and row.get("execId") == exec_id and row.get("pid") == pid
+                   and first <= row.get("timeMs", 0) <= last and all(row.get(key) == value for key, value in metadata.items()) for row in rows)
+
+    connected_at, commands_at, retained_at, exited_at = (by_name[name]["timeMs"] for name in TERMINAL_FIELDS)
+    if not (native("api-terminal-command", connected_at, commands_at, commandKind="echo")
+            and native("api-terminal-interrupted", connected_at, commands_at)
+            and native("api-terminal-resized", connected_at, commands_at, rows=37, cols=113)
+            and native("api-terminal-command", connected_at, commands_at, commandKind="stty-size")
+            and native("api-terminal-command", commands_at, retained_at, commandKind="echo")
+            and native("api-terminal-command", retained_at, exited_at, commandKind="exit")
+            and native("api-terminal-ended", retained_at, exited_at, exitCode=7)):
+        raise ValueError("Terminal rendered steps lack matching native command, resize, interrupt, or exit evidence")
 
 
 def successful_command(events, words, begin, end):
@@ -392,7 +468,7 @@ def validate_ui(manifest, ui, events, now_ms=None):
             pending = (name.removeprefix("started "), index)
         elif name.startswith("passed "):
             probe = name.removeprefix("passed ")
-            if pending is None or pending[0] != probe or probe not in ["search", "connection-clear", "socket", "recovery", "project-recovery", *INSIGHT_STEPS, *OBSERVATION_STEPS]:
+            if pending is None or pending[0] != probe or probe not in ["search", "connection-clear", "socket", "recovery", "project-recovery", *INSIGHT_STEPS, *OBSERVATION_STEPS, *TERMINAL_STEPS]:
                 raise ValueError("UI completion has no matching probe start")
             attempt = steps[pending[1]:index + 1]
             by_name = {row["name"]: row for row in attempt}
@@ -404,6 +480,7 @@ def validate_ui(manifest, ui, events, now_ms=None):
                 "project-recovery": ["injected project configure response failure", "native project retry restored visible logs"],
                 **INSIGHT_STEPS,
                 **OBSERVATION_STEPS,
+                **TERMINAL_STEPS,
             }[probe]
             if not all(name in by_name for name in required):
                 raise ValueError("UI probe is missing required evidence: " + probe)
@@ -457,6 +534,8 @@ def validate_ui(manifest, ui, events, now_ms=None):
                 validate_insights(probe, by_name, attempt, events, start)
             if probe in OBSERVATION_STEPS:
                 validate_observation(probe, by_name, attempt, steps[:index + 1], events, manifest)
+            if probe in TERMINAL_STEPS:
+                validate_terminal(by_name, attempt, events, manifest)
             if probe == "recovery":
                 validate_recovery(by_name, events)
             completed.append(probe)

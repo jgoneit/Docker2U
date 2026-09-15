@@ -694,3 +694,7 @@ async fn run_connected(
         result = control => result,
     }
 }
+
+#[cfg(test)]
+#[path = "docker_terminal_tests.rs"]
+mod tests;

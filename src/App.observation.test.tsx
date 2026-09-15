@@ -30,6 +30,14 @@ beforeEach(() => {
 });
 async function ready() { await screen.findByRole('treeitem', { name: 'web 상세' }); await waitFor(() => expect(screen.getByRole('button', { name: '새로고침' })).toBeEnabled()); }
 
+// Keep accessible-name queries inside the control region. The history deliberately
+// renders 200 event buttons, whose names need not be recomputed to find a tab.
+const detailTabs = () => within(document.querySelector<HTMLElement>('.detail-tabs')!);
+const inventoryTree = () => within(document.querySelector<HTMLElement>('.container-tree')!);
+const incidentControls = () => within(document.querySelector<HTMLElement>('.incident-detail')!);
+const returnControls = () => within(document.querySelector<HTMLElement>('.incident-return')!);
+async function incidentReady() { await waitFor(() => expect(incidentControls().getByRole('button', { name: '사건 상세 닫기' })).toBeVisible()); }
+
 it('preserves checked full IDs when Core publishes new inventory handles without reloading the selected log stream', async () => {
   const next = deferred<ObservationRead>(); vi.mocked(observationApi.read).mockReturnValue(next.promise);
   render(<App />); await ready();
@@ -38,7 +46,7 @@ it('preserves checked full IDs when Core publishes new inventory handles without
   await waitFor(() => expect(observationApi.read).toHaveBeenCalled(), { timeout: 1600 });
   await act(async () => next.resolve(observation(2)));
   expect(screen.getByRole('checkbox', { name: 'web 작업 대상으로 선택' })).toBeChecked();
-  expect(screen.getByRole('treeitem', { name: 'web 상세' })).toHaveAttribute('aria-selected', 'true');
+  expect(inventoryTree().getByRole('treeitem', { name: 'web 상세' })).toHaveAttribute('aria-selected', 'true');
   expect(projectLogApi.configure).toHaveBeenCalledOnce();
   expect(mock.getContainerStats).not.toHaveBeenCalled();
 });
@@ -77,7 +85,7 @@ it('applies same-generation stale inventory after a background failure and block
   await waitFor(() => expect(observationApi.read).toHaveBeenCalled(), { timeout: 2000 });
   await act(async () => next.resolve({ ...observation(), inventory: { ...inventory(), stale: true }, inventoryError: { code: 'CommandFailed', message: 'Inventory unavailable' } }));
   expect(within(screen.getByRole('region', { name: '서비스 복구' })).getByRole('button', { name: '중지' })).toBeDisabled();
-  expect(screen.getByRole('treeitem', { name: 'web 상세' })).toBeVisible();
+  expect(inventoryTree().getByRole('treeitem', { name: 'web 상세' })).toBeVisible();
 });
 
 it('accepts a manual inventory response already published by the Core display poll', async () => {
@@ -98,12 +106,12 @@ it('keeps the project view and collection scope when its last selected container
   const page = { sessionId: 'one', project: 'demo', revision: 1, maxSequence: 0, rows: [], sources: [], totalRows: 0, offset: 0, droppedRows: 0, needsSelection: false, error: null, retainedFrom: null, retainedTo: null };
   vi.mocked(projectLogApi.configure).mockResolvedValue(page); vi.mocked(projectLogApi.query).mockResolvedValue(page);
   render(<App />); await ready();
-  fireEvent.click(screen.getByRole('treeitem', { name: 'demo 프로젝트' }));
+  fireEvent.click(inventoryTree().getByRole('treeitem', { name: 'demo 프로젝트' }));
   await waitFor(() => expect(projectLogApi.configure).toHaveBeenCalledWith('one', 'demo', null));
   await waitFor(() => expect(observationApi.read).toHaveBeenCalled(), { timeout: 2000 });
   await act(async () => next.resolve({ ...observation(2), scope: { kind: 'project', name: 'demo' }, inventory: { ...inventory(2), containers: [] } }));
-  expect(screen.getByRole('treeitem', { name: 'demo 프로젝트' })).toHaveAttribute('aria-selected', 'true');
-  expect(screen.getByRole('tab', { name: '통합 로그' })).toBeVisible();
+  expect(inventoryTree().getByRole('treeitem', { name: 'demo 프로젝트' })).toHaveAttribute('aria-selected', 'true');
+  expect(detailTabs().getByRole('tab', { name: '통합 로그' })).toBeVisible();
   expect(screen.getByRole('heading', { name: '프로젝트 · demo' })).toBeVisible();
 });
 
@@ -142,28 +150,28 @@ function incidentFixture() {
 }
 async function openIncident() {
   await ready();
-  fireEvent.click(screen.getByRole('treeitem', { name: 'demo 프로젝트' }));
-  fireEvent.click(screen.getByRole('tab', { name: '이력' }));
+  fireEvent.click(inventoryTree().getByRole('treeitem', { name: 'demo 프로젝트' }));
+  fireEvent.click(detailTabs().getByRole('tab', { name: '이력' }));
   const trigger = document.querySelector<HTMLButtonElement>('.history-event-trigger')!;
   fireEvent.click(trigger);
-  await screen.findByRole('button', { name: '사건 상세 닫기' });
+  await incidentReady();
   return trigger;
 }
 it('returns from current details to the frozen incident and restores its trigger without changing collection', async () => {
   incidentFixture(); render(<App />); await openIncident();
   await waitFor(() => expect(projectLogApi.query).toHaveBeenCalledWith('one', 'demo', expect.objectContaining({ sourceIds: [container.fullId], anchorTime: expect.any(String), timeFrom: expect.any(String) })));
   const collectionCalls = vi.mocked(projectLogApi.configure).mock.calls.length;
-  fireEvent.click(screen.getByRole('button', { name: '전후 5분' }));
-  await waitFor(() => expect(screen.getByRole('button', { name: '전후 5분' })).toHaveAttribute('aria-pressed', 'true'));
-  await waitFor(() => expect(screen.getByRole('button', { name: '현재 진단' })).toBeEnabled());
-  fireEvent.click(screen.getByRole('button', { name: '현재 진단' }));
-  await waitFor(() => expect(screen.getByRole('tab', { name: '상태 진단' })).toHaveAttribute('aria-selected', 'true'));
-  fireEvent.click(screen.getByRole('button', { name: '사건으로 돌아가기' }));
-  await waitFor(() => expect(screen.getByRole('tab', { name: '이력' })).toHaveAttribute('aria-selected', 'true'));
-  expect(screen.getByRole('button', { name: '전후 5분' })).toHaveAttribute('aria-pressed', 'true');
+  fireEvent.click(incidentControls().getByRole('button', { name: '전후 5분' }));
+  await waitFor(() => expect(incidentControls().getByRole('button', { name: '전후 5분' })).toHaveAttribute('aria-pressed', 'true'));
+  await waitFor(() => expect(incidentControls().getByRole('button', { name: '현재 진단' })).toBeEnabled());
+  fireEvent.click(incidentControls().getByRole('button', { name: '현재 진단' }));
+  await waitFor(() => expect(detailTabs().getByRole('tab', { name: '상태 진단' })).toHaveAttribute('aria-selected', 'true'));
+  fireEvent.click(returnControls().getByRole('button', { name: '사건으로 돌아가기' }));
+  await waitFor(() => expect(detailTabs().getByRole('tab', { name: '이력' })).toHaveAttribute('aria-selected', 'true'));
+  expect(incidentControls().getByRole('button', { name: '전후 5분' })).toHaveAttribute('aria-pressed', 'true');
   expect(document.querySelector('.history-event-trigger')).toHaveFocus();
   expect(projectLogApi.configure).toHaveBeenCalledTimes(collectionCalls);
-  fireEvent.click(screen.getByRole('button', { name: '사건 상세 닫기' }));
+  fireEvent.click(incidentControls().getByRole('button', { name: '사건 상세 닫기' }));
   expect(document.querySelector('.history-event-trigger')).toHaveFocus();
   expect(document.querySelector('.incident-detail')).not.toBeInTheDocument();
 });
@@ -171,15 +179,15 @@ it('queries an old event ID after same-name recreation and disables current-deta
   const { observed } = incidentFixture();
   const next = deferred<ObservationRead>(); vi.mocked(observationApi.read).mockReturnValue(next.promise);
   render(<App />); await ready();
-  fireEvent.click(screen.getByRole('treeitem', { name: 'demo 프로젝트' }));
+  fireEvent.click(inventoryTree().getByRole('treeitem', { name: 'demo 프로젝트' }));
   await waitFor(() => expect(observationApi.read).toHaveBeenCalled(), { timeout: 2000 });
   await act(async () => next.resolve({ ...observed, sequence: 12, inventory: { ...inventory(2), containers: [{ ...container, fullId: 'b'.repeat(64), shortId: 'b'.repeat(12), handle: 'hb-2' }] } }));
-  fireEvent.click(screen.getByRole('tab', { name: '이력' }));
+  fireEvent.click(detailTabs().getByRole('tab', { name: '이력' }));
   fireEvent.click(document.querySelector('.history-event-trigger')!);
   await waitFor(() => expect(projectLogApi.query).toHaveBeenCalledWith('one', 'demo', expect.objectContaining({ sourceIds: [container.fullId], timeFrom: expect.any(String) })));
-  expect(screen.getByRole('button', { name: '현재 진단' })).toBeDisabled();
-  expect(screen.getByRole('button', { name: '현재 접속' })).toBeDisabled();
-  expect(screen.getByRole('button', { name: '현재 저장소' })).toBeDisabled();
+  expect(incidentControls().getByRole('button', { name: '현재 진단' })).toBeDisabled();
+  expect(incidentControls().getByRole('button', { name: '현재 접속' })).toBeDisabled();
+  expect(incidentControls().getByRole('button', { name: '현재 저장소' })).toBeDisabled();
 });
 it('clears incident and return state on reconnect and ignores the old pending query', async () => {
   const { page } = incidentFixture();
@@ -198,8 +206,8 @@ it('does not restore a previous-session history cursor after reconnect unmount c
   const many = { ...observed, sequence: 401, events: Array.from({ length: 400 }, (_, index) => ({ ...observed.events[0]!, sequence: index + 1 })) };
   vi.mocked(observationApi.configure).mockResolvedValue(many); vi.mocked(observationApi.read).mockResolvedValue(many);
   render(<App />); await ready();
-  fireEvent.click(screen.getByRole('treeitem', { name: 'demo 프로젝트' }));
-  fireEvent.click(screen.getByRole('tab', { name: '이력' }));
+  fireEvent.click(inventoryTree().getByRole('treeitem', { name: 'demo 프로젝트' }));
+  fireEvent.click(detailTabs().getByRole('tab', { name: '이력' }));
   fireEvent.click(screen.getByRole('button', { name: '이전 기록' }));
   expect(document.querySelector('.history-event-trigger')).toHaveAttribute('data-event-sequence', '200');
   const history = document.querySelector<HTMLElement>('.observation-history')!;
@@ -212,8 +220,8 @@ it('does not restore a previous-session history cursor after reconnect unmount c
   vi.mocked(observationApi.configure).mockResolvedValue(fresh); vi.mocked(observationApi.read).mockResolvedValue(fresh);
   fireEvent.click(screen.getByRole('button', { name: '다시 연결' }));
   await ready();
-  fireEvent.click(screen.getByRole('treeitem', { name: 'demo 프로젝트' }));
-  fireEvent.click(screen.getByRole('tab', { name: '이력' }));
+  fireEvent.click(inventoryTree().getByRole('treeitem', { name: 'demo 프로젝트' }));
+  fireEvent.click(detailTabs().getByRole('tab', { name: '이력' }));
   expect(document.querySelector('.history-event-trigger')).toHaveAttribute('data-event-sequence', '300');
   expect(document.querySelector('.observation-history')?.scrollTop).toBe(0);
 });
@@ -224,22 +232,23 @@ it('restores a deleted-container incident into an already mounted project histor
   const next = deferred<ObservationRead>();
   vi.mocked(observationApi.configure).mockResolvedValue(many); vi.mocked(observationApi.read).mockReturnValue(next.promise);
   render(<App />); await ready();
-  fireEvent.click(screen.getByRole('treeitem', { name: 'demo 프로젝트' }));
-  fireEvent.click(screen.getByRole('tab', { name: '이력' }));
+  fireEvent.click(inventoryTree().getByRole('treeitem', { name: 'demo 프로젝트' }));
+  fireEvent.click(detailTabs().getByRole('tab', { name: '이력' }));
   fireEvent.click(screen.getByRole('button', { name: '이전 기록' }));
   expect(document.querySelector('.history-event-trigger')).toHaveAttribute('data-event-sequence', '201');
-  fireEvent.click(screen.getByRole('treeitem', { name: 'web 상세' }));
-  fireEvent.click(screen.getByRole('tab', { name: '이력' }));
+  fireEvent.click(inventoryTree().getByRole('treeitem', { name: 'web 상세' }));
+  fireEvent.click(detailTabs().getByRole('tab', { name: '이력' }));
   fireEvent.click(document.querySelector('.history-event-trigger')!);
-  await screen.findByRole('button', { name: '사건 상세 닫기' });
+  await incidentReady();
   const history = document.querySelector<HTMLElement>('.observation-history')!;
   history.scrollTop = 95; fireEvent.scroll(history);
-  fireEvent.click(screen.getByRole('button', { name: '현재 진단' }));
-  await waitFor(() => expect(screen.getByRole('tab', { name: '상태 진단' })).toHaveAttribute('aria-selected', 'true'));
+  fireEvent.click(incidentControls().getByRole('button', { name: '현재 진단' }));
+  await waitFor(() => expect(detailTabs().getByRole('tab', { name: '상태 진단' })).toHaveAttribute('aria-selected', 'true'));
+  fireEvent(document, new Event('visibilitychange'));
   await waitFor(() => expect(observationApi.read).toHaveBeenCalled(), { timeout: 2000 });
   await act(async () => next.resolve({ ...many, sequence: 403, inventory: { ...inventory(2), containers: [] } }));
   expect(document.querySelector('.history-event-trigger')).toHaveAttribute('data-event-sequence', '201');
-  fireEvent.click(screen.getByRole('button', { name: '사건으로 돌아가기' }));
+  fireEvent.click(returnControls().getByRole('button', { name: '사건으로 돌아가기' }));
   expect(document.querySelector('[data-event-sequence="401"]')).toHaveFocus();
   expect(document.querySelector('.incident-detail')).toHaveAttribute('data-incident-sequence', '401');
   expect(document.querySelector('.observation-history')?.scrollTop).toBe(95);
@@ -250,16 +259,16 @@ it.each([
 ] as const)('closes the selected incident when %s history moves to %s and permits a fresh round trip', async (scope, direction) => {
   const { observed } = incidentFixture();
   const many = { ...observed, sequence: 602, events: Array.from({ length: 601 }, (_, index) => ({ ...observed.events[0]!, sequence: index + 1 })) };
-  vi.mocked(observationApi.configure).mockResolvedValue(many); vi.mocked(observationApi.read).mockResolvedValue(many);
+  vi.mocked(observationApi.configure).mockResolvedValue(many); vi.mocked(observationApi.read).mockReturnValue(deferred<ObservationRead>().promise);
   render(<App />); await ready();
-  if (scope === 'project') fireEvent.click(screen.getByRole('treeitem', { name: 'demo 프로젝트' }));
-  fireEvent.click(screen.getByRole('tab', { name: '이력' }));
+  if (scope === 'project') fireEvent.click(inventoryTree().getByRole('treeitem', { name: 'demo 프로젝트' }));
+  fireEvent.click(detailTabs().getByRole('tab', { name: '이력' }));
   const pageButton = (name: string) => within(document.querySelector<HTMLElement>('.history-event-pages')!).getByRole('button', { name });
   if (direction === 'latest') fireEvent.click(pageButton('이전 기록'));
   const original = document.querySelector<HTMLButtonElement>('.history-event-trigger')!;
   const originalSequence = original.dataset.eventSequence;
   fireEvent.click(original);
-  await screen.findByRole('button', { name: '사건 상세 닫기' });
+  await incidentReady();
   const paging = pageButton(direction === 'older' ? '이전 기록' : '최신 위치');
   paging.focus(); fireEvent.click(paging);
   expect(document.querySelector('.incident-detail')).not.toBeInTheDocument();
@@ -267,18 +276,18 @@ it.each([
   expect(paging).toHaveFocus();
 
   // Leaving history must not expose a return action for an incident its paging discarded.
-  fireEvent.click(screen.getByRole('tab', { name: scope === 'project' ? '통합 로그' : '로그' }));
+  fireEvent.click(detailTabs().getByRole('tab', { name: scope === 'project' ? '통합 로그' : '로그' }));
   expect(document.querySelector('.incident-return')).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole('tab', { name: '이력' }));
+  fireEvent.click(detailTabs().getByRole('tab', { name: '이력' }));
   const next = document.querySelector<HTMLButtonElement>('.history-event-trigger')!;
   const nextSequence = next.dataset.eventSequence;
   fireEvent.click(next);
-  await screen.findByRole('button', { name: '사건 상세 닫기' });
-  fireEvent.click(screen.getByRole('button', { name: '전후 5분' }));
-  fireEvent.click(screen.getByRole('button', { name: '현재 진단' }));
-  await waitFor(() => expect(screen.getByRole('tab', { name: '상태 진단' })).toHaveAttribute('aria-selected', 'true'));
-  fireEvent.click(screen.getByRole('button', { name: '사건으로 돌아가기' }));
+  await incidentReady();
+  fireEvent.click(incidentControls().getByRole('button', { name: '전후 5분' }));
+  fireEvent.click(incidentControls().getByRole('button', { name: '현재 진단' }));
+  await waitFor(() => expect(detailTabs().getByRole('tab', { name: '상태 진단' })).toHaveAttribute('aria-selected', 'true'));
+  fireEvent.click(returnControls().getByRole('button', { name: '사건으로 돌아가기' }));
   expect(document.querySelector('.incident-detail')).toHaveAttribute('data-incident-sequence', nextSequence);
-  expect(screen.getByRole('button', { name: '전후 5분' })).toHaveAttribute('aria-pressed', 'true');
+  expect(incidentControls().getByRole('button', { name: '전후 5분' })).toHaveAttribute('aria-pressed', 'true');
   expect(document.querySelector(`[data-event-sequence="${nextSequence}"]`)).toHaveFocus();
 });
