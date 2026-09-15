@@ -1,6 +1,37 @@
 import { api, type ContainerList } from '../api';
-import { observationApi, projectLogApi, type ObservationRead, type ProjectLogPage, type ProjectLogRow } from '../observationApi';
+import { observationApi, projectLogApi, type ObservationRead, type ProjectLogPage, type ProjectLogQuery, type ProjectLogRow } from '../observationApi';
 import type { ProjectFilter } from '../projects';
+
+function timestampNanos(value: string): bigint | null {
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/.exec(value);
+  if (!match) return null;
+  const seconds = Date.parse(`${match[1]}${match[3]}`);
+  if (!Number.isFinite(seconds)) return null;
+  const nanos = BigInt(seconds) * 1_000_000n + BigInt((match[2] ?? '').padEnd(9, '0'));
+  return nanos < -(2n ** 63n) || nanos > 2n ** 63n - 1n ? null : nanos;
+}
+
+/** Mirror retained-log queries without starting or switching fixture collection. */
+export function queryObservationFixtureLogs(result: ProjectLogPage, query: ProjectLogQuery): ProjectLogPage {
+  const invalid = () => { throw { code: 'InvalidSelection', message: 'Invalid log time selection.' }; };
+  const parseBound = (value: string | null | undefined) => value == null ? null : timestampNanos(value) ?? invalid();
+  const from = parseBound(query.timeFrom), to = parseBound(query.timeTo), at = parseBound(query.anchorTime);
+  if ((from !== null && to !== null && from > to) || (at !== null && ((from !== null && at < from) || (to !== null && at > to)))) invalid();
+  const baseline = result.rows.filter(row => (!query.sourceIds.length || query.sourceIds.includes(row.sourceId)) && row.text.toLowerCase().includes(query.keyword.toLowerCase()) && (query.throughSequence === null || row.sequence <= query.throughSequence) && (query.afterSequence == null || row.sequence > query.afterSequence));
+  const rowTime = (row: ProjectLogRow) => (row.timestamp ? timestampNanos(row.timestamp) : null) ?? timestampNanos(row.receivedAt)!;
+  const rows = baseline.filter(row => (from === null || rowTime(row) >= from) && (to === null || rowTime(row) <= to));
+  let offset = query.offset === null ? Math.max(0, rows.length - query.limit) : query.offset;
+  if (query.anchorRowId) { const index = rows.findIndex(row => row.rowId === query.anchorRowId); if (index >= 0) offset = index; }
+  if (at !== null && query.offset === null && !query.anchorRowId && rows.length) {
+    const distance = (row: ProjectLogRow) => { const delta = rowTime(row) - at; return delta < 0n ? -delta : delta; };
+    const nearest = rows.reduce((best, row, index) => distance(row) < distance(rows[best]!) ? index : best, 0);
+    offset = Math.min(Math.max(0, nearest - Math.floor(query.limit / 2)), Math.max(0, rows.length - query.limit));
+  }
+  const hasTimeSelection = from !== null || to !== null || at !== null;
+  const effectiveTime = (row: ProjectLogRow | undefined) => row ? (row.timestamp && timestampNanos(row.timestamp) !== null ? row.timestamp : row.receivedAt) : null;
+  return { ...result, rows: rows.slice(offset, offset + query.limit), offset, totalRows: rows.length, anchorLost: !!query.anchorRowId && !rows.some(row => row.rowId === query.anchorRowId),
+    ...(hasTimeSelection ? { retainedFrom: effectiveTime(baseline[0]), retainedTo: effectiveTime(baseline.at(-1)) } : {}) };
+}
 
 /** Development-only transport fixture. It never invokes native commands or Docker. */
 export function installObservationFixture() {
@@ -72,10 +103,7 @@ export function installObservationFixture() {
     },
     query: async (sessionId, project, query) => {
       count('queryLogs'); const result = await logs(sessionId, project);
-      const rows = result.rows.filter(row => (!query.sourceIds.length || query.sourceIds.includes(row.sourceId)) && row.text.toLowerCase().includes(query.keyword.toLowerCase()) && (query.throughSequence === null || row.sequence <= query.throughSequence) && (query.afterSequence == null || row.sequence > query.afterSequence));
-      let offset = query.offset === null ? Math.max(0, rows.length - query.limit) : query.offset;
-      if (query.anchorRowId) { const index = rows.findIndex(row => row.rowId === query.anchorRowId); if (index >= 0) offset = index; }
-      return { ...result, rows: rows.slice(offset, offset + query.limit), offset, totalRows: rows.length, anchorLost: !!query.anchorRowId && !rows.some(row => row.rowId === query.anchorRowId) };
+      return queryObservationFixtureLogs(result, query);
     },
     stop: async () => { count('stopLogs'); configuredProject = ''; },
     retry: async (sessionId: string) => { count('retryLogs'); if (!configuredProject) throw new Error('No configured project'); return logs(sessionId, configuredProject); },

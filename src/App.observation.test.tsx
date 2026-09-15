@@ -4,6 +4,7 @@ import App from './App';
 import { api, type Container, type ContainerList, type Environment } from './api';
 import { observationApi, projectLogApi, type ObservationRead } from './observationApi';
 import { installSnapshotStreams } from './test/snapshotStreams';
+import { containerDetailsFixture } from './test/containerDetailsFixture';
 
 vi.mock('./api', async importOriginal => ({ ...await importOriginal<typeof import('./api')>(), api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), startLogStream: vi.fn(), readLogStream: vi.fn(), stopLogStream: vi.fn(), getContainerStats: vi.fn(), getContainerDetails: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() } }));
 vi.mock('./observationApi', async importOriginal => ({ ...await importOriginal<typeof import('./observationApi')>(), observationApi: { available: vi.fn(() => true), configure: vi.fn(), read: vi.fn(), hold: vi.fn(), release: vi.fn() }, projectLogApi: { configure: vi.fn(), query: vi.fn(), retry: vi.fn(), stop: vi.fn() } }));
@@ -126,4 +127,120 @@ it.each(['events', 'configure', 'query'] as const)('requires Reconnect immediate
   await waitFor(() => expect(within(screen.getByRole('region', { name: '서비스 복구' })).getByRole('button', { name: '중지' })).toBeEnabled());
   expect(document.querySelector('.connection-status')).toHaveTextContent('연결됨');
   expect(mock.mutateContainer).not.toHaveBeenCalled(); expect(mock.mutateContainers).not.toHaveBeenCalled();
+});
+
+
+function incidentFixture() {
+  const at = new Date().toISOString();
+  const event = { sequence: 10, fullId: container.fullId, name: container.name, composeProject: 'demo', composeService: 'web', kind: 'oom', occurredAt: at, observedAt: at, detail: null };
+  const observed: ObservationRead = { ...observation(), events: [event], resources: [{ sequence: 11, fullId: container.fullId, sampledAt: at, cpuPercent: 42, memoryUsageBytes: 1024, memoryLimitBytes: 4096, available: true }] };
+  const page = { sessionId: 'one', project: 'demo', revision: 1, maxSequence: 5, rows: [{ rowId: 'incident-row', sequence: 5, sourceId: container.fullId, fullId: container.fullId, serviceName: 'web', containerName: 'web', timestamp: at, receivedAt: at, pipe: 'stdout' as const, text: 'retained incident output', truncated: false }], sources: [], totalRows: 1, offset: 0, droppedRows: 0, needsSelection: false, error: null, retainedFrom: at, retainedTo: at };
+  vi.mocked(observationApi.configure).mockResolvedValue(observed); vi.mocked(observationApi.read).mockResolvedValue(observed);
+  vi.mocked(projectLogApi.configure).mockResolvedValue(page); vi.mocked(projectLogApi.query).mockResolvedValue(page);
+  mock.getContainerDetails.mockImplementation(async (sessionId, generation) => containerDetailsFixture(container, { ...inventory(generation), sessionId }));
+  return { observed, page };
+}
+async function openIncident() {
+  await ready();
+  fireEvent.click(screen.getByRole('treeitem', { name: 'demo 프로젝트' }));
+  fireEvent.click(screen.getByRole('tab', { name: '이력' }));
+  const trigger = document.querySelector<HTMLButtonElement>('.history-event-trigger')!;
+  fireEvent.click(trigger);
+  await screen.findByRole('button', { name: '사건 상세 닫기' });
+  return trigger;
+}
+it('returns from current details to the frozen incident and restores its trigger without changing collection', async () => {
+  incidentFixture(); render(<App />); await openIncident();
+  await waitFor(() => expect(projectLogApi.query).toHaveBeenCalledWith('one', 'demo', expect.objectContaining({ sourceIds: [container.fullId], anchorTime: expect.any(String), timeFrom: expect.any(String) })));
+  const collectionCalls = vi.mocked(projectLogApi.configure).mock.calls.length;
+  fireEvent.click(screen.getByRole('button', { name: '전후 5분' }));
+  await waitFor(() => expect(screen.getByRole('button', { name: '전후 5분' })).toHaveAttribute('aria-pressed', 'true'));
+  await waitFor(() => expect(screen.getByRole('button', { name: '현재 진단' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('button', { name: '현재 진단' }));
+  await waitFor(() => expect(screen.getByRole('tab', { name: '상태 진단' })).toHaveAttribute('aria-selected', 'true'));
+  fireEvent.click(screen.getByRole('button', { name: '사건으로 돌아가기' }));
+  await waitFor(() => expect(screen.getByRole('tab', { name: '이력' })).toHaveAttribute('aria-selected', 'true'));
+  expect(screen.getByRole('button', { name: '전후 5분' })).toHaveAttribute('aria-pressed', 'true');
+  expect(document.querySelector('.history-event-trigger')).toHaveFocus();
+  expect(projectLogApi.configure).toHaveBeenCalledTimes(collectionCalls);
+  fireEvent.click(screen.getByRole('button', { name: '사건 상세 닫기' }));
+  expect(document.querySelector('.history-event-trigger')).toHaveFocus();
+  expect(document.querySelector('.incident-detail')).not.toBeInTheDocument();
+});
+it('queries an old event ID after same-name recreation and disables current-detail links', async () => {
+  const { observed } = incidentFixture();
+  const next = deferred<ObservationRead>(); vi.mocked(observationApi.read).mockReturnValue(next.promise);
+  render(<App />); await ready();
+  fireEvent.click(screen.getByRole('treeitem', { name: 'demo 프로젝트' }));
+  await waitFor(() => expect(observationApi.read).toHaveBeenCalled(), { timeout: 2000 });
+  await act(async () => next.resolve({ ...observed, sequence: 12, inventory: { ...inventory(2), containers: [{ ...container, fullId: 'b'.repeat(64), shortId: 'b'.repeat(12), handle: 'hb-2' }] } }));
+  fireEvent.click(screen.getByRole('tab', { name: '이력' }));
+  fireEvent.click(document.querySelector('.history-event-trigger')!);
+  await waitFor(() => expect(projectLogApi.query).toHaveBeenCalledWith('one', 'demo', expect.objectContaining({ sourceIds: [container.fullId], timeFrom: expect.any(String) })));
+  expect(screen.getByRole('button', { name: '현재 진단' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: '현재 접속' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: '현재 저장소' })).toBeDisabled();
+});
+it('clears incident and return state on reconnect and ignores the old pending query', async () => {
+  const { page } = incidentFixture();
+  const pending = deferred<typeof page>();
+  vi.mocked(projectLogApi.query).mockImplementation(async (_id, _project, query) => query.timeFrom ? pending.promise : page);
+  render(<App />); await openIncident();
+  fireEvent.click(screen.getByRole('button', { name: '다시 연결' }));
+  await ready();
+  await act(async () => pending.resolve(page));
+  expect(document.querySelector('.incident-detail')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: '사건으로 돌아가기' })).not.toBeInTheDocument();
+});
+
+it('does not restore a previous-session history cursor after reconnect unmount cleanup', async () => {
+  const { observed } = incidentFixture();
+  const many = { ...observed, sequence: 401, events: Array.from({ length: 400 }, (_, index) => ({ ...observed.events[0]!, sequence: index + 1 })) };
+  vi.mocked(observationApi.configure).mockResolvedValue(many); vi.mocked(observationApi.read).mockResolvedValue(many);
+  render(<App />); await ready();
+  fireEvent.click(screen.getByRole('treeitem', { name: 'demo 프로젝트' }));
+  fireEvent.click(screen.getByRole('tab', { name: '이력' }));
+  fireEvent.click(screen.getByRole('button', { name: '이전 기록' }));
+  expect(document.querySelector('.history-event-trigger')).toHaveAttribute('data-event-sequence', '200');
+  const history = document.querySelector<HTMLElement>('.observation-history')!;
+  history.scrollTop = 85; fireEvent.scroll(history);
+  const fresh = { ...observed, sessionId: 'two', inventory: { ...inventory(), sessionId: 'two' }, sequence: 301, events: [{ ...observed.events[0]!, sequence: 300 }] };
+  mock.getEnvironment.mockResolvedValue({ status: 'ready', sessionId: 'two', contextName: 'local', endpoint: 'unix:///fixture', engineId: 'engine', mutationAllowed: true, error: null, diagnostics: [] } as unknown as Environment);
+  mock.listContainers.mockResolvedValue({ ...inventory(), sessionId: 'two' });
+  vi.mocked(projectLogApi.configure).mockResolvedValue({ sessionId: 'two', project: 'demo', revision: 1, maxSequence: 0, rows: [], sources: [], totalRows: 0, offset: 0, droppedRows: 0, needsSelection: false, error: null, retainedFrom: null, retainedTo: null });
+  vi.mocked(projectLogApi.query).mockImplementation(async () => ({ sessionId: 'two', project: 'demo', revision: 1, maxSequence: 0, rows: [], sources: [], totalRows: 0, offset: 0, droppedRows: 0, needsSelection: false, error: null, retainedFrom: null, retainedTo: null }));
+  vi.mocked(observationApi.configure).mockResolvedValue(fresh); vi.mocked(observationApi.read).mockResolvedValue(fresh);
+  fireEvent.click(screen.getByRole('button', { name: '다시 연결' }));
+  await ready();
+  fireEvent.click(screen.getByRole('treeitem', { name: 'demo 프로젝트' }));
+  fireEvent.click(screen.getByRole('tab', { name: '이력' }));
+  expect(document.querySelector('.history-event-trigger')).toHaveAttribute('data-event-sequence', '300');
+  expect(document.querySelector('.observation-history')?.scrollTop).toBe(0);
+});
+
+it('restores a deleted-container incident into an already mounted project history', async () => {
+  const { observed } = incidentFixture();
+  const many = { ...observed, sequence: 402, events: Array.from({ length: 401 }, (_, index) => ({ ...observed.events[0]!, sequence: index + 1 })) };
+  const next = deferred<ObservationRead>();
+  vi.mocked(observationApi.configure).mockResolvedValue(many); vi.mocked(observationApi.read).mockReturnValue(next.promise);
+  render(<App />); await ready();
+  fireEvent.click(screen.getByRole('treeitem', { name: 'demo 프로젝트' }));
+  fireEvent.click(screen.getByRole('tab', { name: '이력' }));
+  fireEvent.click(screen.getByRole('button', { name: '이전 기록' }));
+  expect(document.querySelector('.history-event-trigger')).toHaveAttribute('data-event-sequence', '201');
+  fireEvent.click(screen.getByRole('treeitem', { name: 'web 상세' }));
+  fireEvent.click(screen.getByRole('tab', { name: '이력' }));
+  fireEvent.click(document.querySelector('.history-event-trigger')!);
+  await screen.findByRole('button', { name: '사건 상세 닫기' });
+  const history = document.querySelector<HTMLElement>('.observation-history')!;
+  history.scrollTop = 95; fireEvent.scroll(history);
+  fireEvent.click(screen.getByRole('button', { name: '현재 진단' }));
+  await waitFor(() => expect(screen.getByRole('tab', { name: '상태 진단' })).toHaveAttribute('aria-selected', 'true'));
+  await waitFor(() => expect(observationApi.read).toHaveBeenCalled(), { timeout: 2000 });
+  await act(async () => next.resolve({ ...many, sequence: 403, inventory: { ...inventory(2), containers: [] } }));
+  expect(document.querySelector('.history-event-trigger')).toHaveAttribute('data-event-sequence', '201');
+  fireEvent.click(screen.getByRole('button', { name: '사건으로 돌아가기' }));
+  expect(document.querySelector('[data-event-sequence="401"]')).toHaveFocus();
+  expect(document.querySelector('.incident-detail')).toHaveAttribute('data-incident-sequence', '401');
+  expect(document.querySelector('.observation-history')?.scrollTop).toBe(95);
 });

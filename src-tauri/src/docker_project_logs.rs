@@ -1737,6 +1737,300 @@ mod tests {
             assert_eq!(query.after_sequence, expected);
         }
     }
+
+    #[test]
+    fn incident_time_window_includes_boundaries_duplicates_and_received_time_fallback() {
+        let mut manager = ProjectLogManager::default();
+        let now = Utc::now();
+        let from = now.to_rfc3339();
+        let to = (now + chrono::Duration::nanoseconds(2)).to_rfc3339();
+        for (delta, text) in [
+            (-1, "before"),
+            (0, "first"),
+            (0, "duplicate"),
+            (2, "last"),
+            (3, "after"),
+        ] {
+            manager.ring.append(
+                "p",
+                &source("a"),
+                log(
+                    &(now + chrono::Duration::nanoseconds(delta)).to_rfc3339(),
+                    text,
+                ),
+            );
+        }
+        let mut fallback = log(&from, "received");
+        fallback.timestamp = None;
+        fallback.received_at = (now + chrono::Duration::nanoseconds(1)).to_rfc3339();
+        manager.ring.append("p", &source("a"), fallback);
+        let mut query = latest_query("p".into());
+        query.time_from = Some(from.clone());
+        query.time_to = Some(to.clone());
+        query.anchor_time = Some(from);
+        query.limit = 2;
+        let first = manager.page(&query);
+        assert_eq!(first.total_rows, 4);
+        assert_eq!(first.offset, 0);
+        assert_eq!(
+            first
+                .rows
+                .iter()
+                .map(|row| row.text.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "duplicate"]
+        );
+        query.offset = Some(first.offset + first.rows.len());
+        let second = manager.page(&query);
+        assert_eq!(
+            second
+                .rows
+                .iter()
+                .map(|row| row.text.as_str())
+                .collect::<Vec<_>>(),
+            ["received", "last"]
+        );
+        assert!(second.rows[0].timestamp.is_none());
+        assert_eq!(second.rows[1].timestamp.as_ref(), Some(&to));
+        assert_eq!(
+            first.retained_from,
+            Some((now - chrono::Duration::nanoseconds(1)).to_rfc3339())
+        );
+        assert_eq!(
+            first.retained_to,
+            Some((now + chrono::Duration::nanoseconds(3)).to_rfc3339())
+        );
+    }
+
+    #[test]
+    fn incident_anchor_centers_nearest_row_and_explicit_paging_keeps_precedence() {
+        let mut manager = ProjectLogManager::default();
+        let now = Utc::now();
+        for index in 0..10 {
+            manager.ring.append(
+                "p",
+                &source("a"),
+                log(
+                    &(now + chrono::Duration::seconds(index * 2)).to_rfc3339(),
+                    &index.to_string(),
+                ),
+            );
+        }
+        let mut query = latest_query("p".into());
+        query.limit = 4;
+        query.anchor_time = Some((now + chrono::Duration::seconds(9)).to_rfc3339());
+        let centered = manager.page(&query);
+        // Equidistant timestamps choose the earlier row (index 4).
+        assert_eq!(centered.offset, 2);
+        assert_eq!(
+            centered
+                .rows
+                .iter()
+                .map(|row| row.text.as_str())
+                .collect::<Vec<_>>(),
+            ["2", "3", "4", "5"]
+        );
+        query.anchor_time = Some((now + chrono::Duration::seconds(99)).to_rfc3339());
+        assert_eq!(manager.page(&query).offset, 6);
+        query.offset = Some(1);
+        assert_eq!(manager.page(&query).offset, 1);
+        query.anchor_row_id = Some(centered.rows[1].row_id.clone());
+        assert_eq!(manager.page(&query).offset, 3);
+        query.anchor_row_id = Some("gone".into());
+        let lost = manager.page(&query);
+        assert!(lost.anchor_lost);
+        assert_eq!(lost.offset, 1);
+        query.offset = None;
+        // Missing row anchors retain legacy latest-page fallback; time anchors
+        // only choose an initial position when no row anchor was requested.
+        assert_eq!(manager.page(&query).offset, 6);
+    }
+
+    #[test]
+    fn incident_query_uses_retained_full_id_without_changing_live_collection() {
+        let (core, _) = core_with_project();
+        let full_id = "a".repeat(64);
+        let now = Utc::now();
+        {
+            let mut manager = core.project_logs.lock().unwrap();
+            manager.session_id = "s".into();
+            manager.project = Some("current".into());
+            manager.explicit = Some(HashSet::from(["b".repeat(64)]));
+            manager.ring.append(
+                "old",
+                &source(&full_id),
+                log(&now.to_rfc3339(), "old identity"),
+            );
+            manager.ring.append(
+                "old",
+                &source(&"b".repeat(64)),
+                log(&now.to_rfc3339(), "replacement"),
+            );
+            manager.ring.append(
+                "current",
+                &source(&full_id),
+                log(&now.to_rfc3339(), "other project"),
+            );
+            manager
+                .ring
+                .project_metadata
+                .entry("old".into())
+                .or_default()
+                .archived_gaps = 2;
+        }
+        let mut query = latest_query("old".into());
+        query.source_ids = vec![full_id.clone()];
+        query.time_from = Some((now - chrono::Duration::seconds(1)).to_rfc3339());
+        query.time_to = Some((now + chrono::Duration::seconds(1)).to_rfc3339());
+        query.anchor_time = Some(now.to_rfc3339());
+        let page = core.query_project_logs("s", &query).unwrap();
+        assert_eq!(page.total_rows, 1);
+        assert_eq!(page.rows[0].text, "old identity");
+        assert!(page.sources.is_empty());
+        assert_eq!(page.coverage_gaps, 2);
+        query.time_from = Some((now + chrono::Duration::seconds(10)).to_rfc3339());
+        query.time_to = None;
+        query.anchor_time = None;
+        let empty = core.query_project_logs("s", &query).unwrap();
+        assert!(empty.rows.is_empty());
+        assert_eq!(empty.retained_from, Some(now.to_rfc3339()));
+        assert_eq!(empty.retained_to, Some(now.to_rfc3339()));
+        assert_eq!(empty.coverage_gaps, 2);
+        let manager = core.project_logs.lock().unwrap();
+        assert_eq!(manager.project.as_deref(), Some("current"));
+        assert_eq!(manager.explicit, Some(HashSet::from(["b".repeat(64)])));
+        assert_eq!(manager.ring.rows.len(), 3);
+        drop(manager);
+        query.source_ids = vec![full_id[..12].into()];
+        assert_eq!(
+            core.query_project_logs("s", &query).unwrap_err().code,
+            "InvalidSelection"
+        );
+        assert_eq!(
+            core.query_project_logs("old-session", &query)
+                .unwrap_err()
+                .code,
+            "StaleSession"
+        );
+    }
+
+    #[test]
+    fn incident_anchor_survives_retention_pruning_without_claiming_expired_coverage() {
+        let mut manager = ProjectLogManager::default();
+        let old = Utc::now() - chrono::Duration::hours(1);
+        for index in 0..INITIAL_TAIL_ROWS + 2 {
+            manager.ring.append(
+                "p",
+                &source("a"),
+                log(
+                    &(old + chrono::Duration::seconds(index as i64)).to_rfc3339(),
+                    &index.to_string(),
+                ),
+            );
+        }
+        let mut query = latest_query("p".into());
+        query.time_from = Some(old.to_rfc3339());
+        query.time_to = Some((old + chrono::Duration::seconds(1)).to_rfc3339());
+        query.anchor_time = Some(old.to_rfc3339());
+        let expired = manager.page(&query);
+        assert_eq!(expired.total_rows, 0);
+        assert_eq!(
+            expired.retained_from,
+            Some((old + chrono::Duration::seconds(2)).to_rfc3339())
+        );
+        query.time_to = None;
+        let surviving = manager.page(&query);
+        assert_eq!(surviving.rows[0].text, "2");
+        assert_eq!(surviving.total_rows, INITIAL_TAIL_ROWS);
+    }
+
+    #[test]
+    fn incident_anchor_byte_budget_includes_nearest_row_and_caps_page_size() {
+        let mut manager = ProjectLogManager::default();
+        let now = Utc::now();
+        for index in 0..48 {
+            manager.ring.append(
+                "p",
+                &source(&format!("a{index:02}")),
+                log(
+                    &(now + chrono::Duration::seconds(index)).to_rfc3339(),
+                    &format!("{index}:{}", "x".repeat(60 * 1024)),
+                ),
+            );
+        }
+        let mut query = latest_query("p".into());
+        query.limit = usize::MAX;
+        query.anchor_time = Some((now + chrono::Duration::seconds(24)).to_rfc3339());
+        let page = manager.page(&query);
+        assert!(page.rows.iter().any(|row| row.text.starts_with("24:")));
+        assert!(page.rows.len() < page.total_rows);
+        let ids = page
+            .rows
+            .iter()
+            .map(|row| &row.row_id)
+            .collect::<HashSet<_>>();
+        assert!(
+            manager
+                .ring
+                .rows
+                .values()
+                .filter(|stored| ids.contains(&stored.row.row_id))
+                .map(|stored| stored.bytes)
+                .sum::<usize>()
+                <= PAGE_BYTES
+        );
+    }
+
+    #[test]
+    fn incident_time_fields_are_optional_and_invalid_public_queries_are_rejected() {
+        let legacy: ProjectLogQuery =
+            serde_json::from_value(serde_json::json!({"project": "p"})).unwrap();
+        assert!(
+            legacy.time_from.is_none() && legacy.time_to.is_none() && legacy.anchor_time.is_none()
+        );
+        let (core, _) = core_with_project();
+        core.project_logs.lock().unwrap().session_id = "s".into();
+        let time = Utc::now();
+        let mut wire = serde_json::json!({"project": "p", "timeFrom": time.to_rfc3339(), "timeTo": time.to_rfc3339(), "anchorTime": time.to_rfc3339()});
+        let query: ProjectLogQuery = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(query.time_from, query.anchor_time);
+        assert!(core.query_project_logs("s", &query).is_ok());
+        for field in ["timeFrom", "timeTo", "anchorTime"] {
+            for invalid in [
+                "",
+                "invalid",
+                "2026-09-15",
+                "2026-09-15T12:00:00",
+                "9999-01-01T00:00:00Z",
+            ] {
+                let mut invalid_wire = wire.clone();
+                invalid_wire[field] = serde_json::json!(invalid);
+                let query = serde_json::from_value(invalid_wire).unwrap();
+                assert_eq!(
+                    core.query_project_logs("s", &query).unwrap_err().code,
+                    "InvalidSelection"
+                );
+            }
+        }
+        wire["timeFrom"] = serde_json::json!((time + chrono::Duration::seconds(1)).to_rfc3339());
+        assert_eq!(
+            core.query_project_logs("s", &serde_json::from_value(wire.clone()).unwrap())
+                .unwrap_err()
+                .code,
+            "InvalidSelection"
+        );
+        wire["timeFrom"] = serde_json::json!(time.to_rfc3339());
+        for seconds in [-1, 1] {
+            wire["anchorTime"] =
+                serde_json::json!((time + chrono::Duration::seconds(seconds)).to_rfc3339());
+            assert_eq!(
+                core.query_project_logs("s", &serde_json::from_value(wire.clone()).unwrap())
+                    .unwrap_err()
+                    .code,
+                "InvalidSelection"
+            );
+        }
+    }
     #[test]
     fn noisy_source_quota_preserves_quiet_tail_after_expiry() {
         let mut ring = LogRing::default();

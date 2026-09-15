@@ -237,6 +237,50 @@ fn real_engine_observation_read_only() {
         );
         log_rows = log_rows.max(latest.rows.len());
     }
+    // Exercise incident queries against already retained data without replaying
+    // or reconfiguring any source. A quiet project proves the empty-query path;
+    // only a nonempty result supplies evidence of actual historical row reads.
+    let retained = checked(
+        core.query_project_logs(id, &query),
+        "read incident source snapshot",
+    );
+    let row = retained.rows.get(retained.rows.len() / 2);
+    let incident_id = row.map_or_else(|| running[0].full_id.clone(), |row| row.full_id.clone());
+    let incident_time = row
+        .map(|row| row.timestamp.as_ref().unwrap_or(&row.received_at).clone())
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+    let anchor = chrono::DateTime::parse_from_rfc3339(&incident_time).unwrap();
+    let from = anchor - chrono::Duration::minutes(2);
+    let to = anchor + chrono::Duration::minutes(2);
+    let mut incident_query = query.clone();
+    incident_query.source_ids = vec![incident_id.clone()];
+    incident_query.through_sequence = Some(retained.max_sequence);
+    incident_query.time_from = Some(from.to_rfc3339());
+    incident_query.time_to = Some(to.to_rfc3339());
+    incident_query.anchor_time = Some(incident_time);
+    let incident = checked(
+        core.query_project_logs(id, &incident_query),
+        "read retained incident interval",
+    );
+    assert_eq!(incident.session_id, id);
+    assert_eq!(incident.project, query.project);
+    assert!(incident.rows.len() <= 500);
+    if row.is_some() {
+        assert!(
+            !incident.rows.is_empty(),
+            "Retained interval unexpectedly lost its anchor data"
+        );
+    }
+    assert!(incident.rows.iter().all(|row| {
+        let time = chrono::DateTime::parse_from_rfc3339(
+            row.timestamp.as_ref().unwrap_or(&row.received_at),
+        )
+        .unwrap();
+        row.full_id == incident_id
+            && time >= from
+            && time <= to
+            && row.sequence <= retained.max_sequence
+    }));
     // Report metadata only, including on assertion failure. Never print rows,
     // service/project/container names, command output, or Engine credentials.
     eprintln!(
@@ -260,6 +304,11 @@ fn real_engine_observation_read_only() {
         started_at.elapsed().as_secs_f64()
     );
     eprintln!("read-only log source error codes: {log_error_codes:?}");
+    eprintln!(
+        "read-only incident query: rows={} source_snapshot_has_rows={}",
+        incident.rows.len(),
+        row.is_some()
+    );
     eprintln!(
         "read-only log body evidence: api_has_rows={} cli_latest_tail_lines={cli_tail_log_lines}",
         log_rows > 0
