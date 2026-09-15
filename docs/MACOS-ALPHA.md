@@ -29,10 +29,13 @@ CLI의 새 선택을 반영하며, 실패하면 이전 세션과 handle을 사�
 선택을 해석할 수 없거나 endpoint가 미지원·원격이면 진단을 반환하고 다른 Engine으로
 fallback하지 않는다. 앱은 Container·Volume을 이동하거나 Runtime을 설치·시작하지 않는다.
 
-전체 초기화, Delete/Prune, 대상 확인 없는 전체 중지, Terminal/Exec, Compose 실행, 호스트 Port
+전체 초기화, Delete/Prune, 대상 확인 없는 전체 중지, 호스트 범용 Terminal/Shell, Compose 실행, 호스트 Port
 Inspector, 목록 자동 갱신, 환경 변수 표시와 Local-only 해제 설정은
 제외한다. Windows·Intel Mac, 외부 서명·notarization, DMG·공개 GitHub Release는
 후속 검증이다. macOS 14+ 호환성 허용은 모든 OS·CLI·provider 조합의 인증을 뜻하지 않는다.
+
+컨테이너 Terminal/Exec는 후속 알파 확장으로 추가되며 [컨테이너 터미널](CONTAINER-TERMINAL.md)의
+명시적 연결·전체 ID·세션 수명 계약을 따른다. 초기 알파 검사 결과가 터미널 검증을 뜻하지 않는다.
 
 현재 보이는 목록을 명시적으로 전체 선택한 뒤 확인창을 거치는 Stop은 허용한다.
 검색·필터로 숨겨진 Container나 다른 context를 일괄 작업에 포함하지 않는다.
