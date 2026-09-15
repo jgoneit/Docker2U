@@ -1,26 +1,32 @@
 import { terminalApi, type TerminalDescriptor } from '../../terminalApi';
+import { coreError, type CoreError } from '../../api';
 import { captureObservationBaseline } from './observationProbes';
 
 type RecordStep = (name: string, detail?: Record<string, unknown>) => void;
-type Capture = { starts: number; descriptor: TerminalDescriptor | null; outputEvents: number; outputBytes: number; ackedSequence: number; ansiObserved: boolean };
+type Capture = { starts: number; descriptor: TerminalDescriptor | null; startError: CoreError | null; outputEvents: number; outputBytes: number; ackedSequence: number; ansiObserved: boolean };
 const fullId = '1'.padStart(64, '0');
 let active: Capture | null = null;
 const nativeStart = terminalApi.start;
 terminalApi.start = async (session, generation, handle, shell, cols, rows, receive) => {
   const capture = active;
   if (capture) ++capture.starts;
-  const result = await nativeStart(session, generation, handle, shell, cols, rows, event => {
-    if (capture && active === capture) {
-      if (event.kind === 'status') capture.descriptor = event.terminal;
-      else {
-        ++capture.outputEvents; capture.outputBytes += event.bytes.length;
-        capture.ansiObserved ||= event.bytes.includes(27);
+  try {
+    const result = await nativeStart(session, generation, handle, shell, cols, rows, event => {
+      if (capture && active === capture) {
+        if (event.kind === 'status') capture.descriptor = event.terminal;
+        else {
+          ++capture.outputEvents; capture.outputBytes += event.bytes.length;
+          capture.ansiObserved ||= event.bytes.includes(27);
+        }
       }
-    }
-    receive(event);
-  });
-  if (capture && active === capture && !capture.descriptor) capture.descriptor = result;
-  return result;
+      receive(event);
+    });
+    if (capture && active === capture && !capture.descriptor) capture.descriptor = result;
+    return result;
+  } catch (error) {
+    if (capture && active === capture) capture.startError = coreError(error);
+    throw error;
+  }
 };
 const nativeAck = terminalApi.ack;
 terminalApi.ack = async (...args) => {
@@ -32,7 +38,8 @@ function assert(value: unknown, message: string): asserts value { if (!value) th
 async function waitFor(check: () => unknown, description: string, timeout = 15_000) {
   const end = Date.now() + timeout;
   while (Date.now() < end) {
-    if (active?.descriptor?.error) throw new Error(`Native terminal failed: ${active.descriptor.error.code}`);
+    const failure = active?.startError ?? active?.descriptor?.error;
+    if (failure) throw new Error(`Native terminal failed: ${failure.code}: ${failure.message}`);
     if (check()) return;
     await new Promise(resolve => setTimeout(resolve, 30));
   }
@@ -69,7 +76,7 @@ export async function terminalRoundtripProbe(record: RecordStep) {
     previous.click();
     await waitFor(() => document.querySelector('.terminal-connect'), 'previous terminal explicitly closed');
   }
-  const capture: Capture = { starts: 0, descriptor: null, outputEvents: 0, outputBytes: 0, ackedSequence: 0, ansiObserved: false };
+  const capture: Capture = { starts: 0, descriptor: null, startError: null, outputEvents: 0, outputBytes: 0, ackedSequence: 0, ansiObserved: false };
   active = capture;
   try {
     await waitFor(() => { const button = document.querySelector<HTMLButtonElement>('.terminal-connect'); return button && !button.disabled; }, 'explicit native Connect enabled');

@@ -1,5 +1,6 @@
 import { api, type ContainerList } from '../api';
 import { terminalApi, type TerminalDescriptor, type TerminalEvent } from '../terminalApi';
+import { observationApi } from '../observationApi';
 
 /** Development-only terminal transport. Input is interpreted locally, never executed. */
 export function installTerminalFixture() {
@@ -9,6 +10,8 @@ export function installTerminalFixture() {
   Object.assign(window, { __docker2uTerminalCalls: calls });
   const originalList = api.listContainers;
   api.listContainers = async (...args) => { const result = await originalList(...args); inventory = result; return result; };
+  const originalHold = observationApi.hold;
+  observationApi.hold = async (...args) => { const result = await originalHold(...args); inventory = result.inventory; return result; };
   type FixtureTerminal = { descriptor: TerminalDescriptor; receive: (event: TerminalEvent) => void; sequence: number; input: string; cols: number; rows: number; decoder: TextDecoder };
   const sessions = new Map<string, FixtureTerminal>();
   const output = (entry: FixtureTerminal, text: string) => entry.receive({ kind: 'output', sessionId: entry.descriptor.sessionId, terminalId: entry.descriptor.terminalId, sequence: ++entry.sequence, bytes: Array.from(new TextEncoder().encode(text)) });
