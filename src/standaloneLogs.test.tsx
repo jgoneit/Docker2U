@@ -1,6 +1,6 @@
 import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { ProjectLogs, useLogCollection } from './ProjectLogs';
+import { ProjectLogs, PROJECT_LOG_VIEW_PAGE_BUDGET, createProjectLogViewCache, useLogCollection } from './ProjectLogs';
 import { useIncidentReview } from './useIncidentReview';
 import { useStandaloneLogFeedback } from './useStandaloneLogFeedback';
 import { observationApi, projectLogApi, standaloneLogApi, type LogScope, type ObservationEvent, type StandaloneLogPage } from './observationApi';
@@ -76,6 +76,109 @@ it('uses full IDs for same-name source filters and includes retained deletion me
   const replacement = filter.getByRole('checkbox', { name: `same-name · ${nextId.slice(0, 12)}` });
   expect(old).toBeChecked(); fireEvent.click(replacement);
   await waitFor(() => expect(standaloneLogApi.query).toHaveBeenLastCalledWith('one', expect.objectContaining({ sourceIds: [fullId] })));
+});
+it('keeps a removed full-ID filter and its label across Compose navigation and repeated polls', async () => {
+  vi.useFakeTimers();
+  const cache = createProjectLogViewCache(); let catalogRetired = false;
+  const currentPage = () => ({ ...page(), sources: page().sources.filter(source => !catalogRetired || source.fullId !== fullId) });
+  vi.mocked(standaloneLogApi.query).mockImplementation(async (_session, query) => {
+    const rows = page().rows.filter(row => (!query.sourceIds.length || query.sourceIds.includes(row.fullId)) && row.text.includes(query.keyword));
+    return { ...currentPage(), rows, totalRows: rows.length };
+  });
+  vi.mocked(projectLogApi.query).mockResolvedValue({ ...page(), project: 'orders', rows: [], sources: [], totalRows: 0 });
+  const view = (project: string | null = null) => <PreferencesProvider initialPreferences={{ language: 'en', theme: 'light' }}><ProjectLogs viewCache={cache} sessionId="one" project={project} containers={[]} initialPage={{ ...currentPage(), project }} configure={vi.fn()} retry={vi.fn()} error={null} onError={vi.fn()} copy={vi.fn()} /></PreferencesProvider>;
+  const rendered = render(view()); await act(async () => {});
+  fireEvent.click(screen.getByText('Container filter'));
+  const filter = () => within(document.querySelector<HTMLElement>('.project-service-filter')!);
+  fireEvent.click(filter().getByRole('checkbox', { name: `same-name · ${nextId.slice(0, 12)}` })); await act(async () => {});
+  expect(screen.getByText('line 0')).toBeInTheDocument(); expect(screen.queryByText('line 1')).not.toBeInTheDocument();
+
+  rendered.rerender(view('orders')); await act(async () => {});
+  // Core drops the old source catalog on stop/configure, while its retained rows survive.
+  catalogRetired = true; vi.mocked(standaloneLogApi.query).mockClear();
+  rendered.rerender(view()); await act(async () => {});
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  expect(vi.mocked(standaloneLogApi.query).mock.calls.length).toBeGreaterThanOrEqual(3);
+  expect(vi.mocked(standaloneLogApi.query).mock.calls.every(([, query]) => query.sourceIds.length === 1 && query.sourceIds[0] === fullId)).toBe(true);
+  fireEvent.click(screen.getByText('Container filter (1)'));
+  expect(filter().getByRole('checkbox', { name: `same-name · ${fullId.slice(0, 12)} · Container removed` })).toBeChecked();
+  expect(filter().getByRole('checkbox', { name: `same-name · ${nextId.slice(0, 12)}` })).not.toBeChecked();
+  expect(screen.getByText('line 0')).toBeInTheDocument(); expect(screen.queryByText('line 1')).not.toBeInTheDocument();
+  const archived = cache.read(JSON.stringify([null, null]))!.page!.sources.find(source => source.fullId === fullId);
+  expect(archived).toMatchObject({ containerName: 'same-name', selected: false, status: 'removed', error: null });
+
+  // The merged descriptor lives in the existing cached page, including when a keyword has no rows.
+  fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'absent' } }); await act(async () => {});
+  expect(filter().getByRole('checkbox', { name: `same-name · ${fullId.slice(0, 12)} · Container removed` })).toBeChecked();
+  rendered.unmount();
+  render(view()); await act(async () => {});
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  fireEvent.click(screen.getByText('Container filter (1)'));
+  expect(filter().getByRole('checkbox', { name: `same-name · ${fullId.slice(0, 12)} · Container removed` })).toBeChecked();
+  fireEvent.change(screen.getByRole('searchbox'), { target: { value: '' } }); await act(async () => {});
+  expect(screen.getByText('line 0')).toBeInTheDocument(); expect(screen.queryByText('line 1')).not.toBeInTheDocument();
+});
+it('recovers an evicted standalone filter page by full ID and reconstructs its removed source label from retained rows', async () => {
+  vi.useFakeTimers();
+  const cache = createProjectLogViewCache(); cache.sessionId = 'one';
+  cache.save(JSON.stringify([null, null]), { page: null, keyword: '', services: [fullId], paused: false, frozenSequence: null,
+    savedScroll: 0, anchorInset: 0, following: true, offset: null, anchor: null, delayed: false });
+  vi.mocked(standaloneLogApi.query).mockImplementation(async (_session, query) => {
+    const rows = page().rows.filter(row => !query.sourceIds.length || query.sourceIds.includes(row.fullId));
+    return { ...page(), sources: [page().sources[1]!], rows, totalRows: rows.length };
+  });
+  render(<PreferencesProvider initialPreferences={{ language: 'en', theme: 'light' }}><ProjectLogs viewCache={cache} sessionId="one" project={null} containers={[]} initialPage={{ ...page(), sources: [page().sources[1]!] }} configure={vi.fn()} retry={vi.fn()} error={null} onError={vi.fn()} copy={vi.fn()} /></PreferencesProvider>);
+  await act(async () => {}); await act(async () => vi.advanceTimersByTimeAsync(1_000));
+  expect(standaloneLogApi.query).toHaveBeenLastCalledWith('one', expect.objectContaining({ sourceIds: [fullId] }));
+  fireEvent.click(screen.getByText('Container filter (1)'));
+  expect(screen.getByRole('checkbox', { name: `same-name · ${fullId.slice(0, 12)} · Container removed` })).toBeChecked();
+  expect(screen.getByText('line 0')).toBeInTheDocument(); expect(screen.queryByText('line 1')).not.toBeInTheDocument();
+});
+it('offers deleted IDs from an unfiltered retained page after the active source catalog is empty', async () => {
+  vi.useFakeTimers();
+  const cache = createProjectLogViewCache();
+  vi.mocked(standaloneLogApi.query).mockImplementation(async (_session, query) => {
+    const rows = page().rows.filter(row => !query.sourceIds.length || query.sourceIds.includes(row.fullId));
+    return { ...page(), sources: [], rows, totalRows: rows.length };
+  });
+  render(<PreferencesProvider initialPreferences={{ language: 'en', theme: 'light' }}><ProjectLogs viewCache={cache} sessionId="one" project={null} containers={[]} initialPage={{ ...page(), sources: [] }} configure={vi.fn()} retry={vi.fn()} error={null} onError={vi.fn()} copy={vi.fn()} /></PreferencesProvider>);
+  await act(async () => {}); await act(async () => vi.advanceTimersByTimeAsync(1_000));
+  fireEvent.click(screen.getByText('Container filter'));
+  expect(screen.getByRole('checkbox', { name: `same-name · ${fullId.slice(0, 12)} · Container removed` })).toBeChecked();
+  fireEvent.click(screen.getByRole('checkbox', { name: `same-name · ${nextId.slice(0, 12)} · Container removed` }));
+  await act(async () => {}); await act(async () => vi.advanceTimersByTimeAsync(1_000));
+  expect(standaloneLogApi.query).toHaveBeenLastCalledWith('one', expect.objectContaining({ sourceIds: [fullId] }));
+  expect(screen.getByRole('checkbox', { name: `same-name · ${fullId.slice(0, 12)} · Container removed` })).toBeChecked();
+  expect(screen.getByText('line 0')).toBeInTheDocument(); expect(screen.queryByText('line 1')).not.toBeInTheDocument();
+  const other = screen.getByRole('checkbox', { name: `same-name · ${nextId.slice(0, 12)} · Container removed` });
+  expect(other).not.toBeChecked();
+  fireEvent.click(other); await act(async () => {}); await act(async () => vi.advanceTimersByTimeAsync(500));
+  expect(standaloneLogApi.query).toHaveBeenLastCalledWith('one', expect.objectContaining({ sourceIds: [fullId, nextId] }));
+  expect(other).toBeChecked(); expect(screen.getByText('line 0')).toBeInTheDocument(); expect(screen.getByText('line 1')).toBeInTheDocument();
+  expect(cache.read(JSON.stringify([null, null]))!.page!.sources.map(source => source.fullId)).toEqual([fullId, nextId]);
+});
+it('drops oversized archived descriptors at the page budget while preserving the selected full-ID query', async () => {
+  vi.useFakeTimers();
+  const cache = createProjectLogViewCache(); cache.sessionId = 'one';
+  cache.save(JSON.stringify([null, null]), { page: page(), keyword: '', services: [fullId], paused: false, frozenSequence: null,
+    savedScroll: 0, anchorInset: 0, following: true, offset: null, anchor: null, delayed: false });
+  vi.mocked(standaloneLogApi.query).mockResolvedValueOnce({ ...page(), rows: [page().rows[0]!], totalRows: 1,
+    sources: [{ ...page().sources[0]!, serviceName: 'x'.repeat(PROJECT_LOG_VIEW_PAGE_BUDGET / 2) }, page().sources[1]!] })
+    .mockResolvedValue({ ...page(), rows: [], totalRows: 0, sources: [page().sources[1]!] });
+  render(<PreferencesProvider initialPreferences={{ language: 'en', theme: 'light' }}><ProjectLogs viewCache={cache} sessionId="one" project={null} containers={[]} initialPage={page()} configure={vi.fn()} retry={vi.fn()} error={null} onError={vi.fn()} copy={vi.fn()} /></PreferencesProvider>);
+  await act(async () => {});
+  expect(cache.read(JSON.stringify([null, null]))!.page).toBeNull();
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  const retained = cache.read(JSON.stringify([null, null]))!.page!;
+  expect(retained.sources.some(source => source.fullId === fullId)).toBe(false);
+  expect(cache.retainedPageBytes).toBeGreaterThan(0); expect(cache.retainedPageBytes).toBeLessThanOrEqual(PROJECT_LOG_VIEW_PAGE_BUDGET);
+  expect(vi.mocked(standaloneLogApi.query).mock.calls.every(([, query]) => query.sourceIds.length === 1 && query.sourceIds[0] === fullId)).toBe(true);
+  fireEvent.click(screen.getByText('Container filter (1)'));
+  expect(screen.getByRole('checkbox', { name: `${fullId.slice(0, 12)} · Container removed` })).toBeChecked();
+  expect(screen.queryByText('line 1')).not.toBeInTheDocument();
 });
 it('restores separate standalone copy/clear feedback while preserving its original deadline', async () => {
   vi.useFakeTimers(); const writeText = vi.fn().mockResolvedValue(undefined); Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });

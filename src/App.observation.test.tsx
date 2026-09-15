@@ -2,12 +2,12 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { beforeEach, expect, it, vi } from 'vitest';
 import App from './App';
 import { api, type Container, type ContainerList, type Environment } from './api';
-import { observationApi, projectLogApi, type ObservationRead } from './observationApi';
+import { observationApi, projectLogApi, standaloneLogApi, type ObservationRead, type StandaloneLogPage } from './observationApi';
 import { installSnapshotStreams } from './test/snapshotStreams';
 import { containerDetailsFixture } from './test/containerDetailsFixture';
 
 vi.mock('./api', async importOriginal => ({ ...await importOriginal<typeof import('./api')>(), api: { getEnvironment: vi.fn(), listContainers: vi.fn(), getRecentLogs: vi.fn(), startLogStream: vi.fn(), readLogStream: vi.fn(), stopLogStream: vi.fn(), getContainerStats: vi.fn(), getContainerDetails: vi.fn(), mutateContainer: vi.fn(), mutateContainers: vi.fn() } }));
-vi.mock('./observationApi', async importOriginal => ({ ...await importOriginal<typeof import('./observationApi')>(), observationApi: { available: vi.fn(() => true), configure: vi.fn(), read: vi.fn(), hold: vi.fn(), release: vi.fn() }, projectLogApi: { configure: vi.fn(), query: vi.fn(), retry: vi.fn(), stop: vi.fn() } }));
+vi.mock('./observationApi', async importOriginal => ({ ...await importOriginal<typeof import('./observationApi')>(), observationApi: { available: vi.fn(() => true), configure: vi.fn(), read: vi.fn(), hold: vi.fn(), release: vi.fn() }, projectLogApi: { configure: vi.fn(), query: vi.fn(), retry: vi.fn(), stop: vi.fn() }, standaloneLogApi: { configure: vi.fn(), query: vi.fn(), retry: vi.fn() } }));
 const mock = vi.mocked(api);
 const container: Container = { handle: 'ha-1', fullId: 'a'.repeat(64), shortId: 'a'.repeat(12), name: 'web', composeProject: 'demo', composeService: 'web', state: 'running', health: 'healthy', healthConfigured: true, image: 'web', ports: [], createdAt: '' };
 const inventory = (generation = 1, state = 'running'): ContainerList => ({ sessionId: 'one', generation, containers: [{ ...container, handle: `ha-${generation}`, state }], refreshedAt: new Date().toISOString(), stale: false });
@@ -114,6 +114,48 @@ it('keeps the project view and collection scope when its last selected container
   expect(inventoryTree().getByRole('treeitem', { name: 'demo 프로젝트' })).toHaveAttribute('aria-selected', 'true');
   expect(detailTabs().getByRole('tab', { name: '통합 로그' })).toBeVisible();
   expect(screen.getByRole('heading', { name: '프로젝트 · demo' })).toBeVisible();
+});
+
+it('keeps collected standalone logs reachable without events and resets that scope on reconnect', async () => {
+  const standalone = { ...container, handle: 'standalone-1', fullId: 'b'.repeat(64), shortId: 'b'.repeat(12), name: 'archive-only', composeProject: null, composeService: null };
+  const initialInventory = { ...inventory(), containers: [container, standalone] };
+  const initialObservation = { ...observation(), inventory: initialInventory };
+  const next = deferred<ObservationRead>();
+  mock.listContainers.mockResolvedValue(initialInventory);
+  vi.mocked(observationApi.configure).mockResolvedValue(initialObservation);
+  vi.mocked(observationApi.read).mockReturnValue(next.promise);
+  const started: StandaloneLogPage = { sessionId: 'one', project: null, revision: 1, maxSequence: 0, rows: [], totalRows: 0, offset: 0, droppedRows: 0, needsSelection: false, error: null, retainedFrom: null, retainedTo: null,
+    sources: [{ sourceId: standalone.fullId, fullId: standalone.fullId, containerName: standalone.name, serviceName: null, selected: true, status: 'following', error: null, droppedRows: 0 }] };
+  const at = new Date().toISOString();
+  const retained: StandaloneLogPage = { ...started, sources: [], totalRows: 1, maxSequence: 1, retainedFrom: at, retainedTo: at,
+    rows: [{ rowId: 'standalone-archive', sequence: 1, sourceId: standalone.fullId, fullId: standalone.fullId, containerName: standalone.name, serviceName: null, timestamp: at, receivedAt: at, pipe: 'stdout', text: 'standalone archive without events', truncated: false }] };
+  vi.mocked(standaloneLogApi.configure).mockResolvedValueOnce(started).mockResolvedValue(retained);
+  vi.mocked(standaloneLogApi.query).mockResolvedValue(retained);
+  render(<App />); await ready();
+  fireEvent.click(inventoryTree().getByRole('treeitem', { name: '독립 컨테이너' }));
+  await screen.findByText('standalone archive without events');
+  await waitFor(() => expect(observationApi.read).toHaveBeenCalled(), { timeout: 2000 });
+  const removed: ObservationRead = { ...observation(2), eventStatus: 'error', eventError: { code: 'CommandFailed', message: 'Event stream unavailable' } };
+  await act(async () => next.resolve(removed));
+  expect(inventoryTree().queryByRole('treeitem', { name: 'archive-only 상세' })).not.toBeInTheDocument();
+  fireEvent.click(inventoryTree().getByRole('treeitem', { name: 'demo 프로젝트' }));
+  await waitFor(() => expect(inventoryTree().getByRole('treeitem', { name: 'demo 프로젝트' })).toHaveAttribute('aria-selected', 'true'));
+  expect(inventoryTree().getByRole('treeitem', { name: '독립 컨테이너' })).toBeVisible();
+  fireEvent.click(inventoryTree().getByRole('treeitem', { name: '독립 컨테이너' }));
+  await screen.findByText('standalone archive without events');
+  expect(removed.events).toEqual([]);
+  const reconnectedInventory = { ...inventory(), sessionId: 'two' };
+  const reconnectedObservation = { ...observation(), sessionId: 'two', inventory: reconnectedInventory };
+  mock.getEnvironment.mockResolvedValue({ ...await mock.getEnvironment.mock.results[0]!.value, sessionId: 'two' });
+  mock.listContainers.mockResolvedValue(reconnectedInventory);
+  vi.mocked(observationApi.configure).mockResolvedValue(reconnectedObservation);
+  vi.mocked(observationApi.read).mockResolvedValue(reconnectedObservation);
+  const reconnectedLogs = { ...retained, sessionId: 'two', project: 'demo', rows: [], sources: [], totalRows: 0 };
+  vi.mocked(projectLogApi.configure).mockResolvedValue(reconnectedLogs);
+  vi.mocked(projectLogApi.query).mockResolvedValue(reconnectedLogs);
+  fireEvent.click(screen.getByRole('button', { name: '다시 연결' }));
+  await ready();
+  expect(inventoryTree().queryByRole('treeitem', { name: '독립 컨테이너' })).not.toBeInTheDocument();
 });
 
 it.each(['events', 'configure', 'query'] as const)('requires Reconnect immediately for an unsupported observation endpoint reported by %s', async source => {

@@ -191,6 +191,71 @@ test('keeps archived and recreated names separate in the full-ID container filte
   await expect(rows(page).first()).toBeAttached();
   await expect.poll(() => rows(page).evaluateAll(nodes => nodes.every(node => node.querySelector('span[title]')?.getAttribute('title') === '3'.repeat(64)))).toBe(true);
   expect((await calls(page)).configureStandaloneLogs).toBe(before.configureStandaloneLogs);
+
+  // Returning configure no longer lists the deleted source. The saved ID
+  // filter must still query its retained records across subsequent polls.
+  await page.getByRole('treeitem', { name: words(info).project, exact: true }).locator('.project-tree-name').click();
+  await expect(rows(page).first()).toContainText('compose-web');
+  await selectGroup(page, info);
+  const returningQueries = (await calls(page)).queryStandaloneLogs ?? 0;
+  await expect.poll(async () => (await calls(page)).queryStandaloneLogs).toBeGreaterThanOrEqual(returningQueries + 2);
+  await expect(rows(page).first()).toBeAttached();
+  await expect.poll(() => rows(page).evaluateAll(nodes => nodes.every(node => node.querySelector('span[title]')?.getAttribute('title') === '3'.repeat(64)))).toBe(true);
+  await filters.locator('summary').click();
+  await expect(original).toBeChecked();
+  await expect(original.locator('..')).toContainText('standalone-api');
+  await expect(original.locator('..')).toContainText('333333333333');
+  await expect(original.locator('..')).toContainText(info.project.metadata.language === 'en' ? /removed/i : /삭제/);
+  await expect(replacement).not.toBeChecked();
+});
+
+test('keeps a log-only standalone archive reachable after all standalone containers disappear without events', async ({ page }, info) => {
+  const w = words(info);
+  await page.goto('/src/test/visual.html?toolbar=hidden&scenario=standalone&standaloneEvents=none');
+  await expect(page.locator('.container-row')).toHaveCount(3);
+  await selectGroup(page, info);
+  await expect(rows(page).filter({ hasText: 'standalone-api' }).first()).toBeAttached();
+  await expect(rows(page).filter({ hasText: 'standalone-worker' }).first()).toBeAttached();
+  await page.getByRole('tab', { name: w.history, exact: true }).click();
+  await expect(page.locator('.history-event-trigger')).toHaveCount(0);
+  await page.getByRole('tab', { name: w.logs, exact: true }).click();
+  await mutateFixture(page, 'removeAllStandalone');
+  await expect(page.locator('.container-row')).toHaveCount(1);
+  await expect(group(page, info).locator('.container-project-count')).toHaveText('0');
+  await page.getByRole('treeitem', { name: w.project, exact: true }).locator('.project-tree-name').click();
+  await expect(rows(page).first()).toContainText('compose-web');
+  await expect(group(page, info)).toBeVisible();
+  await selectGroup(page, info);
+  const returningQueries = (await calls(page)).queryStandaloneLogs ?? 0;
+  await expect.poll(async () => (await calls(page)).queryStandaloneLogs).toBeGreaterThanOrEqual(returningQueries + 2);
+  await expect(rows(page).filter({ hasText: 'standalone-api' }).first()).toBeAttached();
+  await expect(rows(page).filter({ hasText: 'standalone-worker' }).first()).toBeAttached();
+  await expect(rows(page).filter({ hasText: 'compose-web' })).toHaveCount(0);
+  const filters = page.locator('.project-service-filter');
+  await filters.locator('summary').click();
+  const archivedApi = filters.getByRole('checkbox', { name: /333333333333/ });
+  const archivedWorker = filters.getByRole('checkbox', { name: /444444444444/ });
+  for (const [checkbox, name, shortId] of [[archivedApi, 'standalone-api', '333333333333'], [archivedWorker, 'standalone-worker', '444444444444']] as const) {
+    await expect(checkbox).toBeChecked();
+    await expect(checkbox.locator('..')).toContainText(name);
+    await expect(checkbox.locator('..')).toContainText(shortId);
+    await expect(checkbox.locator('..')).toContainText(info.project.metadata.language === 'en' ? /removed/i : /삭제/);
+  }
+  await archivedWorker.uncheck();
+  await expect(archivedWorker).toBeVisible();
+  await expect(archivedWorker).not.toBeChecked();
+  await expect(archivedWorker).toBeFocused();
+  await filters.locator('summary').click();
+  await expect(rows(page).first()).toBeAttached();
+  await expect.poll(() => rows(page).evaluateAll(nodes => nodes.every(node => node.querySelector('span[title]')?.getAttribute('title') === '3'.repeat(64)))).toBe(true);
+  await expect(rows(page).filter({ hasText: 'standalone-worker' })).toHaveCount(0);
+  await filters.locator('summary').click();
+  await archivedWorker.check();
+  await expect(archivedWorker).toBeChecked();
+  await filters.locator('summary').click();
+  await expect(rows(page).filter({ hasText: 'standalone-worker' }).first()).toBeAttached();
+  await page.getByRole('tab', { name: w.history, exact: true }).click();
+  await expect(page.locator('.history-event-trigger')).toHaveCount(0);
 });
 
 test('keeps clear boundaries and copy feedback separate for group and each child', async ({ page }, info) => {
