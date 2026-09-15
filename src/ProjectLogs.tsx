@@ -105,11 +105,13 @@ export interface ProjectLogViewCache {
   sessionId: string | null; version: number; views: Map<string, ProjectLogViewState>; retainedPageBytes: number;
   save: (key: string, state: ProjectLogViewState) => void; read: (key: string) => ProjectLogViewState | undefined; clear: () => void;
 }
-function estimatedPageBytes(page: ProjectLogPage): number {
+function estimatedRecordBytes(record: object): number {
   // Count UTF-16 strings and conservative record/reference overhead without
   // allocating another serialized copy of potentially megabyte-sized logs.
-  const recordBytes = (record: object) => 128 + Object.values(record).reduce<number>((total, value) => total + (typeof value === 'string' ? value.length * 2 : value && typeof value === 'object' ? JSON.stringify(value).length * 2 : 8), 0);
-  return 512 + page.rows.reduce((total, row) => total + recordBytes(row), 0) + page.sources.reduce((total, source) => total + recordBytes(source), 0);
+  return 128 + Object.values(record).reduce<number>((total, value) => total + (typeof value === 'string' ? value.length * 2 : value && typeof value === 'object' ? JSON.stringify(value).length * 2 : 8), 0);
+}
+function estimatedPageBytes(page: ProjectLogPage): number {
+  return 512 + page.rows.reduce((total, row) => total + estimatedRecordBytes(row), 0) + page.sources.reduce((total, source) => total + estimatedRecordBytes(source), 0);
 }
 /** Owned by App, retained only for its current Engine session. */
 export function createProjectLogViewCache(): ProjectLogViewCache {
@@ -145,6 +147,37 @@ function initialWindow(page: ProjectLogPage | null): ProjectLogPage | null {
   if (!page || page.rows.length <= PAGE_SIZE) return page;
   const skipped = page.rows.length - PAGE_SIZE;
   return { ...page, offset: page.offset + skipped, rows: page.rows.slice(skipped) };
+}
+function retainStandaloneFilterSources(page: ProjectLogPage, previous: ProjectLogPage | null, selectedIds: string[] | null): ProjectLogPage {
+  if (page.project !== null) return page;
+  const known = new Set(page.sources.map(source => source.fullId));
+  const previousSources = new Map((previous?.project === null ? previous.sources : []).map(source => [source.fullId, source]));
+  const rowSources = new Map<string, ProjectLogPage['sources'][number]>();
+  const archived: ProjectLogPage['sources'] = [];
+  let bytes = estimatedPageBytes(page);
+  const append = (source: ProjectLogPage['sources'][number]) => {
+    if (known.has(source.fullId)) return;
+    const descriptor = { ...source, selected: false, status: 'removed' as const, error: null };
+    const size = estimatedRecordBytes(descriptor);
+    if (bytes + size > PROJECT_LOG_VIEW_PAGE_BUDGET) return;
+    bytes += size; known.add(source.fullId); archived.push(descriptor);
+  };
+  // Core's active source catalog is rebuilt on scope changes. Carry only the
+  // descriptors that fit the same whole-page budget used by the cache. Keep
+  // selected IDs first, then current rows, then other known filter options so
+  // unchecking an archived source does not remove the focused control.
+  for (const row of page.rows) {
+    if (known.has(row.fullId) || rowSources.has(row.fullId)) continue;
+    rowSources.set(row.fullId, { sourceId: row.sourceId, fullId: row.fullId, containerName: row.containerName, serviceName: row.serviceName,
+      selected: false, status: 'removed', error: null, droppedRows: 0 });
+  }
+  for (const id of selectedIds ?? []) {
+    const source = previousSources.get(id) ?? rowSources.get(id);
+    if (source) append(source);
+  }
+  for (const source of rowSources.values()) append(source);
+  for (const source of previousSources.values()) append(source);
+  return archived.length ? { ...page, sources: [...page.sources, ...archived] } : page;
 }
 export function logRowsText(rows: ProjectLogRow[]) {
   return rows.map(row => `${row.timestamp ?? row.receivedAt}\t${row.serviceName ?? '—'}\t${row.containerName}\t${row.text}`).join('\n');
@@ -222,7 +255,8 @@ function ProjectLogView({ sessionId, project, containers, initialPage, fullId, c
     return () => { saveView(); mounted.current = false; ++selectionRequest.current; ++querySequence.current; clearTimeout(pendingQuery.current?.deadline); pendingQuery.current = null; };
   }, [saveView]);
   const sources = page?.sources ?? initialPage?.sources ?? [];
-  const sourceIds = fullId ? [fullId] : services !== null ? sources.filter(source => services.includes(project === null ? source.fullId : source.serviceName ?? source.containerName)).map(source => source.sourceId) : [];
+  const sourceIds = fullId ? [fullId] : services === null ? [] : project === null ? services
+    : sources.filter(source => services.includes(source.serviceName ?? source.containerName)).map(source => source.sourceId);
   const filterKey = JSON.stringify([sourceIds, keyword, !fullId && services !== null && sourceIds.length === 0]);
   // Configure describes collection startup, not the user's filtered/frozen view.
   // A returning view must keep its last page until its own query succeeds.
@@ -246,11 +280,12 @@ function ProjectLogView({ sessionId, project, containers, initialPage, fullId, c
         const [ids, text, missingServices] = JSON.parse(filterKey) as [string[], string, boolean];
         const establishingClear = clearPending.current;
         const queryLogs = project === null ? (query: Parameters<typeof standaloneLogApi.query>[1]) => standaloneLogApi.query(sessionId, query) : (query: Parameters<typeof projectLogApi.query>[2]) => projectLogApi.query(sessionId, project, query);
-        const queried = await queryLogs(establishingClear
+        let queried = await queryLogs(establishingClear
           ? { sourceIds: ids, keyword: '', offset: null, limit: 1, throughSequence: null }
           : { sourceIds: ids, keyword: text, offset: following.current ? null : offset.current, limit: Math.min(PAGE_SIZE, Math.max(40, Math.ceil((viewport.current?.clientHeight ?? 400) / ROW_HEIGHT) + 24)), throughSequence: frozenSequence.current, anchorRowId: following.current ? null : anchor.current, ...(afterSequence.current === null ? {} : { afterSequence: afterSequence.current }) });
         if (!live || id !== querySequence.current) return;
         if (queried.sessionId !== sessionId || queried.project !== project) throw { code: 'InvalidProjectLogsResponse', message: 'Project log rows do not match the selected project.' };
+        queried = retainStandaloneFilterSources(queried, pageRef.current, inputRef.current.services);
         if (establishingClear) {
           if (queried.error) throw queried.error;
           // Capture the Core watermark now, including rows collected while the
@@ -364,8 +399,8 @@ function ProjectLogView({ sessionId, project, containers, initialPage, fullId, c
       if (mounted.current && request === selectionRequest.current) setSelectionError(coreError(original));
     } finally { if (mounted.current && request === selectionRequest.current) setApplying(false); }
   }
-  const serviceOptions = [...new Set(sources.map(source => project === null ? source.fullId : source.serviceName ?? source.containerName))].sort();
-  const sourceLabel = (id: string) => { const source = sources.find(item => item.fullId === id); return source ? `${source.containerName} · ${source.fullId.slice(0, 12)}${source.status === 'removed' ? ` · ${t('removed')}` : ''}` : id; };
+  const serviceOptions = [...new Set([...sources.map(source => project === null ? source.fullId : source.serviceName ?? source.containerName), ...(project === null ? services ?? [] : [])])].sort();
+  const sourceLabel = (id: string) => { const source = sources.find(item => item.fullId === id); return source ? `${source.containerName} · ${source.fullId.slice(0, 12)}${source.status === 'removed' ? ` · ${t('removed')}` : ''}` : `${id.slice(0, 12)} · ${t('removed')}`; };
   const needSelection = page?.needsSelection ?? initialPage?.needsSelection ?? false;
   useEffect(() => { if (needSelection) selectSources(); }, [!!needSelection]);
   useEffect(() => { if (selecting) sourcePicker.current?.querySelector<HTMLElement>('input:not(:disabled), button')?.focus(); }, [selecting]);

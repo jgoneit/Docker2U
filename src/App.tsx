@@ -298,6 +298,13 @@ function AppContent() {
   };
   const stats = nativeObservation ? { sampleFor: observation.sampleFor, error: observation.view?.statsError ?? observation.error } : legacyStats;
   const projectLogs = useLogCollection(environment?.sessionId ?? null, logScope, !connecting && !reconnectRequired, onLogError);
+  useEffect(() => {
+    const page = projectLogs.page;
+    // Collection may receive rows before the event stream observes a removal.
+    // Keep that session's archive reachable even when the initial tail is empty.
+    if (page?.project === null && page.sessionId === session.current
+      && (page.totalRows > 0 || page.sources.some(source => source.selected))) setRetainedStandaloneSession(page.sessionId);
+  }, [projectLogs.page]);
   async function releaseObservationHold() {
     const hold = observationHold.current; observationHold.current = null;
     if (hold) try { await observationApi.release(hold.sessionId, hold.holdId); } catch (original) { onStatsError(original, coreError(original), hold.sessionId); }
