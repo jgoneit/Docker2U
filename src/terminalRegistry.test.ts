@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Container } from './api';
 import { terminalApi, type TerminalDescriptor, type TerminalEvent } from './terminalApi';
+import { observationApi, type ObservationHold } from './observationApi';
 import { TerminalRegistry } from './terminalRegistry';
 
 const fake = vi.hoisted(() => ({ terms: [] as Array<{
@@ -24,10 +25,16 @@ vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit() {} } }));
 
 const container = (id = 'a'): Container => ({ handle: `handle-${id}`, fullId: id.repeat(64), shortId: id.repeat(12), name: `container-${id}`, image: 'fixture', state: 'running', health: null, healthConfigured: false, ports: [], createdAt: '', composeProject: null, composeService: null });
 const descriptor = (id = 'a', sessionId = 's'): TerminalDescriptor => ({ sessionId, terminalId: `terminal-${id}`, containerId: id.repeat(64), containerName: `container-${id}`, shell: 'sh', status: 'connecting', exitCode: null, error: null });
+const hold = (sessionId = 's', holdId = 'held'): ObservationHold => ({ sessionId, holdId, inventory: { sessionId, generation: 17, stale: false, refreshedAt: '',
+  containers: [...'abcdefghi'].map(id => ({ ...container(id), handle: `held-handle-${id}` })) } });
+function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 let registry: TerminalRegistry;
 let receive: (event: TerminalEvent) => void;
 beforeEach(() => {
   fake.terms.length = 0; vi.restoreAllMocks();
+  let holdNumber = 0;
+  vi.spyOn(observationApi, 'hold').mockImplementation(async sessionId => hold(sessionId, `held-${++holdNumber}`));
+  vi.spyOn(observationApi, 'release').mockResolvedValue();
   for (const name of ['write', 'resize', 'ack', 'disconnect', 'close'] as const) vi.spyOn(terminalApi, name).mockResolvedValue();
   vi.spyOn(terminalApi, 'start').mockImplementation(async (sessionId, _generation, handle, _shell, _cols, _rows, listener) => {
     receive = listener; return descriptor(handle.slice(-1), sessionId);
@@ -42,11 +49,13 @@ async function running(id = 'a') {
 async function settleInput() { await new Promise(resolve => setTimeout(resolve, 0)); }
 
 describe('terminal session ownership and flow control', () => {
-  it('starts only once for the exact ID and sends the current opaque handle/generation', async () => {
+  it('starts only once for the exact ID using the held opaque handle/generation instead of the UI snapshot', async () => {
     await running();
     await registry.connect('s', 8, { ...container(), handle: 'refreshed' }, 'bash');
     expect(terminalApi.start).toHaveBeenCalledTimes(1);
-    expect(terminalApi.start).toHaveBeenCalledWith('s', 7, 'handle-a', 'sh', 80, 24, expect.any(Function));
+    expect(terminalApi.start).toHaveBeenCalledWith('s', 17, 'held-handle-a', 'sh', 80, 24, expect.any(Function));
+    expect(observationApi.hold).toHaveBeenCalledExactlyOnceWith('s');
+    expect(observationApi.release).toHaveBeenCalledExactlyOnceWith('s', 'held-1');
     expect(fake.terms[0]!.options).toMatchObject({ scrollback: 2_000, screenReaderMode: true });
   });
   it('handles status/output before the start reply without regressing to connecting', async () => {
@@ -121,14 +130,18 @@ describe('terminal session ownership and flow control', () => {
     await registry.connect('s', 7, container(), 'bash');
     expect(registry.getSnapshot()[0]).toMatchObject({ status: 'failed', error: { code: 'ExecFailed' } });
     await registry.close(container().fullId); expect(registry.getSnapshot()).toHaveLength(0); expect(terminalApi.start).toHaveBeenCalledOnce();
+    expect(observationApi.release).toHaveBeenCalledExactlyOnceWith('s', 'held-1');
   });
   it('discards old Channel callbacks and closes a late start reply after reconnect', async () => {
     let finish!: (result: TerminalDescriptor) => void;
     vi.mocked(terminalApi.start).mockImplementation((_s, _g, _h, _sh, _c, _r, listener) => { receive = listener; return new Promise(resolve => { finish = resolve; }); });
     const pending = registry.connect('s', 7, container(), 'sh');
+    await settleInput();
     registry.setSession('new'); receive({ kind: 'status', terminal: { ...descriptor(), status: 'running' } });
+    expect(observationApi.release).toHaveBeenCalledExactlyOnceWith('s', 'held-1');
     finish(descriptor()); await pending;
     expect(registry.getSnapshot()).toHaveLength(0); expect(terminalApi.close).toHaveBeenCalledWith('s', 'terminal-a');
+    expect(observationApi.release).toHaveBeenCalledTimes(1);
   });
   it('does not ACK writes whose callbacks arrive after reconnect', async () => {
     await running(); receive({ kind: 'output', sessionId: 's', terminalId: 'terminal-a', sequence: 1, bytes: [65] });
@@ -151,5 +164,69 @@ describe('terminal session ownership and flow control', () => {
     expect(term.parser.registerOscHandler.mock.calls.map(call => call[0])).toEqual([52, 8]);
     for (const [, handler] of term.parser.registerOscHandler.mock.calls) expect(handler('unsafe')).toBe(true);
     expect(term.options.windowOptions).toEqual({});
+  });
+  it('reserves duplicate/capacity slots before holds resolve and dispatches each exec once', async () => {
+    const held = Array.from({ length: 8 }, () => deferred<ObservationHold>());
+    vi.mocked(observationApi.hold).mockImplementation(() => held[vi.mocked(observationApi.hold).mock.calls.length - 1]!.promise);
+    const starts = [...'abcdefgh'].map(id => registry.connect('s', 1, container(id), 'sh'));
+    await registry.connect('s', 2, container('a'), 'bash'); await registry.connect('s', 2, container('i'), 'sh');
+    expect(registry.getSnapshot()).toHaveLength(8); expect(observationApi.hold).toHaveBeenCalledTimes(8); expect(terminalApi.start).not.toHaveBeenCalled();
+    held.forEach((pending, index) => pending.resolve(hold('s', `reserved-${index}`))); await Promise.all(starts);
+    expect(terminalApi.start).toHaveBeenCalledTimes(8); expect(observationApi.release).toHaveBeenCalledTimes(8);
+  });
+  it('waits for an in-flight inventory refresh and resolves only the original full ID in its held result', async () => {
+    const pendingHold = deferred<ObservationHold>(); vi.mocked(observationApi.hold).mockReturnValue(pendingHold.promise);
+    const pending = registry.connect('s', 1, { ...container(), name: 'same-name' }, 'sh');
+    expect(terminalApi.start).not.toHaveBeenCalled();
+    const held = hold(); held.inventory.generation = 42;
+    held.inventory.containers = [{ ...container('b'), name: 'same-name', handle: 'replacement-b' }, { ...container(), name: 'renamed', handle: 'fresh-a' }];
+    pendingHold.resolve(held); await pending;
+    expect(terminalApi.start).toHaveBeenCalledExactlyOnceWith('s', 42, 'fresh-a', 'sh', 80, 24, expect.any(Function));
+    expect(observationApi.release).toHaveBeenCalledExactlyOnceWith('s', 'held');
+  });
+  it.each(['missing', 'same-name replacement', 'stopped', 'stale', 'hold session', 'inventory session'] as const)('rejects a %s held target without starting and releases the original session hold', async kind => {
+    const held = hold();
+    if (kind === 'missing') held.inventory.containers = [];
+    if (kind === 'same-name replacement') held.inventory.containers = [{ ...container('b'), name: container().name }];
+    if (kind === 'stopped') held.inventory.containers = [{ ...container(), state: 'exited' }];
+    if (kind === 'stale') held.inventory.stale = true;
+    if (kind === 'hold session') held.sessionId = 'other';
+    if (kind === 'inventory session') held.inventory.sessionId = 'other';
+    vi.mocked(observationApi.hold).mockResolvedValue(held);
+    await registry.connect('s', 7, container(), 'sh');
+    expect(terminalApi.start).not.toHaveBeenCalled();
+    expect(registry.getSnapshot()[0]).toMatchObject({ status: 'failed', pending: false, terminalId: null });
+    expect(observationApi.release).toHaveBeenCalledExactlyOnceWith('s', 'held');
+  });
+  it('reports hold acquisition failure without an exec or an invented release token', async () => {
+    vi.mocked(observationApi.hold).mockRejectedValue({ code: 'NeedsValidation', message: 'Inventory unavailable' });
+    await registry.connect('s', 7, container(), 'sh');
+    expect(registry.getSnapshot()[0]).toMatchObject({ status: 'failed', error: { code: 'NeedsValidation' } });
+    expect(terminalApi.start).not.toHaveBeenCalled(); expect(observationApi.release).not.toHaveBeenCalled();
+  });
+  it.each(['close', 'reconnect'] as const)('releases a late hold after %s without dispatching an old exec', async action => {
+    const pendingHold = deferred<ObservationHold>(); vi.mocked(observationApi.hold).mockReturnValueOnce(pendingHold.promise);
+    const pending = registry.connect('s', 7, container(), 'sh');
+    if (action === 'close') await registry.close(container().fullId); else registry.setSession('new');
+    expect(registry.getSnapshot()).toHaveLength(0); expect(fake.terms[0]!.dispose).toHaveBeenCalledOnce();
+    pendingHold.resolve(hold('s', 'late-held')); await pending;
+    expect(terminalApi.start).not.toHaveBeenCalled(); expect(observationApi.release).toHaveBeenCalledExactlyOnceWith('s', 'late-held');
+  });
+  it('releases an acquired hold on close and closes a late exec result without starting again', async () => {
+    const started = deferred<TerminalDescriptor>(); vi.mocked(terminalApi.start).mockReturnValue(started.promise);
+    const pending = registry.connect('s', 7, container(), 'sh'); await settleInput();
+    await registry.close(container().fullId);
+    expect(registry.getSnapshot()).toHaveLength(0); expect(observationApi.release).toHaveBeenCalledExactlyOnceWith('s', 'held-1');
+    started.resolve(descriptor()); await pending;
+    expect(terminalApi.start).toHaveBeenCalledOnce(); expect(terminalApi.close).toHaveBeenCalledExactlyOnceWith('s', 'terminal-a');
+    expect(observationApi.release).toHaveBeenCalledTimes(1);
+  });
+  it('releases after a strict start rejection without retrying exec or masking the original failure', async () => {
+    vi.mocked(terminalApi.start).mockRejectedValue({ code: 'StaleHandle', message: 'Explicit refresh raced the hold' });
+    vi.mocked(observationApi.release).mockRejectedValue({ code: 'ReleaseFailed', message: 'Release transport failed' });
+    await registry.connect('s', 7, container(), 'sh');
+    await registry.connect('s', 8, container(), 'sh');
+    expect(terminalApi.start).toHaveBeenCalledOnce(); expect(observationApi.release).toHaveBeenCalledOnce();
+    expect(registry.getSnapshot()[0]).toMatchObject({ status: 'failed', error: { code: 'StaleHandle' } });
   });
 });
