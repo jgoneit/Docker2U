@@ -1422,6 +1422,9 @@ mod tests {
             after_sequence: None,
             through_sequence: None,
             anchor_row_id: None,
+            time_from: None,
+            time_to: None,
+            anchor_time: None,
         };
         let logs = core.query_project_logs("session", &query).unwrap();
         assert_eq!(

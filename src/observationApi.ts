@@ -43,6 +43,7 @@ export interface ProjectLogPage {
 export interface ProjectLogQuery {
   sourceIds: string[]; keyword: string; offset: number | null; limit: number; throughSequence: number | null; anchorRowId?: string | null;
   afterSequence?: number | null;
+  timeFrom?: string | null; timeTo?: string | null; anchorTime?: string | null;
 }
 export const projectLogApi = {
   configure: (sessionId: string, project: string, handles: string[] | null) => invoke<ProjectLogPage>('configure_project_logs', { sessionId, project, handles }),

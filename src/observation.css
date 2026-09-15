@@ -92,6 +92,14 @@
 .history-events { list-style: none; padding: 0; margin: 0; }
 .history-events li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; padding: 7px 0; border-bottom: 1px solid var(--border-subtle); }
 .history-events time { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.history-events .history-event-item { display: block; padding: 4px 0; min-width: 0; }
+.history-event-trigger { display: flex; width: 100%; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 6px 10px; text-align: left; padding: 9px; font-size: 12px; border-color: transparent; background: var(--raised); }
+.history-event-trigger > * { min-width: 0; overflow-wrap: anywhere; }
+.history-event-trigger[aria-expanded="true"] { background: var(--selected); }
+.history-event-trigger[aria-expanded="true"] > svg { transform: rotate(90deg); }
+.history-event-detail { min-width: 0; padding-top: 8px; }
+.incident-return { display: flex; flex-shrink: 0; align-items: center; flex-wrap: wrap; gap: 8px; padding: 6px 12px; font-size: 12px; color: var(--text-muted); border-bottom: 1px solid var(--border-subtle); }
+.incident-return button { font-size: 12px; }
 @media (max-width: 650px) { .history-charts { grid-template-columns: 1fr; } .project-log-modal { inset: 6px; } .history-service { grid-template-columns: minmax(100px, 1fr) 85px 85px; } }
 .history-event-pages { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 11px; color: var(--text-muted); }
 .history-event-pages > span { margin-right: auto; }
