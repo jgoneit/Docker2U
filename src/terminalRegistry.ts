@@ -2,6 +2,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { coreError, type Container, type CoreError } from './api';
 import { terminalApi, type TerminalDescriptor, type TerminalEvent, type TerminalShell, type TerminalStatus } from './terminalApi';
+import { observationApi } from './observationApi';
 
 export const TERMINAL_LIMIT = 8;
 export const TERMINAL_SCROLLBACK = 2_000;
@@ -15,6 +16,7 @@ interface Entry {
   view: TerminalView; sessionId: string; term: Terminal; fit: FitAddon; host: HTMLDivElement;
   live: boolean; sequence: number; inputBytes: number; input: Promise<void>; opened: boolean;
   size: { cols: number; rows: number } | null;
+  holdId: string | null;
 }
 
 /** Owns terminal instances independently of the selected detail tab/container. */
@@ -38,7 +40,20 @@ export class TerminalRegistry {
   }
   private release(entry: Entry) {
     entry.live = false; entry.term.dispose(); entry.host.remove();
+    void this.releaseHold(entry);
     if (entry.view.terminalId) void terminalApi.close(entry.sessionId, entry.view.terminalId).catch(() => {});
+  }
+  private async releaseHold(entry: Entry) {
+    const holdId = entry.holdId; entry.holdId = null;
+    if (!holdId) return;
+    try { await observationApi.release(entry.sessionId, holdId); }
+    catch (error) {
+      if (!this.current(entry)) return;
+      const failure = coreError(error);
+      // Cleanup must not replace a more specific exec/start failure.
+      if (!entry.view.error) { entry.view.error = failure; this.publish(); }
+      this.onError?.(failure, entry.sessionId);
+    }
   }
   private fail(entry: Entry, error: unknown) {
     if (!this.current(entry)) return;
@@ -64,7 +79,7 @@ export class TerminalRegistry {
       if (this.current(entry)) void terminalApi.ack(entry.sessionId, event.terminalId, event.sequence).catch(error => this.fail(entry, error));
     });
   }
-  async connect(sessionId: string, generation: number, container: Container, shell: TerminalShell) {
+  async connect(sessionId: string, _generation: number, container: Container, shell: TerminalShell) {
     if (sessionId !== this.sessionId || this.entries.has(container.fullId) || this.entries.size >= TERMINAL_LIMIT) return;
     const term = new Terminal({ cols: 80, rows: 24, scrollback: TERMINAL_SCROLLBACK, cursorBlink: true,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, monospace', fontSize: 12, lineHeight: 1.2,
@@ -76,14 +91,25 @@ export class TerminalRegistry {
     const fit = new FitAddon(); term.loadAddon(fit);
     const host = document.createElement('div'); host.className = 'terminal-emulator';
     host.dataset.containerId = container.fullId;
-    const entry: Entry = { sessionId, term, fit, host, live: true, sequence: 0, opened: false, size: null, inputBytes: 0, input: Promise.resolve(),
+    const entry: Entry = { sessionId, term, fit, host, live: true, sequence: 0, opened: false, size: null, holdId: null, inputBytes: 0, input: Promise.resolve(),
       view: { containerId: container.fullId, containerName: container.name, shell, status: 'connecting', terminalId: null, exitCode: null, error: null, pending: true } };
     this.entries.set(container.fullId, entry);
     term.onData(data => this.write(container.fullId, new TextEncoder().encode(data)));
     term.onBinary(data => this.write(container.fullId, Uint8Array.from(data, character => character.charCodeAt(0))));
     this.publish();
     try {
-      const result = await terminalApi.start(sessionId, generation, container.handle, shell, term.cols, term.rows, event => this.event(entry, event));
+      if (!this.current(entry)) return;
+      // Observation can refresh handles between UI polls. Reserve the current
+      // inventory before resolving the original full ID; never follow its name.
+      const hold = await observationApi.hold(sessionId);
+      entry.holdId = hold.holdId;
+      if (!this.current(entry)) return;
+      if (hold.sessionId !== sessionId || hold.inventory.sessionId !== sessionId) throw { code: 'StaleSession', message: 'The reserved inventory belongs to another Engine session.' };
+      if (hold.inventory.stale) throw { code: 'NeedsValidation', message: 'Refresh before connecting to the terminal.' };
+      const target = hold.inventory.containers.find(item => item.fullId === container.fullId);
+      if (!target) throw { code: 'StaleHandle', message: 'The selected container no longer exists in the reserved inventory.' };
+      if (target.state !== 'running') throw { code: 'InvalidState', message: 'The selected container is not running.' };
+      const result = await terminalApi.start(sessionId, hold.inventory.generation, target.handle, shell, term.cols, term.rows, event => this.event(entry, event));
       if (!this.current(entry)) { void terminalApi.close(sessionId, result.terminalId).catch(() => {}); return; }
       // A status/output Channel event can precede the start reply; never regress it.
       if (!entry.view.terminalId) this.descriptor(entry, result);
@@ -92,7 +118,7 @@ export class TerminalRegistry {
     } catch (error) {
       if (!this.current(entry)) return;
       entry.view.status = 'failed'; entry.term.options.disableStdin = true; this.fail(entry, error);
-    }
+    } finally { await this.releaseHold(entry); }
   }
   attach(containerId: string, parent: HTMLElement) {
     const entry = this.entries.get(containerId); if (!entry) return;
@@ -155,11 +181,15 @@ export class TerminalRegistry {
     } catch (error) { this.fail(entry, error); }
   }
   async close(containerId: string) {
-    const entry = this.entries.get(containerId); if (!entry || entry.view.pending) return;
+    const entry = this.entries.get(containerId); if (!entry) return;
+    if (entry.view.pending) {
+      if (entry.view.status !== 'connecting') return;
+      this.entries.delete(containerId); this.release(entry); this.publish(); return;
+    }
     entry.view.pending = true; this.publish();
     try {
       if (entry.view.terminalId) await terminalApi.close(entry.sessionId, entry.view.terminalId);
-      if (this.current(entry)) { entry.live = false; entry.term.dispose(); entry.host.remove(); this.entries.delete(containerId); this.publish(); }
+      if (this.current(entry)) { entry.live = false; entry.term.dispose(); entry.host.remove(); this.entries.delete(containerId); this.publish(); await this.releaseHold(entry); }
     } catch (error) { this.fail(entry, error); }
   }
 }
