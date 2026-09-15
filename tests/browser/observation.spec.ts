@@ -190,7 +190,9 @@ test('project and container logs retain console typography and shared copy feedb
     const colors = await viewport.evaluate(node => ({ body: getComputedStyle(node).backgroundColor, inset: getComputedStyle(document.querySelector('.app-footer')!).backgroundColor }));
     expect(colors.body).toBe(colors.inset);
     expect(colors.body).not.toBe('rgba(0, 0, 0, 0)');
-    expect(await page.locator('.project-log-row').first().evaluate(node => node.getBoundingClientRect().height)).toBe(26);
+    await expect.poll(() => viewport.evaluate(node =>
+      node.querySelector('.project-log-row')?.getBoundingClientRect().height ?? 0,
+    )).toBe(26);
     const source = page.locator('.project-log-row > span:nth-child(2)').last();
     if (scope === 'container') await expect(source).toBeHidden();
     else await expect(source).toBeVisible();
