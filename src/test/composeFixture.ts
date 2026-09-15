@@ -1,20 +1,28 @@
 import { api, type Container, type ContainerList } from '../api';
-import { composeApi, type ComposeOperation, type ComposePreparation, type ComposeProject, type ComposeProjectInput, type ComposeProjectPreview, type ComposeServicePreview } from '../composeApi';
+import { composeApi, type ComposeAction, type ComposeApplySelection, type ComposeOperation, type ComposePreparation, type ComposeProject, type ComposeProjectInput, type ComposeProjectPreview, type ComposeServicePreview, type ComposeStage } from '../composeApi';
 
 /** Visual development fixture only: every Compose transport is replaced, no native command is run. */
 export function installComposeFixture() {
   type Mode = 'success' | 'failed' | 'quiet';
+  type ApplyMode = 'success' | 'pull-failed' | 'build-failed' | 'recreate-failed' | 'between-stages-cancelled';
   let mode = (new URLSearchParams(location.search).get('composeMode') ?? 'success') as Mode;
+  let applyMode = (new URLSearchParams(location.search).get('applyMode') ?? 'success') as ApplyMode;
   const calls: Record<string, number> = {};
   const projects: ComposeProject[] = [];
   const previews = new Map<string, ComposeProjectPreview>();
   const preparations = new Map<string, ComposePreparation>();
-  const jobs = new Map<string, { operation: ComposeOperation; mode: Mode; deadline: number }>();
+  const jobs = new Map<string, { operation: ComposeOperation; mode: Mode; applyMode: ApplyMode; deadline: number }>();
   const started = new Map<string, ComposeOperation>();
   const synthetic = new Map<string, Container[]>();
   let sequence = 0;
   const services: ComposeServicePreview[] = [{ name: 'web', image: 'fixture.invalid/web:local', build: true, profiles: [] }, { name: 'db', image: 'fixture.invalid/db:local', build: false, profiles: [] }];
   const count = (key: string) => { calls[key] = (calls[key] ?? 0) + 1; };
+  function stages(selections: ComposeApplySelection[]): ComposeStage[] {
+    return (['pull', 'build', 'recreate'] as const).map(kind => {
+      const names = selections.filter(item => kind === 'recreate' || item.preparation === kind).map(item => item.service);
+      return { kind, services: names, status: names.length ? 'pending' : 'skipped', exitCode: null, error: null };
+    });
+  }
   let lastInventory: ContainerList | null = null;
   const originalDetails = api.getContainerDetails;
   const originalList = api.listContainers;
@@ -34,16 +42,45 @@ export function installComposeFixture() {
         health: target.health ? { status: target.health, failingStreak: target.health === 'unhealthy' ? 1 : 0, recentFailures: [] } : null },
       connectivity: { networkMode: 'bridge', portsAvailable: true, networksAvailable: true, ports: [], networks: [] } };
   };
-  function settle(job: { operation: ComposeOperation; mode: Mode; deadline: number }) {
+  function settle(job: { operation: ComposeOperation; mode: Mode; applyMode: ApplyMode; deadline: number }) {
     const op = job.operation;
     if (op.phase === 'finished' || Date.now() < job.deadline) return;
+    if (op.action === 'apply') {
+      const failedKind = job.applyMode.endsWith('-failed') ? job.applyMode.replace('-failed', '') : null;
+      let stopped = false;
+      for (const stage of op.stages ?? []) {
+        if (!stage.services.length) continue;
+        if (stopped) { stage.status = 'skipped'; continue; }
+        if (op.cancelRequested) {
+          stage.status = 'resultUnknown'; stage.error = { code: 'ResultUnknown', message: 'Synthetic command interrupted. Accepted changes may remain.' }; stopped = true;
+        } else if (stage.kind === failedKind) {
+          stage.status = 'failed'; stage.exitCode = 1; stage.error = { code: 'CommandFailed', message: `Synthetic ${stage.kind} failed.` }; stopped = true;
+        } else if (stage.kind === 'recreate' && job.applyMode === 'between-stages-cancelled') {
+          stage.status = 'skipped'; stopped = true;
+        } else { stage.status = 'succeeded'; stage.exitCode = 0; }
+      }
+      op.phase = 'finished'; op.finishedAt = new Date().toISOString(); op.reconciliation = 'succeeded';
+      op.outcome = op.cancelRequested ? 'resultUnknown' : job.applyMode === 'between-stages-cancelled' ? 'cancelled' : failedKind ? 'failed' : 'succeeded';
+      op.exitCode = op.outcome === 'succeeded' ? 0 : op.outcome === 'failed' ? 1 : null;
+      op.error = op.stages?.find(stage => stage.error)?.error ?? null;
+      const recreate = op.stages?.find(stage => stage.kind === 'recreate');
+      if (recreate?.status === 'succeeded') {
+        count('recreate');
+        const old = synthetic.get(op.projectName) ?? [];
+        const selected = new Set(op.selections?.map(item => item.service));
+        const replacement = services.filter(service => selected.has(service.name)).map((service, index): Container => ({ handle: 'replaced-on-read', fullId: `${op.id}-${service.name}`.padEnd(64, 'f'), shortId: `${op.id}-${index}`, name: `${op.projectName}-${service.name}-1`, composeProject: op.projectName, composeService: service.name, state: 'running', image: service.image!, health: service.name === 'web' ? (new URLSearchParams(location.search).get('composeHealth') ?? 'healthy') : null, healthConfigured: service.name === 'web', ports: [], createdAt: op.startedAt }));
+        synthetic.set(op.projectName, [...old.filter(item => !selected.has(item.composeService ?? '')), ...replacement]);
+      }
+      op.observedContainers = synthetic.get(op.projectName)?.length ?? 0;
+      return;
+    }
     op.phase = 'finished'; op.outcome = op.cancelRequested ? 'resultUnknown' : job.mode === 'failed' ? 'failed' : 'succeeded';
     op.exitCode = op.cancelRequested ? null : job.mode === 'failed' ? 1 : 0; op.finishedAt = new Date().toISOString(); op.reconciliation = 'succeeded';
     op.observedContainers = 2;
     if (op.outcome === 'failed') op.error = { code: 'ComposeFailed', message: 'Synthetic second service startup failed.' };
     synthetic.set(op.projectName, services.map((service, i) => ({ handle: 'replaced-on-read', fullId: `${op.projectId}-${service.name}`.padEnd(64, 'f'), shortId: `${op.projectId}-${i}`, name: `${op.projectName}-${service.name}-1`, composeProject: op.projectName, composeService: service.name, state: op.action === 'stop' || (op.outcome === 'failed' && i === 1) ? 'exited' : 'running', image: service.image!, health: i === 0 && op.action !== 'stop' ? (new URLSearchParams(location.search).get('composeHealth') ?? 'healthy') : null, healthConfigured: i === 0, ports: [], createdAt: op.startedAt })));
   }
-  Object.assign(window, { __docker2uComposeFixture: { calls, setMode: (value: Mode) => { mode = value; }, finish: () => { for (const job of jobs.values()) job.deadline = 0; }, projects } });
+  Object.assign(window, { __docker2uComposeFixture: { calls, setMode: (value: Mode) => { mode = value; }, setApplyMode: (value: ApplyMode) => { applyMode = value; }, finish: () => { for (const job of jobs.values()) job.deadline = 0; }, operations: () => [...jobs.values()].map(job => structuredClone(job.operation)), projects } });
   Object.assign(composeApi, {
     available: () => true,
     pick: async (kind: 'file' | 'directory' | 'env') => { count(`pick:${kind}`); return kind === 'file' ? '/synthetic/compose-demo/compose.yaml' : kind === 'directory' ? '/synthetic/compose-demo' : '/synthetic/compose-demo/.env'; },
@@ -63,16 +100,23 @@ export function installComposeFixture() {
       projects.push(project); return structuredClone(project);
     },
     remove: async (projectId: string, revision: number) => { count('remove'); const index = projects.findIndex(item => item.id === projectId && item.revision === revision); if (index < 0) throw { code: 'RegistrationChanged', message: 'Synthetic registration changed.' }; projects.splice(index, 1); },
-    prepare: async (_sessionId: string, projectId: string, revision: number, action: 'up' | 'stop') => {
+    previewApply: async (_sessionId: string, projectId: string, revision: number) => {
+      count('previewApply'); const project = projects.find(item => item.id === projectId && item.revision === revision);
+      if (!project) throw { code: 'RegistrationChanged', message: 'Synthetic registration changed.' };
+      return { project: structuredClone(project), composeVersion: 'Docker Compose fixture v2', services: services.map(service => ({ ...service, preparations: service.build ? ['pull', 'build', 'none'] as const : ['pull', 'none'] as const, blockedReason: null })).map(service => ({ ...service, preparations: [...service.preparations] })) };
+    },
+    prepare: async (_sessionId: string, projectId: string, revision: number, action: ComposeAction, selections?: ComposeApplySelection[]) => {
       count('prepare'); const project = projects.find(item => item.id === projectId && item.revision === revision); if (!project) throw { code: 'RegistrationChanged', message: 'Synthetic registration changed.' };
-      const value: ComposePreparation = { prepareId: `prepare-${++sequence}`, project: structuredClone(project), action, services, composeVersion: 'Docker Compose fixture v2', existingContainers: synthetic.get(project.name)?.length ?? 0, recreatePossible: action === 'up' };
+      if (action === 'apply' && (!selections?.length || selections.some(item => !services.some(service => service.name === item.service && (item.preparation !== 'build' || service.build))))) throw { code: 'InvalidApplySelection', message: 'Synthetic unsupported service selection.' };
+      const value: ComposePreparation = { prepareId: `prepare-${++sequence}`, project: structuredClone(project), action, services, composeVersion: 'Docker Compose fixture v2', existingContainers: synthetic.get(project.name)?.length ?? 0, recreatePossible: action !== 'stop', selections: action === 'apply' ? structuredClone(selections!) : [], stages: action === 'apply' ? stages(selections!) : [], warnings: [] };
       preparations.set(value.prepareId, value); return structuredClone(value);
     },
     start: async (sessionId: string, prepareId: string, requestId: string) => {
       count('start'); if (started.has(requestId)) return structuredClone(started.get(requestId)!);
       const preparation = preparations.get(prepareId); if (!preparation) throw { code: 'PreparationExpired', message: 'Synthetic preparation expired.' };
-      const operation: ComposeOperation = { id: `job-${++sequence}`, sessionId, projectId: preparation.project.id, projectName: preparation.project.name, action: preparation.action, phase: 'running', outcome: null, cancelRequested: false, exitCode: null, startedAt: new Date().toISOString(), finishedAt: null, reconciliation: 'pending', observedContainers: null, error: null };
-      jobs.set(operation.id, { operation, mode, deadline: mode === 'quiet' ? Infinity : Date.now() + 1800 }); started.set(requestId, operation); return structuredClone(operation);
+      const operation: ComposeOperation = { id: `job-${++sequence}`, sessionId, requestId, selections: structuredClone(preparation.selections ?? []), stages: structuredClone(preparation.stages ?? []), warnings: structuredClone(preparation.warnings ?? []), projectId: preparation.project.id, projectName: preparation.project.name, action: preparation.action, phase: 'running', outcome: null, cancelRequested: false, exitCode: null, startedAt: new Date().toISOString(), finishedAt: null, reconciliation: 'pending', observedContainers: null, error: null };
+      const running = operation.stages?.find(stage => stage.status === 'pending'); if (running) running.status = 'running';
+      jobs.set(operation.id, { operation, mode, applyMode, deadline: mode === 'quiet' ? Infinity : Date.now() + 1800 }); started.set(requestId, operation); return structuredClone(operation);
     },
     operations: async (_sessionId: string) => { count('operations'); return [...jobs.values()].map(job => structuredClone(job.operation)); },
     read: async (sessionId: string, operationId: string, afterSequence: number) => {

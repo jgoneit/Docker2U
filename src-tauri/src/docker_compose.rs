@@ -11,6 +11,15 @@ use std::{
     time::Instant,
 };
 
+#[path = "docker_compose_apply.rs"]
+mod apply;
+#[cfg(test)]
+use apply::ComposePreparationMode;
+use apply::{
+    ComposeApplyMetadata, apply_help_supports_flags, parse_apply_metadata, plan_compose_apply,
+};
+pub use apply::{ComposeApplyPreview, ComposeApplyWarning, ComposeServiceSelection};
+
 #[path = "docker_compose_operations.rs"]
 mod operations;
 pub(super) use operations::ComposeOperationManager;
@@ -86,6 +95,7 @@ struct ValidatedProject {
     services: Vec<ComposeServicePreview>,
     existing_containers: usize,
     resolved_digest: Vec<u8>,
+    apply_metadata: Option<ComposeApplyMetadata>,
 }
 struct RegistrationPreview {
     project: ValidatedProject,
@@ -635,10 +645,31 @@ impl Core {
     fn validate_compose(
         &self,
         session: &Session,
+        input: ComposeProjectInput,
+        proofs: Vec<FileProof>,
+        cancel: Arc<AtomicBool>,
+        deadline: Instant,
+    ) -> Result<ValidatedProject> {
+        self.validate_compose_mode(session, input, proofs, cancel, deadline, false)
+    }
+    fn validate_compose_apply(
+        &self,
+        session: &Session,
+        input: ComposeProjectInput,
+        proofs: Vec<FileProof>,
+        cancel: Arc<AtomicBool>,
+        deadline: Instant,
+    ) -> Result<ValidatedProject> {
+        self.validate_compose_mode(session, input, proofs, cancel, deadline, true)
+    }
+    fn validate_compose_mode(
+        &self,
+        session: &Session,
         mut input: ComposeProjectInput,
         proofs: Vec<FileProof>,
         cancel: Arc<AtomicBool>,
         deadline: Instant,
+        apply: bool,
     ) -> Result<ValidatedProject> {
         if session.needs_validation || session.stale {
             return Err(ApiError::new(
@@ -697,9 +728,39 @@ impl Core {
                 ));
             }
         }
+        if apply {
+            for (command, required) in [
+                (vec!["compose", "--help"], vec!["--profile"]),
+                (vec!["compose", "pull", "--help"], vec!["--policy"]),
+                (vec!["compose", "build", "--help"], vec![]),
+                (
+                    vec!["compose", "up", "--help"],
+                    vec!["--no-deps", "--no-build", "--pull", "--force-recreate"],
+                ),
+            ] {
+                let help = self.compose_capture(
+                    &session.target,
+                    &session.target.engine_args(&command),
+                    &options,
+                )?;
+                let text = String::from_utf8_lossy(&help);
+                if !apply_help_supports_flags(&text, &required) {
+                    return Err(ApiError::new(
+                        "ComposeUnavailable",
+                        "The installed Compose CLI lacks required apply options",
+                    ));
+                }
+            }
+        }
+        // Profiles expand only the read-only catalog. Mutations name selected services.
+        let config_command: &[&str] = if apply {
+            &["--profile", "*", "config", "--format", "json"]
+        } else {
+            &["config", "--format", "json"]
+        };
         let data = self.compose_capture(
             &session.target,
-            &compose_arguments(&session.target, &input, &["config", "--format", "json"]),
+            &compose_arguments(&session.target, &input, config_command),
             &options,
         )?;
         let config: Value = serde_json::from_slice(&data).map_err(|_| {
@@ -717,6 +778,11 @@ impl Core {
                 .to_owned();
         }
         let services = preview_services(&config, &input.name)?;
+        let apply_metadata = if apply {
+            Some(parse_apply_metadata(&config, &input.name)?)
+        } else {
+            None
+        };
         let existing_containers = self.compose_provenance(&session.target, &input, &options)?;
         verify_proofs(&proofs)?;
         let active = self.active(&session.id)?;
@@ -738,6 +804,7 @@ impl Core {
             services,
             existing_containers,
             resolved_digest,
+            apply_metadata,
         })
     }
     fn verify_compose_target(&self, target: &Target, options: &ProcessOptions) -> Result<()> {

@@ -28,25 +28,32 @@ if args==['--version']: print('Docker version 26.1.4, build fixture')
 elif args[:1]==['info']: print(json.dumps(dict(ID='fixture-engine',OSType='linux',Architecture='aarch64',Name='fixture')))
 elif args[:1]==['version']: print(json.dumps(dict(Server=dict(Version='26.1.4',ApiVersion='1.45'))))
 elif args[:2]==['compose','version']: print('2.38.0' if mode=='old-version' else '2.39.4')
-elif args[:1]==['compose'] and '--help' in args: print('--project-directory --project-name --env-file --progress --ansi --format --detach --timeout' if mode!='missing-option' else '--format')
+elif args[:1]==['compose'] and '--help' in args: print('--project-directory --project-name --env-file --progress --ansi --format --detach --timeout --profile --no-deps --no-build --pull --force-recreate --policy' if mode!='missing-option' else '--format')
 elif args[:1]==['compose']:
     name=args[args.index('--project-name')+1] if '--project-name' in args else 'derived-name'
     if 'config' in args:
-        if mode=='waiting-config':
+        if mode=='waiting-config' or (mode=='waiting-between' and (root/'pull-finished').exists()):
             (root/'config-entered').write_text('yes')
             while not (root/'release-config').exists(): time.sleep(.01)
         if mode=='bad-config':
             print('SECRET_ENV_VALUE',file=sys.stderr); sys.exit(1)
         secret=(root/'resolved-value').read_text() if (root/'resolved-value').exists() else 'SECRET_ENV_VALUE'
-        print(json.dumps(dict(name=name,services=dict(api=dict(image='fixture',environment=dict(TOKEN=secret),build=dict(context='.'),profiles=[])))))
-    elif 'up' in args or 'stop' in args:
-        action='up' if 'up' in args else 'stop'
+        services=json.loads((root/'config-json').read_text()) if (root/'config-json').exists() else dict(api=dict(image='fixture',build=dict(context='.'),profiles=[]))
+        services['api']['environment']=dict(TOKEN=secret)
+        print(json.dumps(dict(name=name,services=services)))
+    elif any(command in args for command in ['up','stop','pull','build']):
+        action=next(command for command in ['up','stop','pull','build'] if command in args)
+        with (root/'mutation-args').open('a') as out: out.write(json.dumps(args)+'\n')
         with (root/'mutations').open('a') as out: out.write(action+'\n')
-        (root/'engine-container').write_text(name)
+        if action in ['up','stop']: (root/'engine-container').write_text(name)
+        (root/(action+'-entered')).write_text('yes')
         print('Compose '+action+' progress',flush=True)
-        if mode=='waiting-up':
+        if mode=='waiting-'+action:
             while True: time.sleep(.01)
-        if mode=='failed-up': sys.exit(9)
+        if mode=='failed-'+action or (mode=='missing-image' and action=='up'): sys.exit(9)
+        if action=='pull':
+            (root/'pull-finished').write_text('yes')
+            if mode=='changed-after-pull': (root/'resolved-value').write_text('changed-after-pull')
     else: sys.exit(3)
 elif args[:2]==['container','ls']:
     if (root/'engine-container').exists(): print('a'*64)
@@ -117,7 +124,7 @@ else: sys.exit(4)
     }
     fn prepare(&self, project: &ComposeProject, action: ComposeAction) -> ComposeOperationPreview {
         self.core
-            .prepare_compose_operation("session", &project.id, project.revision, action)
+            .prepare_compose_operation("session", &project.id, project.revision, action, None)
             .unwrap()
     }
     fn mode(&self, mode: &str) {
@@ -652,6 +659,7 @@ fn compose_completed_output_survives_reconnect_and_a_new_operation_without_old_a
             &project.id,
             project.revision,
             ComposeAction::Stop,
+            None,
         )
         .unwrap();
     let new = fixture
@@ -832,4 +840,270 @@ fn compose_project_log_identity_failure_cancels_a_quiet_running_operation() {
     assert_eq!(terminal.outcome.as_deref(), Some("resultUnknown"));
     fixture.core.stop_project_logs("session").unwrap();
     server.join().unwrap();
+}
+
+impl Fixture {
+    fn prepare_apply(&self) -> ComposeOperationPreview {
+        fs::write(
+            self.root.join("config-json"),
+            serde_json::to_vec(&serde_json::json!({
+                "api": {"image":"fixture-api", "build":{"context":"."}},
+                "db": {"image":"fixture-db"},
+                "worker": {"image":"fixture-worker", "profiles":["tools"]}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let project = self.save();
+        let preview = self
+            .core
+            .preview_compose_apply("session", &project.id, project.revision)
+            .unwrap();
+        assert_eq!(preview.services.len(), 3);
+        self.core
+            .prepare_compose_operation(
+                "session",
+                &project.id,
+                project.revision,
+                ComposeAction::Apply,
+                Some(vec![
+                    ComposeServiceSelection {
+                        service: "worker".into(),
+                        preparation: ComposePreparationMode::None,
+                    },
+                    ComposeServiceSelection {
+                        service: "db".into(),
+                        preparation: ComposePreparationMode::Pull,
+                    },
+                    ComposeServiceSelection {
+                        service: "api".into(),
+                        preparation: ComposePreparationMode::Build,
+                    },
+                ]),
+            )
+            .unwrap()
+    }
+    fn mutations(&self) -> String {
+        fs::read_to_string(self.root.join("mutations")).unwrap_or_default()
+    }
+}
+#[test]
+fn compose_apply_runs_grouped_preparation_then_only_explicit_services() {
+    let fixture = Fixture::new();
+    let prepared = fixture.prepare_apply();
+    assert_eq!(prepared.stages.len(), 3);
+    let op = fixture
+        .core
+        .start_compose_operation("session", &prepared.prepare_id, "apply-request")
+        .unwrap();
+    let terminal = fixture.wait_terminal(&op.id);
+    assert_eq!(terminal.request_id, "apply-request");
+    assert_eq!(terminal.outcome.as_deref(), Some("succeeded"));
+    assert!(
+        terminal
+            .stages
+            .iter()
+            .all(|stage| stage.status == operations::ComposeStageStatus::Succeeded)
+    );
+    assert_eq!(fixture.mutations(), "pull\nbuild\nup\n");
+    let arguments: Vec<Vec<String>> = fs::read_to_string(fixture.root.join("mutation-args"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let expected = [
+        vec!["pull", "--policy", "always", "--", "db"],
+        vec!["build", "--", "api"],
+        vec![
+            "up",
+            "--detach",
+            "--no-deps",
+            "--no-build",
+            "--pull",
+            "never",
+            "--force-recreate",
+            "--",
+            "api",
+            "db",
+            "worker",
+        ],
+    ];
+    for (args, expected) in arguments.iter().zip(expected) {
+        let start = args.iter().position(|arg| arg == expected[0]).unwrap();
+        assert_eq!(&args[start..], expected);
+        assert!(!args.iter().any(|arg| arg == "--profile"));
+    }
+    assert_eq!(terminal.reconciliation, "succeeded");
+}
+#[test]
+fn compose_apply_stops_after_failed_preparation_or_missing_local_image() {
+    for (mode, expected, failed_index) in [
+        ("failed-pull", "pull\n", 0),
+        ("failed-build", "pull\nbuild\n", 1),
+        ("missing-image", "pull\nbuild\nup\n", 2),
+    ] {
+        let fixture = Fixture::new();
+        let prepared = fixture.prepare_apply();
+        fixture.mode(mode);
+        let op = fixture
+            .core
+            .start_compose_operation("session", &prepared.prepare_id, "apply-request")
+            .unwrap();
+        let terminal = fixture.wait_terminal(&op.id);
+        assert_eq!(fixture.mutations(), expected);
+        assert_eq!(terminal.outcome.as_deref(), Some("failed"));
+        assert_eq!(
+            terminal.stages[failed_index].status,
+            operations::ComposeStageStatus::Failed
+        );
+        assert!(
+            terminal.stages[..failed_index]
+                .iter()
+                .all(|stage| stage.status == operations::ComposeStageStatus::Succeeded)
+        );
+        assert!(
+            terminal.stages[failed_index + 1..]
+                .iter()
+                .all(|stage| stage.status == operations::ComposeStageStatus::Skipped)
+        );
+        assert_eq!(terminal.reconciliation, "succeeded");
+    }
+}
+#[test]
+fn compose_apply_revalidates_configuration_after_preparation() {
+    let fixture = Fixture::new();
+    let prepared = fixture.prepare_apply();
+    fixture.mode("changed-after-pull");
+    let op = fixture
+        .core
+        .start_compose_operation("session", &prepared.prepare_id, "apply-request")
+        .unwrap();
+    let terminal = fixture.wait_terminal(&op.id);
+    assert_eq!(fixture.mutations(), "pull\n");
+    assert_eq!(terminal.error.unwrap().code, "ProjectFilesChanged");
+    assert_eq!(
+        terminal.stages[0].status,
+        operations::ComposeStageStatus::Succeeded
+    );
+    assert_eq!(
+        terminal.stages[2].status,
+        operations::ComposeStageStatus::Skipped
+    );
+}
+#[test]
+fn compose_apply_cancel_during_build_preserves_successful_pull_and_never_recreates() {
+    let fixture = Fixture::new();
+    let prepared = fixture.prepare_apply();
+    fixture.mode("waiting-build");
+    let op = fixture
+        .core
+        .start_compose_operation("session", &prepared.prepare_id, "apply-request")
+        .unwrap();
+    fixture.wait_file("build-entered");
+    fixture
+        .core
+        .cancel_compose_operation("session", &op.id)
+        .unwrap();
+    let terminal = fixture.wait_terminal(&op.id);
+    assert_eq!(fixture.mutations(), "pull\nbuild\n");
+    assert_eq!(terminal.outcome.as_deref(), Some("resultUnknown"));
+    assert_eq!(
+        terminal.stages[0].status,
+        operations::ComposeStageStatus::Succeeded
+    );
+    assert_eq!(
+        terminal.stages[1].status,
+        operations::ComposeStageStatus::ResultUnknown
+    );
+    assert_eq!(
+        terminal.stages[2].status,
+        operations::ComposeStageStatus::Skipped
+    );
+}
+#[test]
+fn compose_apply_cancel_between_stages_reports_known_retained_preparation() {
+    let fixture = Fixture::new();
+    let prepared = fixture.prepare_apply();
+    fixture.mode("waiting-between");
+    let op = fixture
+        .core
+        .start_compose_operation("session", &prepared.prepare_id, "apply-request")
+        .unwrap();
+    fixture.wait_file("config-entered");
+    fixture
+        .core
+        .cancel_compose_operation("session", &op.id)
+        .unwrap();
+    let terminal = fixture.wait_terminal(&op.id);
+    assert_eq!(fixture.mutations(), "pull\n");
+    assert_eq!(terminal.outcome.as_deref(), Some("cancelled"));
+    assert_eq!(
+        terminal.stages[0].status,
+        operations::ComposeStageStatus::Succeeded
+    );
+    assert_eq!(
+        terminal.stages[1].status,
+        operations::ComposeStageStatus::Skipped
+    );
+    assert_eq!(
+        terminal.stages[2].status,
+        operations::ComposeStageStatus::Skipped
+    );
+}
+#[test]
+fn compose_apply_lost_start_response_recovers_by_request_without_duplicate_mutation() {
+    let fixture = Fixture::new();
+    let prepared = fixture.prepare_apply();
+    fixture.mode("waiting-build");
+    let started = fixture
+        .core
+        .start_compose_operation("session", &prepared.prepare_id, "lost-response-request")
+        .unwrap();
+    fixture.wait_file("build-entered");
+    let retry = fixture
+        .core
+        .start_compose_operation("session", &prepared.prepare_id, "lost-response-request")
+        .unwrap();
+    let recovered = fixture
+        .core
+        .list_compose_operations("session")
+        .unwrap()
+        .into_iter()
+        .find(|op| op.session_id == "session" && op.request_id == "lost-response-request")
+        .unwrap();
+    assert_eq!(started.id, retry.id);
+    assert_eq!(started.id, recovered.id);
+    fixture
+        .core
+        .cancel_compose_operation("session", &started.id)
+        .unwrap();
+    fixture.wait_terminal(&started.id);
+    assert_eq!(fixture.mutations(), "pull\nbuild\n");
+}
+#[test]
+fn compose_apply_session_retirement_at_launch_boundary_prevents_any_command() {
+    let mut fixture = Fixture::new();
+    let entered = Arc::new(std::sync::Barrier::new(2));
+    let release = Arc::new(std::sync::Barrier::new(2));
+    fixture.core.compose_pre_spawn_barriers = Some((entered.clone(), release.clone()));
+    let prepared = fixture.prepare_apply();
+    fixture
+        .core
+        .start_compose_operation("session", &prepared.prepare_id, "apply-request")
+        .unwrap();
+    entered.wait();
+    fixture.core.state.lock().unwrap().session = None;
+    fixture.core.cancel_compose_session("session");
+    release.wait();
+    fixture.core.cancel_all_compose_and_wait();
+    assert!(fixture.mutations().is_empty());
+    assert!(
+        fixture
+            .core
+            .state
+            .lock()
+            .unwrap()
+            .compose_operation
+            .is_none()
+    );
 }

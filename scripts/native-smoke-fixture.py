@@ -48,6 +48,7 @@ def populate_fixture(root):
     write_json(config / "config.json", {"currentContext": "native-smoke-local"})
     shutil.copyfile(REPO / "tests/native-smoke/fake_docker.py", root / "docker")
     shutil.copyfile(REPO / "tests/native-smoke/compose_fixture.py", root / "compose_fixture.py")
+    shutil.copyfile(REPO / "tests/native-smoke/image_export_fixture.py", root / "image_export_fixture.py")
     compose_spec = importlib.util.spec_from_file_location("native_compose_fixture", root / "compose_fixture.py")
     compose = importlib.util.module_from_spec(compose_spec)
     compose_spec.loader.exec_module(compose)
@@ -139,9 +140,9 @@ def validate_compose_metadata(step):
             valid = (key in ("outcome", "errorCode") and value is None) or (isinstance(value, str) and 0 < len(value) <= 256)
         if not valid:
             raise ValueError("Compose metadata contains an invalid value: " + key)
-    for key, allowed in {"kind": {"file", "directory", "env"}, "action": {"up", "stop"},
+    for key, allowed in {"kind": {"file", "directory", "env"}, "action": {"up", "stop", "apply"},
                          "phase": {"preparing", "running", "reconciling", "finished"},
-                         "outcome": {None, "succeeded", "failed", "resultUnknown", "cancelledBeforeStart"},
+                         "outcome": {None, "succeeded", "failed", "resultUnknown", "cancelledBeforeStart", "cancelled"},
                          "reconciliation": {"pending", "succeeded", "failed", "skipped"}}.items():
         if key in detail and detail[key] not in allowed:
             raise ValueError("Compose metadata contains an unknown state: " + key)

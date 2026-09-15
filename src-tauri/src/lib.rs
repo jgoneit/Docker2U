@@ -4,11 +4,12 @@ mod process;
 mod process_tests;
 
 use docker::{
-    Action, ApiError, BulkMutation, ComposeAction, ComposeOperation, ComposeOperationPreview,
-    ComposeOperationRead, ComposeProject, ComposeProjectInput, ComposeProjectPreview,
-    ContainerDetails, ContainerList, Core, Environment, LogStreamChunk, LogStreamStarted, Logs,
-    MountInventory, Mutation, ObservationHold, ObservationRead, ObservationScope, ProjectLogPage,
-    ProjectLogQuery, StatsSnapshot,
+    Action, ApiError, BulkMutation, ComposeAction, ComposeApplyPreview, ComposeOperation,
+    ComposeOperationPreview, ComposeOperationRead, ComposeProject, ComposeProjectInput,
+    ComposeProjectPreview, ComposeServiceSelection, ContainerDetails, ContainerList, Core,
+    Environment, ImageExportDestination, ImageExportOperation, ImageExportPreview, LogStreamChunk,
+    LogStreamStarted, Logs, MountInventory, Mutation, ObservationHold, ObservationRead,
+    ObservationScope, ProjectLogPage, ProjectLogQuery, StatsSnapshot,
 };
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
@@ -283,16 +284,34 @@ async fn remove_compose_project(
 }
 
 #[tauri::command]
+async fn preview_compose_apply(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    project_id: String,
+    expected_revision: u64,
+) -> Result<ComposeApplyPreview, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.preview_compose_apply(&session_id, &project_id, expected_revision)).await
+}
+
+#[tauri::command]
 async fn prepare_compose_operation(
     core: tauri::State<'_, Core>,
     session_id: String,
     project_id: String,
     expected_revision: u64,
     action: ComposeAction,
+    selections: Option<Vec<ComposeServiceSelection>>,
 ) -> Result<ComposeOperationPreview, ApiError> {
     let core = core.inner().clone();
     worker(move || {
-        core.prepare_compose_operation(&session_id, &project_id, expected_revision, action)
+        core.prepare_compose_operation(
+            &session_id,
+            &project_id,
+            expected_revision,
+            action,
+            selections,
+        )
     })
     .await
 }
@@ -338,6 +357,104 @@ async fn cancel_compose_operation(
     worker(move || core.cancel_compose_operation(&session_id, &operation_id)).await
 }
 
+#[tauri::command]
+async fn prepare_image_export(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    generation: u64,
+    handle: String,
+) -> Result<ImageExportPreview, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.prepare_image_export(&session_id, generation, &handle)).await
+}
+
+#[tauri::command]
+async fn pick_image_export_destination(
+    app: tauri::AppHandle,
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    prepare_id: String,
+) -> Result<Option<ImageExportDestination>, ApiError> {
+    let core = core.inner().clone();
+    worker(move || {
+        let _picker = core.reserve_image_export_picker()?;
+        let preview = core.image_export_picker_preview(&session_id, &prepare_id)?;
+        let stem: String = preview
+            .container_name
+            .chars()
+            .filter(|ch| ch.is_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+            .take(64)
+            .collect();
+        let stem = if stem.is_empty() { "image" } else { &stem };
+        let selected = app
+            .dialog()
+            .file()
+            .add_filter("Docker image archive", &["tar"])
+            .set_file_name(format!(
+                "{stem}-{}-{}.tar",
+                &preview.image_id[7..19],
+                chrono::Utc::now().format("%Y%m%d-%H%M%SZ")
+            ))
+            .blocking_save_file();
+        selected
+            .map(|selection| {
+                let path = selection.into_path().map_err(|error| ApiError {
+                    code: "InvalidImageExportDestination".into(),
+                    message: format!("Cannot use the selected local path: {error}"),
+                    command: None,
+                    stderr: None,
+                })?;
+                core.set_image_export_destination(&session_id, &prepare_id, path)
+            })
+            .transpose()
+    })
+    .await
+}
+
+#[tauri::command]
+async fn start_image_export(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    prepare_id: String,
+    destination_token: String,
+    request_id: String,
+) -> Result<ImageExportOperation, ApiError> {
+    let core = core.inner().clone();
+    worker(move || {
+        core.start_image_export(&session_id, &prepare_id, &destination_token, &request_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn read_image_export(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    request_id: String,
+) -> Result<ImageExportOperation, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.read_image_export(&session_id, &request_id)).await
+}
+
+#[tauri::command]
+async fn list_image_exports(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+) -> Result<Vec<ImageExportOperation>, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.list_image_exports(&session_id)).await
+}
+
+#[tauri::command]
+async fn cancel_image_export(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    request_id: String,
+) -> Result<ImageExportOperation, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.cancel_image_export(&session_id, &request_id)).await
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -378,11 +495,18 @@ pub fn run() {
             preview_compose_project,
             save_compose_project,
             remove_compose_project,
+            preview_compose_apply,
             prepare_compose_operation,
             start_compose_operation,
             list_compose_operations,
             read_compose_operation,
             cancel_compose_operation,
+            prepare_image_export,
+            pick_image_export_destination,
+            start_image_export,
+            read_image_export,
+            list_image_exports,
+            cancel_image_export,
         ])
         .build(tauri::generate_context!())
         .expect("Docker2U could not start")
@@ -431,11 +555,18 @@ mod ipc_tests {
                 "allow-preview-compose-project",
                 "allow-save-compose-project",
                 "allow-remove-compose-project",
+                "allow-preview-compose-apply",
                 "allow-prepare-compose-operation",
                 "allow-start-compose-operation",
                 "allow-list-compose-operations",
                 "allow-read-compose-operation",
-                "allow-cancel-compose-operation"
+                "allow-cancel-compose-operation",
+                "allow-prepare-image-export",
+                "allow-pick-image-export-destination",
+                "allow-start-image-export",
+                "allow-read-image-export",
+                "allow-list-image-exports",
+                "allow-cancel-image-export"
             ])
         );
     }

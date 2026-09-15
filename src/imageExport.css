@@ -1,0 +1,26 @@
+.image-export-dialog { display: flex; flex-direction: column; gap: 14px; width: min(680px, calc(100vw - 36px)); max-height: calc(100vh - 40px); overflow: auto; padding: 22px; border: 1px solid var(--border-subtle); border-radius: 16px; background: var(--surface); color: var(--text); box-shadow: 0 20px 80px var(--shadow); }
+.image-export-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.image-export-heading h2 { display: flex; align-items: center; gap: 9px; font-size: 18px; }
+.image-export-heading > button { flex-shrink: 0; }
+.image-export-facts { display: grid; gap: 7px; font-size: 12px; }
+.image-export-facts > div { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 12px; }
+.image-export-facts dt, .image-export-metrics dt { color: var(--text-muted); }
+.image-export-facts dd, .image-export-path { margin: 0; overflow-wrap: anywhere; user-select: text; }
+.image-export-hint { color: var(--text-muted); font-size: 12px; line-height: 1.65; }
+.image-export-warning { padding: 10px; border: 1px solid var(--warning-border); border-radius: 7px; color: var(--warning); background: var(--warning-bg); font-size: 12px; overflow-wrap: anywhere; }
+.image-export-destination { display: flex; flex-direction: column; align-items: flex-start; gap: 9px; padding: 12px; border: 1px solid var(--border-subtle); border-radius: 8px; font-size: 12px; }
+.image-export-destination h3 { font-size: 12px; }
+.image-export-destination button, .image-export-state { display: flex; align-items: center; gap: 7px; }
+.image-export-state { font-weight: 600; }
+.image-export-metrics { display: flex; flex-wrap: wrap; gap: 24px; font-size: 12px; }
+.image-export-metrics dd { margin: 6px 0 0; font-variant-numeric: tabular-nums; }
+.image-export-dialog pre { max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.image-export-recent { display: flex; flex-shrink: 0; gap: 6px; overflow: auto; padding-bottom: 4px; }
+.image-export-recent button { flex-shrink: 0; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.image-export-recent button[aria-pressed="true"] { color: var(--link); background: var(--selected); }
+.image-export-statusbar { min-width: 0; display: flex; align-items: center; gap: 5px; border-radius: 6px; padding: 4px 7px; font-size: 11px; }
+.image-export-statusbar span { max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.image-export-statusbar[data-active] { color: var(--link); background: var(--selected); }
+.container-detail .detail-toolbar, .container-detail .recovery-actions { flex-wrap: wrap; }
+.image-export-action { color: var(--text); }
+@media (max-height: 700px) { .image-export-dialog { padding: 16px; gap: 10px; } }

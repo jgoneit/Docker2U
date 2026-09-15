@@ -128,14 +128,24 @@ test('preserves filtered paused logs and shares a storage query across tab and c
   await search.fill('request=');
   await expect(page.locator('.project-log-row').first()).toContainText('request=');
   await page.getByRole('button', { name: w.pause, exact: true }).click();
-  const frozen = await page.locator('.project-log-row').allTextContents();
+  // Virtualization may trim offscreen overscan rows after layout settles. The
+  // frozen view contract covers visible rows and the retained scroll position.
+  const view = () => page.locator('.project-log-viewport').evaluate(element => {
+    const bounds = element.getBoundingClientRect();
+    return { scrollTop: element.scrollTop, rows: [...element.querySelectorAll('.project-log-row')].filter(row => {
+      const rect = row.getBoundingClientRect();
+      return rect.bottom > bounds.top && rect.top < bounds.bottom;
+    }).map(row => row.textContent) };
+  });
+  const frozen = await view();
+  expect(frozen.rows.length).toBeGreaterThan(0);
   const subscriptions = await page.evaluate(() => (window as unknown as { __docker2uObservationCalls: Record<string, number> }).__docker2uObservationCalls.configureLogs);
   await showStorage(page, info);
   const reads = await mountCalls(page);
   await page.getByRole('tab', { name: w.projectLogs, exact: true }).click();
   await expect(search).toHaveValue('request=');
   await expect(page.getByRole('button', { name: w.resume, exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await expect.poll(() => page.locator('.project-log-row').allTextContents()).toEqual(frozen);
+  await expect.poll(view).toEqual(frozen);
   await showStorage(page, info);
   await page.locator('.container-row').filter({ hasText: backend }).locator('.container-tree-name').click();
   await showStorage(page, info);

@@ -18,7 +18,8 @@ jobs:
   frontend:
     name: Frontend checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    # The complete 576-case browser matrix plus setup exceeds 25 minutes on two workers.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

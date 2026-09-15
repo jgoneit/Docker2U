@@ -785,3 +785,158 @@ fn completed_follow_stays_successful_when_read_after_deadline() {
         "joining successful follow must preserve shared token"
     );
 }
+
+#[test]
+fn file_output_preserves_binary_above_text_limit_and_bounds_only_stderr() {
+    let fixture = Fixture::new("cat \"$1/input.bin\"\ncat \"$1/stderr.txt\" >&2");
+    let expected: Vec<u8> = (0..STDOUT_LIMIT + 1024 * 1024)
+        .map(|index| index as u8)
+        .collect();
+    fs::write(fixture.root.join("input.bin"), &expected).unwrap();
+    fs::write(
+        fixture.root.join("stderr.txt"),
+        vec![b'e'; STDERR_LIMIT + 8192],
+    )
+    .unwrap();
+    let path = fixture.root.join("archive.tar");
+    let options = ProcessOptions::default();
+    let follow = Runner::default()
+        .start_file_with_options(
+            &fixture.executable,
+            &fixture.args(),
+            &[],
+            &options,
+            fs::File::create(&path).unwrap(),
+        )
+        .unwrap();
+    let mut truncated = false;
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let terminal = loop {
+        let read = follow.read();
+        truncated |= read.truncated;
+        assert!(
+            read.text.is_empty(),
+            "binary output must never enter the text IPC buffer"
+        );
+        if read.terminal {
+            break read;
+        }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(10));
+    };
+    follow.stop();
+    assert_eq!(terminal.exit_code, Some(0));
+    assert_eq!(fs::read(path).unwrap(), expected);
+    assert_eq!(terminal.stderr.len(), STDERR_LIMIT);
+    assert!(truncated);
+    assert!(
+        !options.cancel.load(Ordering::Acquire),
+        "successful FD output must preserve shared cancellation"
+    );
+}
+
+#[test]
+fn file_output_reports_cli_failure_and_write_failure_without_capturing_tar() {
+    let fixture = Fixture::new("printf 'partial archive'\nprintf 'failure' >&2\nexit 17");
+    let path = fixture.root.join("archive.tar");
+    let follow = Runner::default()
+        .start_file_with_options(
+            &fixture.executable,
+            &fixture.args(),
+            &[],
+            &ProcessOptions::default(),
+            fs::File::create(&path).unwrap(),
+        )
+        .unwrap();
+    let (read, text) = follow_until(&follow, |read, _| read.terminal);
+    assert_eq!(read.exit_code, Some(17));
+    assert_eq!(read.stderr, "failure");
+    assert!(text.is_empty());
+    assert_eq!(fs::read(&path).unwrap(), b"partial archive");
+    follow.stop();
+
+    let fixture = Fixture::new("printf 'cannot write'");
+    let readonly = fixture.root.join("read-only.tar");
+    fs::write(&readonly, b"original").unwrap();
+    let follow = Runner::default()
+        .start_file_with_options(
+            &fixture.executable,
+            &fixture.args(),
+            &[],
+            &ProcessOptions::default(),
+            fs::File::open(&readonly).unwrap(),
+        )
+        .unwrap();
+    let (read, text) = follow_until(&follow, |read, _| read.terminal);
+    assert_ne!(read.exit_code, Some(0));
+    assert!(text.is_empty());
+    assert_eq!(fs::read(readonly).unwrap(), b"original");
+}
+
+#[test]
+fn file_output_cancel_and_deadline_reap_children_and_keep_observation_running() {
+    let fixture =
+        Fixture::new("printf 'bytes'\nprintf 'ready' >&2\nwhile :; do /bin/sleep 1; done");
+    let observer_fixture = Fixture::new("printf 'observed'\nwhile :; do /bin/sleep 1; done");
+    let runner = Runner::default();
+    let observer = runner
+        .start_follow(&observer_fixture.executable, &[], &[])
+        .unwrap();
+    let options = ProcessOptions::default();
+    let follow = runner
+        .start_file_with_options(
+            &fixture.executable,
+            &[],
+            &[],
+            &options,
+            fs::File::create(fixture.root.join("cancel.tar")).unwrap(),
+        )
+        .unwrap();
+    follow_until(&follow, |read, _| read.stderr == "ready");
+    options.cancel.store(true, Ordering::Release);
+    let (read, _) = follow_until(&follow, |read, _| read.terminal);
+    assert!(read.interrupted);
+    assert!(!read.timed_out);
+    assert!(
+        !observer.read().terminal,
+        "export cancellation must not stop log observation"
+    );
+    follow.stop();
+    observer.stop();
+
+    let options = ProcessOptions {
+        deadline: Some(Instant::now() + Duration::from_millis(200)),
+        ..ProcessOptions::default()
+    };
+    let follow = runner
+        .start_file_with_options(
+            &fixture.executable,
+            &[],
+            &[],
+            &options,
+            fs::File::create(fixture.root.join("timeout.tar")).unwrap(),
+        )
+        .unwrap();
+    let (read, _) = follow_until(&follow, |read, _| read.terminal);
+    assert!(read.interrupted && read.timed_out);
+    follow.stop();
+}
+
+#[test]
+fn file_output_cancelled_before_launch_never_executes_child() {
+    let fixture = Fixture::new("touch \"$1/started\"");
+    let options = ProcessOptions::default();
+    options.cancel.store(true, Ordering::Release);
+    assert!(
+        Runner::default()
+            .start_file_with_options(
+                &fixture.executable,
+                &fixture.args(),
+                &[],
+                &options,
+                fs::File::create(fixture.root.join("output.tar")).unwrap(),
+            )
+            .is_err()
+    );
+    assert!(!fixture.root.join("started").exists());
+}

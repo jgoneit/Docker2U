@@ -26,11 +26,18 @@ fn main() {
             "preview_compose_project",
             "save_compose_project",
             "remove_compose_project",
+            "preview_compose_apply",
             "prepare_compose_operation",
             "start_compose_operation",
             "list_compose_operations",
             "read_compose_operation",
             "cancel_compose_operation",
+            "prepare_image_export",
+            "pick_image_export_destination",
+            "start_image_export",
+            "read_image_export",
+            "list_image_exports",
+            "cancel_image_export",
         ]),
     ))
     .expect("failed to generate the explicit application permissions");

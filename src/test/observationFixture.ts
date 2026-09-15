@@ -5,6 +5,8 @@ import type { ProjectFilter } from '../projects';
 /** Development-only transport fixture. It never invokes native commands or Docker. */
 export function installObservationFixture() {
   let snapshot: ContainerList | null = null;
+  let inventorySession: string | null = null;
+  let inventoryRequest: { sessionId: string; promise: Promise<ContainerList> } | null = null;
   let scope: ProjectFilter = { kind: 'all' };
   let selected: Set<string> | null = null;
   let configuredProject = '';
@@ -16,14 +18,26 @@ export function installObservationFixture() {
   let failConfigure = new URLSearchParams(location.search).get('projectConfigureFailure') === '1';
   Object.assign(window, { __docker2uObservationCalls: calls });
   const count = (name: string) => { calls[name] = (calls[name] ?? 0) + 1; };
+  function inventory(sessionId: string, refresh = false): Promise<ContainerList> {
+    if (inventorySession !== sessionId) { inventorySession = sessionId; snapshot = null; lastInventory = 0; }
+    if (inventoryRequest?.sessionId === sessionId) return inventoryRequest.promise;
+    if (snapshot && !refresh) return Promise.resolve(snapshot);
+    const promise = api.listContainers(sessionId).then(value => {
+      if (value.sessionId !== sessionId) throw { code: 'StaleSession', message: 'Synthetic inventory belongs to another session.' };
+      if (inventorySession === sessionId && inventoryRequest?.promise === promise) { snapshot = value; lastInventory = Date.now(); }
+      return value;
+    }).finally(() => { if (inventoryRequest?.promise === promise) inventoryRequest = null; });
+    inventoryRequest = { sessionId, promise };
+    return promise;
+  }
   async function observation(sessionId: string, cursor = 0): Promise<ObservationRead> {
-    if (!snapshot || (!held && Date.now() - lastInventory > 3000)) { snapshot = await api.listContainers(sessionId); lastInventory = Date.now(); }
+    const snapshot = await inventory(sessionId, !held && Date.now() - lastInventory > 3000);
     const resources = snapshot.containers.filter(item => item.state === 'running').flatMap(container => Array.from({ length: 24 }, (_, i) => ({ sequence: ++sequence, fullId: container.fullId, sampledAt: new Date(Date.now() - (23 - i) * 5000).toISOString(), cpuPercent: i === 10 ? null : 90 + Math.sin(i / 2) * 55, memoryUsageBytes: i === 10 ? null : (64 + i) * 1024 * 1024, memoryLimitBytes: 2 * 1024 ** 3, available: i !== 10 })));
     const events = [{ sequence: ++sequence, fullId: snapshot.containers[0]!.fullId, name: snapshot.containers[0]!.name, composeProject: 'orders', composeService: 'api', kind: 'start', occurredAt: new Date(started).toISOString(), observedAt: new Date(started).toISOString(), detail: null }];
     return { sessionId, sequence, scope, inventory: snapshot, resources: resources.filter(item => item.sequence > cursor), events, inventoryError: null, statsError: null, eventError: null, eventStatus: 'following', resourceTruncated: false, eventTruncated: false };
   }
   async function logs(sessionId: string, project: string): Promise<ProjectLogPage> {
-    if (!snapshot) snapshot = await api.listContainers(sessionId);
+    const snapshot = await inventory(sessionId);
     const containers = snapshot.containers.filter(container => container.composeProject === project);
     const rows: ProjectLogRow[] = Array.from({ length: containers.length ? 3000 + Math.floor((Date.now() - started) / 500) : 0 }, (_, i) => {
       const container = containers[i % containers.length]!;
@@ -38,7 +52,15 @@ export function installObservationFixture() {
     configure: async (sessionId: string, next: ProjectFilter) => { count('configure'); scope = next; return observation(sessionId); },
     read: async (sessionId: string, cursor: number) => { count('read'); return observation(sessionId, cursor); },
     retryEvents: async (sessionId: string) => { count('retryEvents'); return observation(sessionId); },
-    hold: async (sessionId: string) => { count('hold'); held = true; snapshot = await api.listContainers(sessionId); return { sessionId, holdId: 'fixture-hold', inventory: snapshot }; },
+    hold: async (sessionId: string) => {
+      count('hold'); held = true;
+      if (inventoryRequest?.sessionId === sessionId) {
+        await inventoryRequest.promise;
+        if (inventorySession !== sessionId) throw { code: 'StaleSession', message: 'Synthetic hold belongs to an older session.' };
+      }
+      const snapshot = await inventory(sessionId, true);
+      return { sessionId, holdId: 'fixture-hold', inventory: snapshot };
+    },
     release: async () => { count('release'); held = false; },
   } satisfies typeof observationApi);
   Object.assign(projectLogApi, {

@@ -57,7 +57,7 @@ if (command === 'build') {
     override,
   }, null, 2) + '\n');
   console.log(`Validation bundle: ${app}\nProduction CSP and Rust IPC are unchanged. This is a test-only bundle.`);
-} else if (['live-on', 'live-off', 'compose-success', 'compose-fail', 'compose-quiet'].includes(command)) {
+} else if (['live-on', 'live-off', 'compose-success', 'compose-fail', 'compose-quiet', 'compose-pull-fail', 'compose-build-fail', 'compose-recreate-fail', 'image-export-success', 'image-export-failed', 'image-export-quiet', 'image-export-source-changed', 'image-export-source-original'].includes(command)) {
   // Reuse the fixture's controller ownership check. Only the exact live run in
   // /tmp can receive a gate; no Docker endpoint or user config is modified.
   await run('/usr/bin/python3', ['-c', `
@@ -77,12 +77,17 @@ launch = json.loads((root / "launch.json").read_text())
 if any(launch.get(key) != manifest.get(key) for key in ["runId", "binarySha256", "startedAtMs", "controllerPid"]):
     raise RuntimeError("Native smoke launch identity does not match")
 compose = sys.argv[2].startswith("compose-")
-gate = root / ("compose-mode" if compose else "follow-live")
+image_export = sys.argv[2].startswith("image-export-")
+export_source = sys.argv[2] in ("image-export-source-changed", "image-export-source-original")
+gate = root / ("compose-mode" if compose else "image-export-source-changed" if export_source else "image-export-mode" if image_export else "follow-live")
 if gate.is_symlink():
     raise RuntimeError("Refusing a linked follow gate")
-enabled = sys.argv[2] == "live-on"
+enabled = sys.argv[2] in ("live-on", "image-export-source-changed")
 if compose:
     gate.write_text(sys.argv[2].removeprefix("compose-") + "\\n")
+    gate.chmod(0o600)
+elif image_export and not export_source:
+    gate.write_text(sys.argv[2].removeprefix("image-export-") + "\\n")
     gate.chmod(0o600)
 elif enabled:
     gate.write_text("enabled\\n")
@@ -113,6 +118,14 @@ print(json.dumps({"command": sys.argv[2], "fixtureRoot": str(root), "liveOutput"
   pnpm native:smoke compose-success  Complete synthetic Compose operations
   pnpm native:smoke compose-fail  Fail after creating one fixture service
   pnpm native:smoke compose-quiet  Wait silently until explicit cancellation
+  pnpm native:smoke compose-pull-fail  Fail synthetic image preparation before build/recreation
+  pnpm native:smoke compose-build-fail  Fail synthetic build before recreation
+  pnpm native:smoke compose-recreate-fail  Fail synthetic selected-service recreation
+  pnpm native:smoke image-export-success  Stream a synthetic binary Docker image archive
+  pnpm native:smoke image-export-failed  Fail after a partial binary image archive
+  pnpm native:smoke image-export-quiet  Retain a partial archive until explicit cancellation
+  pnpm native:smoke image-export-source-changed  Change the fixture container's actual Image ID
+  pnpm native:smoke image-export-source-original  Restore the original fixture Image ID
   pnpm native:smoke report [--ui-results path.json]  Combine CLI trace with the UI JSON report
   pnpm native:smoke stop         Stop only the owned validation run and archive evidence
 

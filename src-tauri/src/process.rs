@@ -1,6 +1,7 @@
 //! Shell-free, bounded processes. Every child owns its process group.
 use std::{
     collections::{HashMap, VecDeque},
+    fs::File,
     io::Read,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -85,11 +86,14 @@ struct FollowCapture {
     stderr: String,
     interrupted: bool,
     timed_out: bool,
+    file_output: bool,
 }
 
 impl FollowCapture {
     fn append(&mut self, text: &str, stderr: bool) {
-        self.pending.extend(text.as_bytes());
+        if !self.file_output {
+            self.pending.extend(text.as_bytes());
+        }
         let excess = self.pending.len().saturating_sub(LOG_LIMIT);
         if excess > 0 {
             self.truncated = true;
@@ -107,6 +111,9 @@ impl FollowCapture {
                 end -= 1;
             }
             self.stderr.push_str(&text[..end]);
+            if self.file_output && end < text.len() {
+                self.truncated = true;
+            }
         }
     }
 }
@@ -388,7 +395,35 @@ impl Runner {
         env: &[(String, String)],
         options: &ProcessOptions,
     ) -> Result<FollowProcess, String> {
+        self.start_follow_inner(executable, args, env, options, None)
+    }
+
+    /// Binary stdout goes directly to an already-owned file descriptor. It is
+    /// never decoded, buffered in IPC, or subject to the text capture limit.
+    pub fn start_file_with_options(
+        &self,
+        executable: &Path,
+        args: &[String],
+        env: &[(String, String)],
+        options: &ProcessOptions,
+        output: File,
+    ) -> Result<FollowProcess, String> {
+        self.start_follow_inner(executable, args, env, options, Some(output))
+    }
+
+    fn start_follow_inner(
+        &self,
+        executable: &Path,
+        args: &[String],
+        env: &[(String, String)],
+        options: &ProcessOptions,
+        output: Option<File>,
+    ) -> Result<FollowProcess, String> {
         let mut command = isolated_command(executable, args, env, options);
+        let file_output = output.is_some();
+        if let Some(file) = output {
+            command.stdout(Stdio::from(file));
+        }
         let mut registry = self
             .children
             .lock()
@@ -409,7 +444,10 @@ impl Runner {
             child,
             registry: self.children.clone(),
         };
-        let capture = Arc::new(Mutex::new(FollowCapture::default()));
+        let capture = Arc::new(Mutex::new(FollowCapture {
+            file_output,
+            ..FollowCapture::default()
+        }));
         let cancel = options.cancel.clone();
         let deadline = options.deadline;
         let shared = capture.clone();
@@ -420,16 +458,12 @@ impl Runner {
             .spawn(move || {
                 let failed = Arc::new(AtomicBool::new(false));
                 let mut readers = Vec::new();
-                for (pipe, is_stderr) in [
-                    (
-                        Box::new(owned.child.stdout.take().unwrap()) as Box<dyn Read + Send>,
-                        false,
-                    ),
-                    (
-                        Box::new(owned.child.stderr.take().unwrap()) as Box<dyn Read + Send>,
-                        true,
-                    ),
-                ] {
+                let mut pipes: Vec<(Box<dyn Read + Send>, bool)> = Vec::new();
+                if let Some(stdout) = owned.child.stdout.take() {
+                    pipes.push((Box::new(stdout), false));
+                }
+                pipes.push((Box::new(owned.child.stderr.take().unwrap()), true));
+                for (pipe, is_stderr) in pipes {
                     let capture = shared.clone();
                     let read_failed = failed.clone();
                     match thread::Builder::new()

@@ -265,6 +265,7 @@ if (import.meta.env.DEV) {
   if (scenario === 'compose') { const { installComposeFixture } = await import('./composeFixture'); installComposeFixture(); }
   if (scenario === 'observation' || scenario === 'compose') { const { installObservationFixture } = await import('./observationFixture'); installObservationFixture(); }
   const { installMountFixture } = await import('./mountFixture'); installMountFixture();
+  const { installImageExportFixture } = await import('./imageExportFixture'); installImageExportFixture();
   const { default: App } = await import('../App');
   await import('../styles.css');
   createRoot(root).render(<StrictMode><App /></StrictMode>);

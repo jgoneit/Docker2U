@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-preview-compose-apply"
+description = "Enables the preview_compose_apply command without any pre-configured scope."
+commands.allow = ["preview_compose_apply"]
+
+[[permission]]
+identifier = "deny-preview-compose-apply"
+description = "Denies the preview_compose_apply command without any pre-configured scope."
+commands.deny = ["preview_compose_apply"]
