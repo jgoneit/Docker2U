@@ -309,11 +309,11 @@ test('resizes the navigation width with pointer and keyboard while retaining the
   const separator = page.getByRole('separator', { name: t.resize, exact: true });
   await expect(separator).toHaveAttribute('aria-orientation', 'vertical');
   await expect(separator).toHaveAttribute('aria-controls', 'inventory-pane detail-pane');
-  const size = async () => ({
-    width: Number(await separator.getAttribute('aria-valuenow')),
-    min: Number(await separator.getAttribute('aria-valuemin')),
-    max: Number(await separator.getAttribute('aria-valuemax')),
-  });
+  const size = () => separator.evaluate(element => ({
+    width: Number(element.getAttribute('aria-valuenow')),
+    min: Number(element.getAttribute('aria-valuemin')),
+    max: Number(element.getAttribute('aria-valuemax')),
+  }));
   const geometry = () => page.evaluate(() => ({
     detail: document.querySelector('#detail-pane')!.getBoundingClientRect().width,
     inventory: document.querySelector('#inventory-pane')!.getBoundingClientRect().width,
@@ -394,10 +394,18 @@ test('resizes the navigation width with pointer and keyboard while retaining the
   expect(await content.evaluate(element => element.scrollTop)).toBeCloseTo(scrollTop, 0);
   await expect(page.locator('.log-fetched-at time')).toHaveAttribute('datetime', receivedAt!);
   expect(await content.evaluate((element, original) => element === original, contentNode)).toBe(true);
+  // ResizeObserver may commit between browser round trips. Read the ARIA
+  // range and its pane geometry together, after the resized layout settles.
+  await expect.poll(() => renamedSeparator.evaluate(element => {
+    const width = Number(element.getAttribute('aria-valuenow'));
+    const minimum = Number(element.getAttribute('aria-valuemin'));
+    const maximum = Number(element.getAttribute('aria-valuemax'));
+    const inventory = document.querySelector('#inventory-pane')!.getBoundingClientRect();
+    const detail = document.querySelector('#detail-pane')!.getBoundingClientRect();
+    return width >= minimum && width <= maximum && Math.abs(inventory.width - width) < 0.5
+      && detail.right <= innerWidth + 1;
+  })).toBe(true);
   const current = Number(await renamedSeparator.getAttribute('aria-valuenow'));
-  expect(current).toBeGreaterThanOrEqual(Number(await renamedSeparator.getAttribute('aria-valuemin')));
-  expect(current).toBeLessThanOrEqual(Number(await renamedSeparator.getAttribute('aria-valuemax')));
-  expect((await geometry()).inventory).toBeCloseTo(current, 0);
   const after = await calls(page);
   for (const name of Object.keys(before).filter(name => !['getContainerStats', 'readLogStream'].includes(name))) expect(after[name], name).toBe(before[name]);
   await info.attach('split-pane-layout', { body: JSON.stringify({ initial, initialGeometry, dragged, draggedGeometry, current, before, after }), contentType: 'application/json' });

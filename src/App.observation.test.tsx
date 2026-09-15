@@ -36,6 +36,7 @@ const detailTabs = () => within(document.querySelector<HTMLElement>('.detail-tab
 const inventoryTree = () => within(document.querySelector<HTMLElement>('.container-tree')!);
 const incidentControls = () => within(document.querySelector<HTMLElement>('.incident-detail')!);
 const returnControls = () => within(document.querySelector<HTMLElement>('.incident-return')!);
+const historyPageControls = () => within(document.querySelector<HTMLElement>('.history-event-pages')!);
 async function incidentReady() { await waitFor(() => expect(incidentControls().getByRole('button', { name: '사건 상세 닫기' })).toBeVisible()); }
 
 it('preserves checked full IDs when Core publishes new inventory handles without reloading the selected log stream', async () => {
@@ -208,7 +209,7 @@ it('does not restore a previous-session history cursor after reconnect unmount c
   render(<App />); await ready();
   fireEvent.click(inventoryTree().getByRole('treeitem', { name: 'demo 프로젝트' }));
   fireEvent.click(detailTabs().getByRole('tab', { name: '이력' }));
-  fireEvent.click(screen.getByRole('button', { name: '이전 기록' }));
+  fireEvent.click(historyPageControls().getByRole('button', { name: '이전 기록' }));
   expect(document.querySelector('.history-event-trigger')).toHaveAttribute('data-event-sequence', '200');
   const history = document.querySelector<HTMLElement>('.observation-history')!;
   history.scrollTop = 85; fireEvent.scroll(history);
@@ -218,7 +219,7 @@ it('does not restore a previous-session history cursor after reconnect unmount c
   vi.mocked(projectLogApi.configure).mockResolvedValue({ sessionId: 'two', project: 'demo', revision: 1, maxSequence: 0, rows: [], sources: [], totalRows: 0, offset: 0, droppedRows: 0, needsSelection: false, error: null, retainedFrom: null, retainedTo: null });
   vi.mocked(projectLogApi.query).mockImplementation(async () => ({ sessionId: 'two', project: 'demo', revision: 1, maxSequence: 0, rows: [], sources: [], totalRows: 0, offset: 0, droppedRows: 0, needsSelection: false, error: null, retainedFrom: null, retainedTo: null }));
   vi.mocked(observationApi.configure).mockResolvedValue(fresh); vi.mocked(observationApi.read).mockResolvedValue(fresh);
-  fireEvent.click(screen.getByRole('button', { name: '다시 연결' }));
+  fireEvent.click(within(document.querySelector<HTMLElement>('.app-header')!).getByRole('button', { name: '다시 연결' }));
   await ready();
   fireEvent.click(inventoryTree().getByRole('treeitem', { name: 'demo 프로젝트' }));
   fireEvent.click(detailTabs().getByRole('tab', { name: '이력' }));
@@ -234,7 +235,7 @@ it('restores a deleted-container incident into an already mounted project histor
   render(<App />); await ready();
   fireEvent.click(inventoryTree().getByRole('treeitem', { name: 'demo 프로젝트' }));
   fireEvent.click(detailTabs().getByRole('tab', { name: '이력' }));
-  fireEvent.click(screen.getByRole('button', { name: '이전 기록' }));
+  fireEvent.click(historyPageControls().getByRole('button', { name: '이전 기록' }));
   expect(document.querySelector('.history-event-trigger')).toHaveAttribute('data-event-sequence', '201');
   fireEvent.click(inventoryTree().getByRole('treeitem', { name: 'web 상세' }));
   fireEvent.click(detailTabs().getByRole('tab', { name: '이력' }));
