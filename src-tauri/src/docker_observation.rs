@@ -519,8 +519,10 @@ impl ObservationService {
                 let name =
                     attr("name").or_else(|| container.map(|container| container.name.clone()));
                 let project = attr("com.docker.compose.project")
+                    .filter(|value| !value.trim().is_empty())
                     .or_else(|| container.and_then(|container| container.compose_project.clone()));
                 let service = attr("com.docker.compose.service")
+                    .filter(|value| !value.trim().is_empty())
                     .or_else(|| container.and_then(|container| container.compose_service.clone()));
                 let detail = attr("exitCode")
                     .and_then(|code| code.parse::<i32>().ok())

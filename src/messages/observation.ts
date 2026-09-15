@@ -14,6 +14,8 @@ export const observationMessages = {
   resourceTruncated: { ko: '보관 한도로 오래된 자원 기록이 삭제되었습니다.', en: 'Older resource observations were removed at the retention limit.' },
   eventTruncated: { ko: '보관 한도로 오래된 상태 기록이 삭제되었습니다.', en: 'Older state events were removed at the retention limit.' },
   stopped: { ko: '수집 중단', en: 'Collection stopped' }, starting: { ko: '연결 중', en: 'Connecting' }, following: { ko: '수집 중', en: 'Following' }, retrying: { ko: '재연결 중 · 관찰 공백', en: 'Reconnecting · Observation gap' }, error: { ko: '수집 오류', en: 'Collection error' }, idle: { ko: '선택 안 됨', en: 'Not selected' }, ended: { ko: '로그 끝', en: 'End of logs' }, removed: { ko: '컨테이너 삭제됨', en: 'Container removed' },
+  containerFilter: { ko: '컨테이너 필터', en: 'Container filter' }, allContainers: { ko: '모든 컨테이너', en: 'All containers' },
+  standalone: { ko: '독립 컨테이너', en: 'Standalone containers' },
   serviceFilter: { ko: '서비스 필터', en: 'Service filter' }, allServices: { ko: '모든 서비스', en: 'All services' },
   keyword: { ko: '로그 키워드 검색', en: 'Search log text' }, keywordHint: { ko: '키워드로 필터…', en: 'Filter by keyword…' },
   pause: { ko: '화면 일시정지', en: 'Pause view' }, resume: { ko: '화면 재개', en: 'Resume view' }, pausedHint: { ko: '화면이 고정되었습니다. 로그 수집은 계속됩니다.', en: 'View paused. Log collection continues.' },

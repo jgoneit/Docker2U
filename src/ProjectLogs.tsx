@@ -4,7 +4,7 @@ import { ArrowDownToLine, ChevronDown, Copy, LoaderCircle, Maximize2, Minimize2,
 import { coreError, type Container, type CoreError } from './api';
 import { ErrorDetails, type CopyText } from './components';
 import { CopyFeedback, type CopyFeedbackTone } from './CopyFeedback';
-import { observationApi, projectLogApi, type ProjectLogPage, type ProjectLogRow } from './observationApi';
+import { observationApi, projectLogApi, standaloneLogApi, logScopeKey, logScopeProject, type LogScope, type RetainedLogPage as ProjectLogPage, type ProjectLogRow } from './observationApi';
 import { useI18n } from './i18n';
 import { observationMessages } from './messages/observation';
 import './observation.css';
@@ -21,11 +21,17 @@ function collectionQueue(sessionId: string | null): CollectionQueue {
 /** Subscription lifetime follows project scope, never the visible detail tab. */
 export function useProjectLogCollection(sessionId: string | null, project: string | null, enabled: boolean,
   onError: (original: unknown, error: CoreError, sessionId: string) => void) {
+  return useLogCollection(sessionId, project ? { kind: 'project', name: project } : null, enabled, onError);
+}
+/** A single queue owns both collection scopes; group/child navigation does not restart it. */
+export function useLogCollection(sessionId: string | null, scope: LogScope | null, enabled: boolean,
+  onError: (original: unknown, error: CoreError, sessionId: string) => void) {
+  const project = scope ? logScopeKey(scope) : null;
   const [page, setPage] = useState<ProjectLogPage | null>(null);
   const [error, setError] = useState<CoreError | null>(null);
   const [retryState, setRetryState] = useState<{ queue: CollectionQueue; project: string; request: number } | null>(null);
   const errorScope = useRef({ sessionId, project });
-  const current = useRef({ sessionId, project, enabled, onError }); current.current = { sessionId, project, enabled, onError };
+  const current = useRef({ sessionId, project, scope, enabled, onError }); current.current = { sessionId, project, scope, enabled, onError };
   const queue = useRef(collectionQueue(sessionId));
   // A hung old-session IPC must not hold a reconnected session behind it.
   // Same-session operations remain ordered; cleanup captures its own queue.
@@ -41,9 +47,11 @@ export function useProjectLogCollection(sessionId: string | null, project: strin
     const operation = target.work.catch(() => {}).then(async () => {
       if (!isCurrent()) return false;
       try {
-        const result = kind === 'retry' ? await projectLogApi.retry(input.sessionId!) : await projectLogApi.configure(input.sessionId!, input.project!, handles);
+        const result = input.scope!.kind === 'project'
+          ? kind === 'retry' ? await projectLogApi.retry(input.sessionId!) : await projectLogApi.configure(input.sessionId!, input.scope!.name, handles)
+          : kind === 'retry' ? await standaloneLogApi.retry(input.sessionId!) : await standaloneLogApi.configure(input.sessionId!, handles);
         if (!isCurrent()) return false;
-        if (result.sessionId !== input.sessionId || result.project !== input.project) throw { code: 'InvalidProjectLogsResponse', message: 'Project log sources do not match the selected project.' };
+        if (result.sessionId !== input.sessionId || result.project !== logScopeProject(input.scope!)) throw { code: 'InvalidProjectLogsResponse', message: 'Project log sources do not match the selected project.' };
         if (result.error) throw result.error;
         setPage(result); setError(null);
         return true;
@@ -78,7 +86,7 @@ export function useProjectLogCollection(sessionId: string | null, project: strin
       target.work = target.work.catch(() => {}).then(() => projectLogApi.stop(sessionId)).catch(() => {});
     };
   }, [sessionId, project, enabled, configure]);
-  return { page: page?.sessionId === sessionId && page.project === project ? page : null,
+  return { page: page?.sessionId === sessionId && !!scope && page.project === logScopeProject(scope) ? page : null,
     error: errorScope.current.sessionId === sessionId && errorScope.current.project === project ? error : null,
     configure, retry, retrying: enabled && retryState?.queue === queue.current && retryState.project === project && retryState.request === queue.current.request };
 }
@@ -142,7 +150,7 @@ export function logRowsText(rows: ProjectLogRow[]) {
   return rows.map(row => `${row.timestamp ?? row.receivedAt}\t${row.serviceName ?? '—'}\t${row.containerName}\t${row.text}`).join('\n');
 }
 interface ProjectLogsProps {
-  sessionId: string; project: string; containers: Container[]; initialPage: ProjectLogPage | null; fullId?: string;
+  sessionId: string; project: string | null; containers: Container[]; initialPage: ProjectLogPage | null; fullId?: string;
   configure: (handles: string[] | null) => Promise<boolean>; retry: () => Promise<boolean>; retrying?: boolean; error: CoreError | null; visible?: boolean;
   viewCache?: ProjectLogViewCache;
   copy: CopyText;
@@ -214,7 +222,7 @@ function ProjectLogView({ sessionId, project, containers, initialPage, fullId, c
     return () => { saveView(); mounted.current = false; ++selectionRequest.current; ++querySequence.current; clearTimeout(pendingQuery.current?.deadline); pendingQuery.current = null; };
   }, [saveView]);
   const sources = page?.sources ?? initialPage?.sources ?? [];
-  const sourceIds = fullId ? [fullId] : services !== null ? sources.filter(source => services.includes(source.serviceName ?? source.containerName)).map(source => source.sourceId) : [];
+  const sourceIds = fullId ? [fullId] : services !== null ? sources.filter(source => services.includes(project === null ? source.fullId : source.serviceName ?? source.containerName)).map(source => source.sourceId) : [];
   const filterKey = JSON.stringify([sourceIds, keyword, !fullId && services !== null && sourceIds.length === 0]);
   // Configure describes collection startup, not the user's filtered/frozen view.
   // A returning view must keep its last page until its own query succeeds.
@@ -237,7 +245,8 @@ function ProjectLogView({ sessionId, project, containers, initialPage, fullId, c
       try {
         const [ids, text, missingServices] = JSON.parse(filterKey) as [string[], string, boolean];
         const establishingClear = clearPending.current;
-        const queried = await projectLogApi.query(sessionId, project, establishingClear
+        const queryLogs = project === null ? (query: Parameters<typeof standaloneLogApi.query>[1]) => standaloneLogApi.query(sessionId, query) : (query: Parameters<typeof projectLogApi.query>[2]) => projectLogApi.query(sessionId, project, query);
+        const queried = await queryLogs(establishingClear
           ? { sourceIds: ids, keyword: '', offset: null, limit: 1, throughSequence: null }
           : { sourceIds: ids, keyword: text, offset: following.current ? null : offset.current, limit: Math.min(PAGE_SIZE, Math.max(40, Math.ceil((viewport.current?.clientHeight ?? 400) / ROW_HEIGHT) + 24)), throughSequence: frozenSequence.current, anchorRowId: following.current ? null : anchor.current, ...(afterSequence.current === null ? {} : { afterSequence: afterSequence.current }) });
         if (!live || id !== querySequence.current) return;
@@ -355,7 +364,8 @@ function ProjectLogView({ sessionId, project, containers, initialPage, fullId, c
       if (mounted.current && request === selectionRequest.current) setSelectionError(coreError(original));
     } finally { if (mounted.current && request === selectionRequest.current) setApplying(false); }
   }
-  const serviceOptions = [...new Set(sources.map(source => source.serviceName ?? source.containerName))].sort();
+  const serviceOptions = [...new Set(sources.map(source => project === null ? source.fullId : source.serviceName ?? source.containerName))].sort();
+  const sourceLabel = (id: string) => { const source = sources.find(item => item.fullId === id); return source ? `${source.containerName} · ${source.fullId.slice(0, 12)}${source.status === 'removed' ? ` · ${t('removed')}` : ''}` : id; };
   const needSelection = page?.needsSelection ?? initialPage?.needsSelection ?? false;
   useEffect(() => { if (needSelection) selectSources(); }, [!!needSelection]);
   useEffect(() => { if (selecting) sourcePicker.current?.querySelector<HTMLElement>('input:not(:disabled), button')?.focus(); }, [selecting]);
@@ -369,11 +379,11 @@ function ProjectLogView({ sessionId, project, containers, initialPage, fullId, c
     : hasFilters ? 'noMatchingLogs' : afterSequence.current !== null ? 'clearedWaiting' : 'noLogs';
   const sourceCounts = new Map<string, number>();
   for (const source of selectedSources) sourceCounts.set(source.status, (sourceCounts.get(source.status) ?? 0) + 1);
-  const content = <section className={`project-logs${expanded ? ' project-logs-expanded' : ''}`} data-log-scope={fullId ? 'container' : 'project'} aria-label={t('logs')} onKeyDown={event => {
+  const content = <section className={`project-logs${expanded ? ' project-logs-expanded' : ''}`} data-log-scope={fullId ? 'container' : project === null ? 'standalone' : 'project'} aria-label={t('logs')} onKeyDown={event => {
     if (event.key === 'Escape' && selecting) { event.preventDefault(); event.stopPropagation(); closeSources(); }
   }}>
     <div className="project-log-toolbar">
-      {!fullId && <details className="project-service-filter"><summary>{t('serviceFilter')}{services !== null ? ` (${services.length})` : ''}<ChevronDown className="project-service-chevron" size={14} aria-hidden="true" /></summary><div><button onClick={() => { setServices(null); resetFilter(); }}>{t('allServices')}</button>{serviceOptions.map(service => <label key={service}><input type="checkbox" checked={services === null || services.includes(service)} disabled={(services ?? serviceOptions).length === 1 && (services === null || services.includes(service))} onChange={event => { const base = services ?? serviceOptions; setServices(event.target.checked ? [...new Set([...base, service])] : base.filter(item => item !== service)); resetFilter(); }} />{service}</label>)}</div></details>}
+      {!fullId && <details className="project-service-filter"><summary>{t(project === null ? 'containerFilter' : 'serviceFilter')}{services !== null ? ` (${services.length})` : ''}<ChevronDown className="project-service-chevron" size={14} aria-hidden="true" /></summary><div><button onClick={() => { setServices(null); resetFilter(); }}>{t(project === null ? 'allContainers' : 'allServices')}</button>{serviceOptions.map(service => <label key={service}><input type="checkbox" checked={services === null || services.includes(service)} disabled={(services ?? serviceOptions).length === 1 && (services === null || services.includes(service))} onChange={event => { const base = services ?? serviceOptions; setServices(event.target.checked ? [...new Set([...base, service])] : base.filter(item => item !== service)); resetFilter(); }} />{project === null ? sourceLabel(service) : service}</label>)}</div></details>}
       <label className="project-keyword"><Search size={14} aria-hidden="true" /><input type="search" aria-label={t('keyword')} placeholder={t('keywordHint')} value={keyword} onChange={event => { setKeyword(event.target.value); resetFilter(); }} /></label>
       <button disabled={clearing} onClick={togglePaused} aria-pressed={paused}>{paused ? <Play size={14} aria-hidden="true" /> : <Pause size={14} aria-hidden="true" />}{t(paused ? 'resume' : 'pause')}</button>
       <button disabled={clearing} aria-label={t('latest')} title={t('latest')} onClick={() => { resetFilter(); frozenSequence.current = null; setPaused(false); retryQuery(); }}><ArrowDownToLine size={14} aria-hidden="true" /></button>
@@ -385,8 +395,8 @@ function ProjectLogView({ sessionId, project, containers, initialPage, fullId, c
     {paused && <p className="observation-hint" role="status">{t('pausedHint')}</p>}
     {delayed && <div className="project-log-delay" role="status"><span>{t(page?.rows.length ? 'queryDelayedWithData' : 'queryDelayed')}</span><button onClick={retryQuery}>{t('retryQuery')}</button></div>}
     {(failure || visibleSources.some(source => source.error)) && <div role="alert">{failure && <ErrorDetails error={failure} />}{sources.filter(source => source.error && (!fullId || source.fullId === fullId)).map(source => <div key={source.sourceId}><span>{source.containerName}</span><ErrorDetails error={source.error!} /></div>)}<button disabled={retrying || applying} aria-busy={retrying} onClick={() => void retry().then(accepted => { if (accepted && mounted.current) { setError(null); pauseTransition.current = false; retryQuery(); } }).catch(() => {})}>{t('retry')}</button></div>}
-    {selecting && <fieldset ref={sourcePicker} className="project-source-selection" aria-busy={applying}><legend>{t('selectSources')}</legend><div className="project-source-heading"><p>{t('selectionHint')}</p><button className="icon-button" aria-label={t('closeSources')} onClick={closeSources}><X size={16} aria-hidden="true" /></button></div><p>{t('selectionCount', { selected: selectedIds.size, total: sources.filter(source => source.status !== 'removed').length })}</p><div className="project-source-options">{sources.filter(source => source.status !== 'removed').map(source => <label key={source.fullId}><input type="checkbox" checked={selectedIds.has(source.fullId)} disabled={applying || (!selectedIds.has(source.fullId) && selectedIds.size >= 64)} onChange={event => setSelectedIds(previous => { const next = new Set(previous); if (event.target.checked) next.add(source.fullId); else next.delete(source.fullId); return next; })} />{source.serviceName ?? '—'} · {source.containerName}</label>)}</div>{selectionError && <div role="alert"><ErrorDetails error={selectionError} /></div>}<div className="project-source-actions"><button onClick={closeSources}>{t('cancel')}</button><button disabled={applying} onClick={() => void applySources()}>{t(applying ? 'applying' : 'apply')}</button></div></fieldset>}
-    <details className="project-log-sources"><summary><span>{t('selectionCount', { selected: selectedSources.length, total: visibleSources.filter(source => source.status !== 'removed').length })}</span><span className="project-source-counts">{[...sourceCounts].map(([status, count]) => <span key={status} data-status={status}>{t(status as typeof selectedSources[number]['status'])} {count}</span>)}</span><span>{t('sourceDetails')}</span><ChevronDown size={12} aria-hidden="true" /></summary><div>{sources.filter(source => source.selected && (!fullId || source.fullId === fullId)).map(source => <span key={source.sourceId} data-status={source.status} title={source.error?.message}>{source.containerName} · {t(source.status)}</span>)}</div></details>
+    {selecting && <fieldset ref={sourcePicker} className="project-source-selection" aria-busy={applying}><legend>{t('selectSources')}</legend><div className="project-source-heading"><p>{t('selectionHint')}</p><button className="icon-button" aria-label={t('closeSources')} onClick={closeSources}><X size={16} aria-hidden="true" /></button></div><p>{t('selectionCount', { selected: selectedIds.size, total: sources.filter(source => source.status !== 'removed').length })}</p><div className="project-source-options">{sources.filter(source => source.status !== 'removed').map(source => <label key={source.fullId}><input type="checkbox" checked={selectedIds.has(source.fullId)} disabled={applying || (!selectedIds.has(source.fullId) && selectedIds.size >= 64)} onChange={event => setSelectedIds(previous => { const next = new Set(previous); if (event.target.checked) next.add(source.fullId); else next.delete(source.fullId); return next; })} />{project === null ? sourceLabel(source.fullId) : `${source.serviceName ?? '—'} · ${source.containerName}`}</label>)}</div>{selectionError && <div role="alert"><ErrorDetails error={selectionError} /></div>}<div className="project-source-actions"><button onClick={closeSources}>{t('cancel')}</button><button disabled={applying} onClick={() => void applySources()}>{t(applying ? 'applying' : 'apply')}</button></div></fieldset>}
+    <details className="project-log-sources"><summary><span>{t('selectionCount', { selected: selectedSources.length, total: visibleSources.filter(source => source.status !== 'removed').length })}</span><span className="project-source-counts">{[...sourceCounts].map(([status, count]) => <span key={status} data-status={status}>{t(status as typeof selectedSources[number]['status'])} {count}</span>)}</span><span>{t('sourceDetails')}</span><ChevronDown size={12} aria-hidden="true" /></summary><div>{sources.filter(source => source.selected && (!fullId || source.fullId === fullId)).map(source => <span key={source.sourceId} data-status={source.status} title={source.error?.message}>{source.containerName}{project === null && <> · {source.fullId.slice(0, 12)}</>} · {t(source.status)}</span>)}</div></details>
     <div className="project-log-meta"><span>{t('count', { count: page?.totalRows ?? 0 })}</span><span>{t('logCollectionHint')}</span>{!!page?.coverageGaps && <span className="observation-warning">{t('gap')} · {page.coverageGaps}</span>}{page?.anchorLost && <span className="observation-warning">{t('anchorLost')}</span>}{page?.retainedFrom && <span>{t('coverage')} (UTC): {page.retainedFrom.slice(0, 19).replace('T', ' ')} – {page.retainedTo?.slice(0, 19).replace('T', ' ') ?? '—'}</span>}{!!page?.droppedRows && <span className="observation-warning">{t('trimmed', { count: page.droppedRows })}</span>}</div>
     <div ref={viewport} className="project-log-viewport" tabIndex={0} role="log" aria-label={t('logs')} aria-live="off" onScroll={event => {
       const node = event.currentTarget;
