@@ -172,14 +172,6 @@ button.text-button { background: transparent; border-color: transparent; color: 
 .inventory-controls .filter-group { min-width: 0; gap: 1px; }
 .inventory-controls .filter-group button { padding: 6px; font-size: 11px; }
 .inventory-controls .inventory-refresh { padding: 6px; font-size: 11px; }
-.project-filter { display: flex; flex: 0 0 190px; min-width: 0; margin: 0; font-size: 12px; }
-.project-select-control { position: relative; display: flex; width: 100%; height: 34px; border-radius: 10px; background: var(--raised); color: var(--text-muted); }
-.project-filter select { -webkit-appearance: none; appearance: none; min-width: 0; width: 100%; height: 100%; padding: 0 32px; border: 0; border-radius: inherit; color: var(--text); background: transparent; outline: none; font: inherit; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.project-select-icon, .project-select-chevron { position: absolute; top: 50%; transform: translateY(-50%); pointer-events: none; }
-.project-select-icon { left: 11px; }
-.project-select-chevron { right: 10px; }
-.project-select-control[data-active="true"] { color: var(--link); background: var(--selected); }
-.project-select-control[data-active="true"] select { color: var(--link); }
 .container-project-header { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 11px 17px; background: var(--raised); border-bottom: 1px solid var(--border-subtle); }
 .container-project-header h3 { min-width: 0; margin: 0; font-size: 12px; overflow-wrap: anywhere; }
 .container-project-header > span { flex-shrink: 0; color: var(--text-muted); font-weight: 400; }
@@ -298,9 +290,9 @@ input[type="checkbox"]:disabled { cursor: not-allowed; accent-color: var(--disab
 /* Appearance tokens are shared by controls, logs, status, and dialogs. */
 input::placeholder { color: var(--text-muted); opacity: 1; }
 button:disabled, button.primary-button:disabled, button.danger-button:disabled, .filter-group button:disabled, .compact-actions button:disabled, button.text-button:disabled { color: var(--disabled-text); background: var(--disabled-bg); border-color: transparent; }
-.search-field:focus-within, .project-select-control:focus-within, .log-search-field:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
-.search-field:has(input:disabled), .project-select-control:has(select:disabled) { color: var(--disabled-text); background: var(--disabled-bg); }
-.search-field input:disabled, .project-filter select:disabled { color: var(--disabled-text); -webkit-text-fill-color: var(--disabled-text); opacity: 1; cursor: not-allowed; }
+.search-field:focus-within, .log-search-field:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
+.search-field:has(input:disabled) { color: var(--disabled-text); background: var(--disabled-bg); }
+.search-field input:disabled { color: var(--disabled-text); -webkit-text-fill-color: var(--disabled-text); opacity: 1; cursor: not-allowed; }
 .container-title-text { min-width: 0; }
 .detail-title > div:last-child { min-width: 0; }
 .detail-panel { display: flex; flex-direction: column; overflow: hidden; }
@@ -355,11 +347,6 @@ button:disabled, button.primary-button:disabled, button.danger-button:disabled, 
 .theme-choice:has(input:checked) .theme-choice-label { color: var(--text); }
 .theme-choice input { -webkit-appearance: none; appearance: none; flex-shrink: 0; width: 14px; height: 14px; margin: 0; border: 1px solid var(--text-muted); border-radius: 50%; background: transparent; outline: none; cursor: pointer; }
 .theme-choice input:checked { border: 4px solid var(--primary); background: var(--on-action); }
-.setting-select-control { position: relative; display: flex; width: 100%; height: 40px; border-radius: 10px; background: var(--raised); color: var(--text-muted); }
-.setting-select-control select { -webkit-appearance: none; appearance: none; min-width: 0; width: 100%; height: 100%; padding: 0 36px 0 12px; border: 0; border-radius: inherit; background: transparent; color: var(--text); outline: none; font: inherit; font-weight: 400; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.setting-select-control > svg { position: absolute; top: 50%; right: 12px; transform: translateY(-50%); pointer-events: none; }
-.setting-select-control:hover { background: var(--hover); }
-.setting-select-control:has(select:focus-visible) { outline: 2px solid var(--focus); outline-offset: 3px; }
 .settings-dialog .settings-storage-error { padding: 12px; margin: 0 0 20px; color: var(--warning); background: var(--warning-bg); border: 1px solid var(--warning-border); border-radius: 6px; }
 
 
@@ -429,7 +416,6 @@ button.action-restart:hover:not(:disabled) { background: var(--restart-action-ho
 .resizing { user-select: none; cursor: col-resize; }
 @media (max-width: 1100px) {
   .inventory-controls { gap: 8px; }
-  .project-filter { flex-basis: 160px; }
   .filter-group button { padding-inline: 6px; }
   .app-header { gap: 14px; }
 }

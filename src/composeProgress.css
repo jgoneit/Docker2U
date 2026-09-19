@@ -22,13 +22,6 @@
 .compose-apply-check strong, .compose-apply-image, .compose-apply-review code { overflow-wrap: anywhere; }
 .compose-apply-image, .compose-apply-review small, .compose-apply-review code { color: var(--text-muted); font-size: 11px; }
 .compose-apply-services .compose-field { margin: 3px 0; }
-.compose-preparation-control { position: relative; display: flex; width: 100%; min-width: 0; height: 36px; border-radius: 9px; color: var(--text-muted); background: var(--raised); }
-.compose-preparation-control select { -webkit-appearance: none; appearance: none; width: 100%; min-width: 0; height: 100%; padding: 0 36px 0 12px; border: 0; border-radius: inherit; color: var(--text); background: transparent; font: inherit; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.compose-preparation-control > svg { position: absolute; top: 50%; right: 12px; transform: translateY(-50%); pointer-events: none; }
-.compose-preparation-control:has(select:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
-.compose-preparation-control select:focus-visible { outline: none; }
-.compose-preparation-control:has(select:disabled) { color: var(--disabled-text); background: var(--disabled-bg); }
-.compose-preparation-control select:disabled { color: var(--disabled-text); -webkit-text-fill-color: var(--disabled-text); opacity: 1; cursor: not-allowed; }
 .compose-stage-results { margin: 12px 0; }
 .compose-stage-results h3 { font-size: 12px; }
 .compose-stage-results ol { padding-left: 20px; }

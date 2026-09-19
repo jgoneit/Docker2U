@@ -1,5 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef } from 'react';
-import { ChevronsUpDown, Settings, X } from 'lucide-react';
+import { Settings, X } from 'lucide-react';
+import { SelectControl } from './SelectControl';
 import { usePreferences } from './preferences';
 import type { Language, ThemePreference } from './preferences';
 import { useI18n } from './i18n';
@@ -66,7 +67,7 @@ export function SettingsDialog({ onClose, returnFocus }: { onClose: () => void; 
           <span className="theme-choice-label"><input type="radio" name="theme-preference" value={option} checked={theme === option} onChange={() => setTheme(option)} /><span>{t(option)}</span></span>
         </label>)}
       </div></fieldset>
-      <label className="setting-field" htmlFor="language-preference"><span>{t('language')}</span><span className="setting-select-control"><select id="language-preference" value={language} onChange={event => setLanguage(event.target.value as Language)}><option value="ko" lang="ko">한국어</option><option value="en" lang="en">English</option></select><ChevronsUpDown size={14} aria-hidden="true" /></span></label>
+      <label className="setting-field" htmlFor="language-preference"><span>{t('language')}</span><SelectControl id="language-preference" value={language} onChange={event => setLanguage(event.target.value as Language)}><option value="ko" lang="ko">한국어</option><option value="en" lang="en">English</option></SelectControl></label>
       {storageError && <p className="settings-storage-error" role="alert">{t('storageError')}</p>}
       <div className="dialog-actions"><button onClick={onClose}>{t('close')}</button></div>
     </div>
