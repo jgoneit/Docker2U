@@ -15,6 +15,7 @@
 .compose-container-links button { font-size: 11px; padding: 5px 8px; }
 @media (max-height: 700px) { .compose-observed-services { max-height: 170px; } }
 .compose-apply-services, .compose-apply-review { list-style: none; padding: 0; margin: 12px 0; max-height: 300px; overflow: auto; }
+.compose-apply-services { padding-inline: 5px; }
 .compose-apply-services, .compose-apply-review, .compose-recent-list { flex-shrink: 0; }
 .compose-apply-services > li, .compose-apply-review > li { padding: 12px 0; border-bottom: 1px solid var(--border-subtle); display: grid; gap: 7px; min-width: 0; }
 .compose-apply-check { display: flex; align-items: center; gap: 8px; }
