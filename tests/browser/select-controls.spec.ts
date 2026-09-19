@@ -62,6 +62,27 @@ async function inspectControl(page: Page, select: Locator, height: number) {
   return { normal, hover };
 }
 
+async function expectFocusRingInsideList(select: Locator) {
+  await expect(select).toBeFocused();
+  const geometry = await select.evaluate(node => {
+    const list = node.closest<HTMLElement>('.compose-apply-services')!;
+    const listBounds = list.getBoundingClientRect();
+    const wrapper = node.parentElement!;
+    const bounds = wrapper.getBoundingClientRect();
+    const style = getComputedStyle(wrapper);
+    const extent = parseFloat(style.outlineWidth) + parseFloat(style.outlineOffset);
+    // clientWidth excludes a classic scrollbar; the list's outer bounding box
+    // would hide clipping when the final controls scroll into view.
+    const clipLeft = listBounds.left + list.clientLeft;
+    return { extent, left: bounds.left - extent, right: bounds.right + extent,
+      clipLeft, clipRight: clipLeft + list.clientWidth, overflow: list.scrollWidth - list.clientWidth };
+  });
+  expect(geometry.extent).toBe(5);
+  expect(geometry.left).toBeGreaterThanOrEqual(geometry.clipLeft - 0.5);
+  expect(geometry.right).toBeLessThanOrEqual(geometry.clipRight + 0.5);
+  expect(geometry.overflow).toBeLessThanOrEqual(1);
+}
+
 test('uses consistent native selects across terminal, ports, settings and Compose without changing actions', async ({ page }, info) => {
   const w = labels(info);
   await page.goto('/src/test/visual.html?toolbar=hidden&scenario=observation');
@@ -129,6 +150,7 @@ test('uses consistent native selects across terminal, ports, settings and Compos
   await expect(preparation.locator('..')).toHaveCSS('background-color', disabled);
   await dialog.getByRole('checkbox', { name: w.service, exact: true }).check();
   expect(await inspectControl(page, preparation, 40)).toEqual(terminalStyle);
+  await expectFocusRingInsideList(preparation);
   await expect(preparation.locator('option[value=""]')).toHaveJSProperty('disabled', true);
   await expect(review).toBeDisabled();
   await preparation.selectOption('build');
@@ -140,6 +162,7 @@ test('uses consistent native selects across terminal, ports, settings and Compos
   await last.getByRole('checkbox').check();
   const lastPreparation = last.getByRole('combobox');
   expect(await inspectControl(page, lastPreparation, 40)).toEqual(terminalStyle);
+  await expectFocusRingInsideList(lastPreparation);
   await lastPreparation.selectOption('none');
   await expect(review).toBeEnabled();
   for (const control of [review, dialog.getByRole('button', { name: w.cancel, exact: true })]) {
