@@ -110,6 +110,13 @@ export function ObservationHistory({ observation, containers, fullId, scope = ob
     onCloseIncident?.();
     section.current?.querySelector<HTMLButtonElement>(`[data-event-sequence="${sequence}"]`)?.focus({ preventScroll: true });
   }
+  function changeEventPage(cursor: number | null) {
+    // Pagination can remove the selected row. Close its review without moving
+    // focus from the paging control to a trigger that is about to unmount.
+    if (selectedEvent) onCloseIncident?.();
+    setRetainedEvent(null);
+    setEventCursor(cursor);
+  }
   return <section ref={section} className="observation-history" aria-label={t('history')} onScroll={event => {
     if (!visible) return;
     scrollTop.current = event.currentTarget.scrollTop;
@@ -144,6 +151,6 @@ export function ObservationHistory({ observation, containers, fullId, scope = ob
         </div>}
       </li>;
     })}</ol>}
-    {!!events.length && <div className="history-event-pages"><span>{t('eventPage', { count: visibleEvents.length, total: events.length })}</span><button disabled={eventCursor === null} onClick={() => { setRetainedEvent(null); setEventCursor(null); }}>{t('latest')}</button><button disabled={matchingEvents.length <= 200} onClick={() => { setRetainedEvent(null); setEventCursor((visibleEvents.at(-1)?.sequence ?? 0) - 1); }}>{t('olderEvents')}</button></div>}
+    {!!events.length && <div className="history-event-pages"><span>{t('eventPage', { count: visibleEvents.length, total: events.length })}</span><button disabled={eventCursor === null} onClick={() => changeEventPage(null)}>{t('latest')}</button><button disabled={matchingEvents.length <= 200} onClick={() => changeEventPage((visibleEvents.at(-1)?.sequence ?? 0) - 1)}>{t('olderEvents')}</button></div>}
   </section>;
 }
