@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { coreError, type CoreError } from './api';
-import { projectLogApi, type ObservationEvent, type ObservationRead, type ProjectLogPage, type ProjectLogQuery, type ResourcePoint } from './observationApi';
+import { projectLogApi, standaloneLogApi, type ObservationEvent, type ObservationRead, type RetainedLogPage as ProjectLogPage, type ProjectLogQuery, type ResourcePoint } from './observationApi';
 
 export type IncidentTab = 'terminal' | 'diagnostics' | 'connectivity' | 'storage';
 export type IncidentWindow = 1 | 2 | 5;
@@ -65,7 +65,8 @@ export function useIncidentReview(sessionId: string | null, observation: Observa
     let active = true;
     const valid = () => active && generation.current === request && input.current.sessionId === selection.sessionId;
     const read = async (position: Partial<ProjectLogQuery>) => {
-      const result = await projectLogApi.query(selection.sessionId, selection.event.composeProject!, {
+      const readLogs = selection.event.composeProject === null ? (query: ProjectLogQuery) => standaloneLogApi.query(selection.sessionId, query) : (query: ProjectLogQuery) => projectLogApi.query(selection.sessionId, selection.event.composeProject!, query);
+      const result = await readLogs({
         sourceIds: [selection.event.fullId!], keyword: '', offset: null, limit: INCIDENT_PAGE_SIZE,
         throughSequence: selection.throughSequence, ...incidentWindow(selection.event, selection.windowMinutes), ...position,
       });
@@ -117,7 +118,7 @@ export function useIncidentReview(sessionId: string | null, observation: Observa
   }, [publish]);
   const select = useCallback((event: ObservationEvent) => {
     const { sessionId: activeSession, observation: latest } = input.current;
-    if (!activeSession || !event.fullId || !event.composeProject || !Number.isFinite(Date.parse(event.occurredAt))) return;
+    if (!activeSession || !event.fullId || !Number.isFinite(Date.parse(event.occurredAt))) return;
     const matching = latest?.sessionId === activeSession ? latest : null;
     void query({ sessionId: activeSession, event: { ...event }, windowMinutes: 2,
       resourcePoints: resourceSnapshot(matching, event), resourceTruncated: matching?.resourceTruncated ?? false,

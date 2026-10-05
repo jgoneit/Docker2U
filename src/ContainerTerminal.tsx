@@ -7,6 +7,7 @@ import { terminalMessages } from './messages/terminal';
 import { TerminalRegistry, TERMINAL_LIMIT } from './terminalRegistry';
 import type { TerminalShell } from './terminalApi';
 import '@xterm/xterm/css/xterm.css';
+import { SelectControl } from './SelectControl';
 import './terminal.css';
 
 export function useTerminalRegistry(sessionId: string | null, onError?: (original: unknown, failure: CoreError, sessionId: string) => unknown) {
@@ -58,7 +59,7 @@ export function ContainerTerminal({ registry, container, snapshot, enabled }: {
   return <section className="container-terminal" aria-label={t('title')}>
     <header className="terminal-heading"><strong>{entry?.containerName ?? container?.name ?? ''}</strong><code title={viewedId}>{viewedId}</code>{viewingRetained && <button type="button" onClick={() => setRetainedId(null)}>{t('current')}</button>}</header>
     <div className="terminal-toolbar"><span className="terminal-status" role="status" data-status={entry?.status ?? 'ready'}>{t(entry?.status ?? 'ready')}{entry?.exitCode !== null && entry?.exitCode !== undefined && <> · {t('exitCode', { code: entry.exitCode })}</>}</span>
-      {!entry && container ? <><label>{t('shell')}<select aria-label={t('shell')} value={shell} onChange={event => setShell(event.target.value as TerminalShell)}><option value="sh">/bin/sh</option><option value="bash">/bin/bash</option></select></label><button type="button" className="primary-button terminal-connect" disabled={!enabled || snapshot.stale || container.state !== 'running' || entries.length >= TERMINAL_LIMIT} onClick={() => void connect()}><Plug size={14} aria-hidden="true" />{t('connect')}</button></>
+      {!entry && container ? <><label>{t('shell')}<SelectControl density="compact" wrapperClassName="terminal-shell-control" aria-label={t('shell')} value={shell} onChange={event => setShell(event.target.value as TerminalShell)}><option value="sh">/bin/sh</option><option value="bash">/bin/bash</option></SelectControl></label><button type="button" className="primary-button terminal-connect" disabled={!enabled || snapshot.stale || container.state !== 'running' || entries.length >= TERMINAL_LIMIT} onClick={() => void connect()}><Plug size={14} aria-hidden="true" />{t('connect')}</button></>
       : entry ? <><code className="terminal-shell">/bin/{entry.shell}</code><button type="button" disabled={!running || entry.pending} onClick={() => void registry.disconnect(viewedId)}><Unplug size={14} aria-hidden="true" />{t('disconnect')}</button><button type="button" className="terminal-close" disabled={entry.pending} onClick={() => void registry.close(viewedId)}><X size={14} aria-hidden="true" />{t('close')}</button><button type="button" onClick={() => void copy()}><Copy size={14} aria-hidden="true" />{t('copy')}</button><button type="button" disabled={!running} onClick={() => void paste()}><ClipboardPaste size={14} aria-hidden="true" />{t('paste')}</button></> : null}
     </div>
     {!entry && container && <p className="terminal-hint">{t(!enabled || snapshot.stale ? 'disabled' : container.state !== 'running' ? 'stopped' : entries.length >= TERMINAL_LIMIT ? 'limit' : 'connectHint')}</p>}

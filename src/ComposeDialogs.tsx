@@ -1,11 +1,12 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
-import { AlertTriangle, Check, ChevronDown, FileCode2, FolderOpen, LoaderCircle, Play, Settings, Square, Terminal, RefreshCw, X } from 'lucide-react';
+import { AlertTriangle, Check, FileCode2, FolderOpen, LoaderCircle, Play, Settings, Square, Terminal, RefreshCw, X } from 'lucide-react';
 import { coreError, type Container, type CoreError, type ConnectionTarget } from './api';
 import { composeApi, type ComposeAction, type ComposeApplyPreview, type ComposeApplySelection, type ComposeImagePreparation, type ComposeWarning, type ComposeOperation, type ComposePreparation, type ComposeProject, type ComposeProjectInput, type ComposeProjectPreview, type ComposeServicePreview } from './composeApi';
 import { ErrorDetails, Health, State, formatTime } from './components';
 import { useI18n } from './i18n';
 import { composeMessages } from './messages/compose';
 import { usePreferences } from './preferences';
+import { SelectControl } from './SelectControl';
 import './composeProgress.css';
 
 function ComposeModal({ title, children, onClose, closeDisabled = false, restoreFocus }: { title: string; children: ReactNode; onClose: () => void; closeDisabled?: boolean; restoreFocus?: RefObject<boolean> }) {
@@ -132,9 +133,9 @@ export function ComposeApplyDialog({ project, preview, loading, error, onClose, 
         })} /><strong>{service.name}</strong></label>
         <span className="compose-apply-image">{service.image ?? '—'}</span>
         {!!service.profiles.length && <small className="compose-apply-image">{t('profileNames', { profiles: service.profiles.join(', ') })}</small>}
-        <label className="compose-field"><span>{t('preparationFor', { name: service.name })}</span><span className="compose-preparation-control"><select value={choices[service.name] ?? ''} disabled={!chosen || blocked} onChange={event => setChoices(previous => ({ ...previous, [service.name]: event.target.value as ComposeImagePreparation }))}>
+        <label className="compose-field"><span>{t('preparationFor', { name: service.name })}</span><SelectControl value={choices[service.name] ?? ''} disabled={!chosen || blocked} onChange={event => setChoices(previous => ({ ...previous, [service.name]: event.target.value as ComposeImagePreparation }))}>
           <option value="" disabled>{t('choosePreparation')}</option>{(['pull', 'build', 'none'] as const).map(mode => <option key={mode} value={mode} disabled={!service.preparations.includes(mode)}>{t(preparationLabel[mode])}</option>)}
-        </select><ChevronDown size={14} aria-hidden="true" /></span></label>
+        </SelectControl></label>
         {blocked && <p className="compose-hint">{t(service.blockedReason === 'imageMountUnsupported' ? 'blockedImageMount' : service.blockedReason === 'providerUnsupported' ? 'blockedProvider' : 'blockedService')}</p>}
       </li>;
     })}</ul>}

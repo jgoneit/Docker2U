@@ -519,8 +519,10 @@ impl ObservationService {
                 let name =
                     attr("name").or_else(|| container.map(|container| container.name.clone()));
                 let project = attr("com.docker.compose.project")
+                    .filter(|value| !value.trim().is_empty())
                     .or_else(|| container.and_then(|container| container.compose_project.clone()));
                 let service = attr("com.docker.compose.service")
+                    .filter(|value| !value.trim().is_empty())
                     .or_else(|| container.and_then(|container| container.compose_service.clone()));
                 let detail = attr("exitCode")
                     .and_then(|code| code.parse::<i32>().ok())
@@ -1781,6 +1783,70 @@ mod tests {
         assert!(
             outside_scope.resources.is_empty(),
             "resource gaps follow the collection scope"
+        );
+    }
+    #[test]
+    fn whitespace_only_compose_event_labels_match_standalone_inventory_classification() {
+        let core = Core::default();
+        core.state.lock().unwrap().session = Some(Session {
+            id: "session".into(),
+            generation: 1,
+            handles: HashMap::new(),
+            stale: false,
+            needs_validation: false,
+            inventory: None,
+            target: Target {
+                docker: "/fixture/docker".into(),
+                client_version: "fixture".into(),
+                endpoint: "unix:///fixture/engine.sock".into(),
+                env: vec![],
+                docker_config: "/fixture/config".into(),
+                fingerprint: Fingerprint {
+                    id: "engine".into(),
+                    server: "1".into(),
+                    api: "1.54".into(),
+                    os: "linux".into(),
+                    arch: "arm64".into(),
+                    name: "fixture".into(),
+                },
+            },
+        });
+        let service = ObservationService {
+            session_id: "session".into(),
+            store: Mutex::new(Store::new(ObservationScope::None, None)),
+            wake: Condvar::new(),
+            cancelled: AtomicBool::new(false),
+            worker: Mutex::new(None),
+            event_task: Mutex::new(None),
+            validation_task: Mutex::new(None),
+        };
+        for (index, label) in ["", " \t", " project "].into_iter().enumerate() {
+            service.event_message(
+                &core,
+                ReaderMessage::Event(engine_reader::EngineEventRecord {
+                    time_nano: chrono::Utc::now().timestamp_nanos_opt().unwrap() + index as i64,
+                    action: "die".into(),
+                    full_id: format!("{index:064x}"),
+                    attributes: [
+                        ("com.docker.compose.project".into(), label.into()),
+                        ("com.docker.compose.service".into(), label.into()),
+                    ]
+                    .into(),
+                }),
+            );
+        }
+        let read = service.read(0);
+        assert_eq!(read.events.len(), 3);
+        assert!(
+            read.events[..2]
+                .iter()
+                .all(|event| event.compose_project.is_none() && event.compose_service.is_none())
+        );
+        assert_eq!(read.events[2].compose_project.as_deref(), Some(" project "));
+        assert_eq!(
+            read.resources.len(),
+            2,
+            "only standalone transitions affect standalone resource gaps"
         );
     }
 }

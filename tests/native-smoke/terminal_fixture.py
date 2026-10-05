@@ -14,7 +14,8 @@ MAX_INPUT = 16 * 1024
 
 
 def container_state(handler, identifier, containers):
-    if identifier in BASELINE_IDS:
+    baseline_ids = BASELINE_IDS - {format(3, "064x")} if (handler.server.root / "standalone-state.json").exists() else BASELINE_IDS
+    if identifier in baseline_ids:
         return "running"
     row = containers(handler.server.root).get(identifier)
     return row.get("State") if row else None

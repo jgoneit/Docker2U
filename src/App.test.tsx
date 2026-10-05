@@ -638,7 +638,7 @@ describe('environment and inventory', () => {
     expect(screen.getByRole('treeitem', { name: 'redis 상세' })).toHaveAttribute('aria-selected', 'true');
     expect(recovery().getByRole('button', { name: '시작' })).toBeEnabled();
     await user.keyboard('{Home}');
-    expect(screen.getByRole('treeitem', { name: '프로젝트 없음' })).toHaveFocus();
+    expect(screen.getByRole('treeitem', { name: '독립 컨테이너' })).toHaveFocus();
     await user.keyboard('{End}{ArrowUp}');
     expect(first).toHaveFocus();
   });

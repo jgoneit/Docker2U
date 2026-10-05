@@ -1,4 +1,4 @@
-import { ChevronDown, Copy, RefreshCw } from 'lucide-react';
+import { Copy, RefreshCw } from 'lucide-react';
 import { useState } from 'react';
 import type { ContainerDetails, ContainerPort } from './containerDetailsTypes';
 import type { ContainerDetailsState } from './useContainerDetails';
@@ -8,6 +8,7 @@ import { componentMessages } from './messages/components';
 import { containerInsightsMessages } from './messages/containerInsights';
 import { usePreferences } from './preferences';
 import { formatDisplayTime, formatExactTime, parseTimestamp } from './time';
+import { SelectControl } from './SelectControl';
 import './containerInsights.css';
 
 export interface ContainerInsightsProps extends ContainerDetailsState {
@@ -136,12 +137,9 @@ export function ContainerConnectivity({ details, copy }: { details: ContainerDet
     <section className="insights-section" aria-label={t('networks')}><h3>{t('networks')}</h3>
       <p className="insights-hint">{t('aliasHint')}</p>
       {data.networksAvailable && data.networks.length > 0 && ordinaryMode && <label className="insights-port-choice">{t('internalPort')}
-        <span className="setting-select-control insights-port-control">
-          <select value={selectedPort ? portKey : ''} onChange={event => setPortKey(event.target.value)}><option value="">{t('addressOnly')}</option>
+        <SelectControl density="compact" wrapperClassName="insights-port-control" value={selectedPort ? portKey : ''} onChange={event => setPortKey(event.target.value)}><option value="">{t('addressOnly')}</option>
             {portOptions.map((port, index) => <option key={index} value={`${port.containerPort}/${port.protocol}`}>{port.containerPort}/{port.protocol.toUpperCase()}</option>)}
-          </select>
-          <ChevronDown size={14} aria-hidden="true" />
-        </span>
+          </SelectControl>
       </label>}
       {selectedPort && <p className="insights-hint">{t('internalCandidate')} · {selectedPort.protocol.toUpperCase()}</p>}
       {!data.networksAvailable ? <p className="insights-hint">{t('networksUnavailable')}</p> : !data.networks.length ? <p className="insights-hint">{t('noNetworks')}</p> : <ul className="insights-network-list">{data.networks.map((network, index) => <li key={index}>

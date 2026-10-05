@@ -137,7 +137,7 @@ export function ObservationHistory({ observation, containers, fullId, scope = ob
     <h3>{t('stateChanges')}</h3>
     {!events.length ? <p className="observation-hint">{t('noHistory')}</p> : <ol className="history-events">{visibleEvents.map(event => {
       const selected = selectedEvent?.sequence === event.sequence;
-      const canOpen = !!(event.fullId && event.composeProject && onSelectEvent);
+      const canOpen = !!(event.fullId && onSelectEvent);
       const triggerId = `${historyId}-event-${event.sequence}`;
       const content = <><time dateTime={event.occurredAt} title={event.occurredAt}>{new Date(event.occurredAt).toLocaleTimeString(locale)}</time><strong>{event.composeService ?? '—'}</strong>{event.name && <span className="history-event-container">{event.name}</span>}{event.fullId && <code className="history-event-id" title={event.fullId}>{event.fullId.slice(0, 12)}</code>}<span>{eventKeys[event.kind] ? t(eventKeys[event.kind]!) : event.kind in observationMessages ? t(event.kind as keyof typeof observationMessages) : event.kind}</span>{event.detail && <span>{event.detail}</span>}</>;
       return <li key={event.sequence} className={canOpen ? 'history-event-item' : undefined}>

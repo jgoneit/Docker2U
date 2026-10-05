@@ -43,9 +43,9 @@ describe('container table', () => {
     expect(project).toHaveAttribute('aria-level', '1');
     expect(project).toHaveAttribute('aria-expanded', 'true');
     expect(within(project).getByText('2')).toHaveAccessibleName(language === 'ko' ? '2개 컨테이너' : '2 containers');
-    const ungrouped = within(tree).getByRole('treeitem', { name: language === 'ko' ? '프로젝트 없음' : 'No project' });
+    const ungrouped = within(tree).getByRole('treeitem', { name: language === 'ko' ? '독립 컨테이너' : 'Standalone containers' });
     expect(within(ungrouped).getByText('1')).toBeVisible();
-    expect(ungrouped).not.toHaveAttribute('aria-selected');
+    expect(ungrouped).toHaveAttribute('aria-selected', 'false');
     expect(props.inventoryRef.current).toBe(tree);
     expect(within(tree).getAllByRole('treeitem')).toHaveLength(5);
     expect(within(tree).getAllByRole('checkbox')).toHaveLength(3);
@@ -138,20 +138,22 @@ describe('container table', () => {
     expect(row('api')).toHaveFocus();
   });
 
-  it('highlights only the selected project and never selects the no-project group', async () => {
+  it('selects the standalone group without folding it and keeps disclosure independent', async () => {
     const user = userEvent.setup();
     const { props } = setup({ selectedTarget: { kind: 'project', name: 'backend' } });
     expect(screen.getByRole('treeitem', { name: 'backend 프로젝트' })).toHaveAttribute('aria-selected', 'true');
     expect(row('api')).toHaveAttribute('aria-selected', 'false');
-    const ungrouped = screen.getByRole('treeitem', { name: '프로젝트 없음' });
-    await user.click(screen.getByText('프로젝트 없음'));
-    expect(ungrouped).toHaveAttribute('aria-expanded', 'false');
-    expect(props.onProjectView).not.toHaveBeenCalled();
-    expect(props.onSelect).not.toHaveBeenCalled();
-    ungrouped.focus();
-    await user.keyboard(' ');
+    const ungrouped = screen.getByRole('treeitem', { name: '독립 컨테이너' });
+    await user.click(screen.getByText('독립 컨테이너'));
     expect(ungrouped).toHaveAttribute('aria-expanded', 'true');
-    expect(props.onProjectView).not.toHaveBeenCalled();
+    expect(props.onProjectView).toHaveBeenCalledExactlyOnceWith(null);
+    expect(props.onSelect).not.toHaveBeenCalled();
+    await user.click(within(ungrouped).getByRole('button', { name: '독립 컨테이너 접기' }));
+    expect(ungrouped).toHaveAttribute('aria-expanded', 'false');
+    expect(props.onProjectView).toHaveBeenCalledTimes(1);
+    ungrouped.focus(); await user.keyboard(' ');
+    expect(props.onProjectView).toHaveBeenCalledTimes(2);
+    expect(ungrouped).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('uses current sample values without hiding zero or clamping multi-core CPU, and abbreviates memory', () => {

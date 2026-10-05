@@ -32,11 +32,16 @@ def write_json(path, value):
     path.chmod(0o600)
 
 
-def make_fixture(root):
+def make_fixture(root, fixture_mode="default"):
     # Refuse any existing path: only this successful mkdir grants cleanup ownership.
     root.mkdir(mode=0o700)
     try:
         populate_fixture(root)
+        if fixture_mode == "standalone":
+            standalone_module().initialize(root)
+            (root / "follow-live").write_text("enabled\n")
+        elif fixture_mode != "default":
+            raise ValueError("Unknown native fixture mode")
     except BaseException:
         shutil.rmtree(root)
         raise
@@ -49,6 +54,7 @@ def populate_fixture(root):
     shutil.copyfile(REPO / "tests/native-smoke/fake_docker.py", root / "docker")
     shutil.copyfile(REPO / "tests/native-smoke/compose_fixture.py", root / "compose_fixture.py")
     shutil.copyfile(REPO / "tests/native-smoke/image_export_fixture.py", root / "image_export_fixture.py")
+    shutil.copyfile(REPO / "tests/native-smoke/standalone_fixture.py", root / "standalone_fixture.py")
     compose_spec = importlib.util.spec_from_file_location("native_compose_fixture", root / "compose_fixture.py")
     compose = importlib.util.module_from_spec(compose_spec)
     compose_spec.loader.exec_module(compose)
@@ -57,6 +63,13 @@ def populate_fixture(root):
     native_config = root / "home/Library/Application Support/io.github.jgoneit.docker2u"
     native_config.mkdir(mode=0o700, parents=True)
     write_json(native_config / "runtime.json", {"dockerPath": str(root / "docker")})
+
+
+def standalone_module():
+    spec = importlib.util.spec_from_file_location("native_standalone_fixture", REPO / "tests/native-smoke/standalone_fixture.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def child_environment(root):
@@ -72,9 +85,13 @@ def read_trace(root):
 
 
 def control_event(root, phase):
+    append_event(root, {"phase": phase})
+
+
+def append_event(root, event):
     descriptor = os.open(root / "trace.jsonl", os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
     try:
-        os.write(descriptor, (json.dumps({"phase": phase, "pid": os.getpid(), "timeMs": time.time_ns() // 1_000_000}) + "\n").encode())
+        os.write(descriptor, (json.dumps({**event, "pid": os.getpid(), "timeMs": time.time_ns() // 1_000_000}) + "\n").encode())
     finally:
         os.close(descriptor)
 
@@ -90,11 +107,14 @@ def archive_trace(manifest):
     ui_reports = [json.loads(path.read_text()) for path in submissions]
     coverage = {(item["ui"]["mode"], name) for item in ui_reports for name in item["verification"]["completedProbes"]}
     expected = {("worker", name) for name in ["search", "connection-clear", "socket", "recovery", *INSIGHT_STEPS]} | {(mode, "search") for mode in ["constructor-fail", "never-ready"]}
+    if manifest.get("coverageProfile") == "group-observation-v2":
+        expected = {("worker", name) for name in (STANDALONE_STEPS if manifest.get("fixtureMode") == "standalone" else [*OBSERVATION_STEPS, "terminal-roundtrip"])}
     report = {**manifest, "cliEvents": len(events), "rejectedCommands": rejected,
               "dockerExecution": "isolated Python fixture with synthetic Compose state; no real Docker CLI is discovered or invoked",
               "uiReports": ui_reports, "requiredCoverageComplete": expected <= coverage,
               "observationCoverageComplete": {("worker", name) for name in OBSERVATION_STEPS} <= coverage,
-              "terminalCoverageComplete": ("worker", "terminal-roundtrip") in coverage}
+              "terminalCoverageComplete": ("worker", "terminal-roundtrip") in coverage,
+              "standaloneCoverageComplete": {("worker", name) for name in STANDALONE_STEPS} <= coverage}
     write_json(evidence / "report.json", report)
     return report
 
@@ -120,6 +140,21 @@ TERMINAL_FIELDS = {
     "native terminal exited": {"status", "exitCode", "startRequests", "outputEvents", "outputBytes", "ackedSequence"},
 }
 TERMINAL_STEPS = {"terminal-roundtrip": [OBSERVATION_STEPS["observation-baseline"][0], *TERMINAL_FIELDS]}
+
+STANDALONE_STEPS = {
+    "standalone-incident": ["standalone group collected", "standalone incident rendered", "standalone incident returned"],
+    "standalone-archive": ["standalone replaced archive verified"],
+    "standalone-empty": ["standalone empty archive verified"],
+}
+
+STANDALONE_INCIDENT_FIELDS = {"fullId", "eventSequence", "occurredAt", "sessionId", "minutes", "timeFrom", "timeTo", "rows", "allRowsExactId", "allRowsInWindow", "visibleRows", "graphMarkers", "requestedAt", "repliedAt"}
+STANDALONE_FIELDS = {
+    "standalone group collected": {"binding", "sessionId", "engineId", "endpoint", "fullIds", "logRows", "resourcePoints", "eventSequence", "fullId", "occurredAt", "counts"},
+    "standalone incident rendered": STANDALONE_INCIDENT_FIELDS | {"testedMinutes", "refreshed", "counts"},
+    "standalone incident returned": {"sessionId", "fullId", "eventSequence", "minutes", "diagnosticsVisited", "terminalVisited", "terminalNotStarted", "focusRestored", "counts"},
+    "standalone replaced archive verified": STANDALONE_INCIDENT_FIELDS | {"currentIds", "currentDisabled", "groupSelected", "countsBefore", "countsAfter"},
+    "standalone empty archive verified": STANDALONE_INCIDENT_FIELDS | {"currentIds", "currentDisabled", "groupSelected", "countsBefore", "countsAfter"},
+}
 
 COMPOSE_METADATA_FIELDS = {
     "compose picker": {"kind", "selected"},
@@ -283,6 +318,102 @@ def validate_terminal(by_name, attempt, events, manifest):
         raise ValueError("Terminal rendered steps lack matching native command, resize, interrupt, or exit evidence")
 
 
+def validate_standalone(probe, attempt, steps, events, manifest):
+    if manifest.get("fixtureMode") != "standalone" or manifest.get("coverageProfile") != "group-observation-v2":
+        raise ValueError("Standalone evidence requires an explicit owned standalone launch")
+    if [row["name"] for row in attempt[1:-1]] != STANDALONE_STEPS[probe]:
+        raise ValueError("Standalone steps are duplicated, unknown, or out of order")
+    expected_binding = {key: manifest[key] for key in ("runId", "binarySha256", "startedAtMs")}
+    baseline_rows = [row for row in steps if row.get("name") == "standalone group collected"]
+    if not baseline_rows:
+        raise ValueError("Standalone archive has no native group baseline")
+    base_row = baseline_rows[-1]
+    base = base_row.get("detail", {})
+    ids = [format(number, "064x") for number in (3, 4, 5)]
+
+    def counters(value):
+        if not isinstance(value, dict) or set(value) != {"configure", "stop", "retry", "terminalStarts"} or any(type(item) is not int or not 0 <= item <= 2 ** 53 - 1 for item in value.values()):
+            raise ValueError("Standalone collection counters are missing or invalid")
+        return value
+
+    def timestamp(value):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.utcoffset() is None:
+                raise ValueError("timezone missing")
+            # Match the browser's millisecond Date precision for RFC3339 nano events.
+            return math.floor(parsed.timestamp()) * 1000 + parsed.microsecond // 1000
+        except (ValueError, AttributeError, TypeError):
+            raise ValueError("Standalone incident lacks an absolute time")
+
+    for row in [base_row, *attempt[1:-1]]:
+        name, value = row["name"], row.get("detail")
+        if not isinstance(value, dict) or set(value) != STANDALONE_FIELDS[name]:
+            raise ValueError("Standalone metadata fields are missing or include unapproved payload")
+        if value.get("sessionId") != base.get("sessionId") or value.get("fullId") != ids[0] or value.get("eventSequence") != base.get("eventSequence"):
+            raise ValueError("Standalone incident changed its session, event, or full ID")
+        if not isinstance(value["sessionId"], str) or not 0 < len(value["sessionId"]) <= 256 or type(value["eventSequence"]) is not int or value["eventSequence"] < 1:
+            raise ValueError("Standalone incident identity is invalid")
+        for key in ("counts", "countsBefore", "countsAfter"):
+            if key in value:
+                counters(value[key])
+        for key in ("allRowsExactId", "allRowsInWindow", "visibleRows", "refreshed", "diagnosticsVisited", "terminalVisited", "terminalNotStarted", "focusRestored", "currentDisabled", "groupSelected"):
+            if key in value and value[key] is not True:
+                raise ValueError("Standalone lacks rendered native evidence: " + key)
+        if "timeFrom" in value:
+            occurred = timestamp(value["occurredAt"])
+            if value["occurredAt"] != base["occurredAt"] or value["minutes"] != 2 or value["graphMarkers"] != 2 or type(value["rows"]) is not int or not 1 <= value["rows"] <= 500:
+                raise ValueError("Standalone incident window, rows, or graphs are invalid")
+            if timestamp(value["timeFrom"]) != occurred - 120_000 or timestamp(value["timeTo"]) != occurred + 120_000:
+                raise ValueError("Standalone query did not use the exact incident time window")
+            if any(type(value[key]) is not int for key in ("requestedAt", "repliedAt")) or not attempt[0]["timeMs"] <= value["requestedAt"] <= value["repliedAt"] <= row["timeMs"]:
+                raise ValueError("Standalone query reply does not belong to this attempt")
+    if (base["binding"] != expected_binding or base["engineId"] != "native-smoke-engine"
+            or base["endpoint"] != "unix://" + manifest["fixtureRoot"] + "/engine.sock" or base["fullIds"] != ids[:2]
+            or type(base["logRows"]) is not int or not 2 <= base["logRows"] <= 500
+            or type(base["resourcePoints"]) is not int or base["resourcePoints"] < 2 or base["counts"]["configure"] < 1):
+        raise ValueError("Standalone baseline lacks owned group logs and resources")
+    occurred = timestamp(base["occurredAt"])
+    if not manifest["startedAtMs"] <= occurred <= base_row["timeMs"]:
+        raise ValueError("Standalone event lies outside this native launch")
+    for full_id in ids[:2]:
+        if not any(row.get("phase") == "api-log-binding" and row.get("fullId") == full_id and row.get("binding") == expected_binding
+                   and manifest["startedAtMs"] <= row.get("timeMs", 0) <= base_row["timeMs"] for row in events):
+            raise ValueError("Standalone group lacks both owned native log streams")
+    if not any(row.get("phase") == "api-standalone-event" and row.get("fullId") == ids[0] and str(row.get("action", "")).startswith("health_status")
+               and abs(row.get("producedAtMs", 0) - occurred) < 1 and manifest["startedAtMs"] <= row.get("timeMs", 0) <= base_row["timeMs"] for row in events):
+        raise ValueError("Standalone event is not bound to an owned Engine event")
+    if not any(row.get("phase") == "stats-payload" and set(ids[:2]) <= set(row.get("fullIds", []))
+               and manifest["startedAtMs"] <= row.get("timeMs", 0) <= base_row["timeMs"] for row in events):
+        raise ValueError("Standalone resource points lack native batch evidence")
+    begin, end = attempt[0]["timeMs"], attempt[-1]["timeMs"]
+    if any(row.get("phase") in ("api-terminal-created", "api-terminal-started") and row.get("fullId") in ids and begin <= row.get("timeMs", 0) <= end for row in events):
+        raise ValueError("Standalone current-terminal navigation unexpectedly started an exec")
+    if probe == "standalone-incident":
+        rendered, returned = (row["detail"] for row in attempt[2:4])
+        if rendered["testedMinutes"] != [1, 5, 2] or rendered["counts"] != base["counts"] or returned["counts"] != base["counts"] or returned["minutes"] != 2:
+            raise ValueError("Standalone incident changed collection or failed to restore its window")
+        if not any(row.get("phase") == "details-payload" and row.get("fullId") == ids[0] and row.get("exitCode") == 137
+                   and attempt[2]["timeMs"] <= row.get("timeMs", 0) <= attempt[3]["timeMs"] for row in events):
+            raise ValueError("Standalone diagnostics lacks native inspect evidence")
+        return
+    required_previous = "passed standalone-incident" if probe == "standalone-archive" else "passed standalone-archive"
+    if not any(row.get("name") == required_previous and row["timeMs"] <= begin for row in steps):
+        raise ValueError("Standalone archive lifecycle is out of order")
+    value = attempt[1]["detail"]
+    expected_ids = ids[1:] if probe == "standalone-archive" else []
+    stage = "recreated" if probe == "standalone-archive" else "empty"
+    transitions = [row for row in events if row.get("phase") == "standalone-transition" and row.get("stage") == stage
+                   and base_row["timeMs"] < row.get("timeMs", 0) <= value["requestedAt"]]
+    if len(transitions) != 1 or transitions[0].get("fullIds") != expected_ids or transitions[0].get("previousIds") != (ids[:2] if stage == "recreated" else ids[1:]):
+        raise ValueError("Standalone archive lacks the owned synthetic lifecycle transition")
+    if value["currentIds"] != expected_ids or value["countsBefore"] != value["countsAfter"]:
+        raise ValueError("Standalone archive changed collection or rebound a deleted ID")
+    replacement = next((row for row in events if row.get("phase") == "standalone-transition" and row.get("stage") == "recreated"), None)
+    if not replacement or any(row.get("phase") == "api-log-binding" and row.get("fullId") == ids[0] and replacement["timeMs"] <= row.get("timeMs", 0) <= end for row in events):
+        raise ValueError("Standalone archive reopened a deleted log source")
+
+
 def successful_command(events, words, begin, end):
     return any(row.get("phase") == "start" and begin <= row.get("timeMs", 0) <= end
                and row.get("args", [])[2:2 + len(words)] == words
@@ -441,6 +572,8 @@ def validate_ui(manifest, ui, events, now_ms=None):
         raise ValueError("UI report does not belong to this exact native launch and binary")
     if ui.get("nativeIpc") is not True or ui.get("status") not in ("passed", "ready") or ui.get("failures"):
         raise ValueError("UI report contains incomplete or failed probes")
+    if manifest.get("coverageProfile") == "group-observation-v2" and ui.get("coverageProfile") != manifest["coverageProfile"]:
+        raise ValueError("UI report uses another native coverage profile")
     mode = ui.get("mode")
     if mode not in ["worker", "constructor-fail", "never-ready"]:
         raise ValueError("Unknown Worker mode")
@@ -468,7 +601,7 @@ def validate_ui(manifest, ui, events, now_ms=None):
             pending = (name.removeprefix("started "), index)
         elif name.startswith("passed "):
             probe = name.removeprefix("passed ")
-            if pending is None or pending[0] != probe or probe not in ["search", "connection-clear", "socket", "recovery", "project-recovery", *INSIGHT_STEPS, *OBSERVATION_STEPS, *TERMINAL_STEPS]:
+            if pending is None or pending[0] != probe or probe not in ["search", "connection-clear", "socket", "recovery", "project-recovery", *INSIGHT_STEPS, *OBSERVATION_STEPS, *TERMINAL_STEPS, *STANDALONE_STEPS]:
                 raise ValueError("UI completion has no matching probe start")
             attempt = steps[pending[1]:index + 1]
             by_name = {row["name"]: row for row in attempt}
@@ -481,6 +614,7 @@ def validate_ui(manifest, ui, events, now_ms=None):
                 **INSIGHT_STEPS,
                 **OBSERVATION_STEPS,
                 **TERMINAL_STEPS,
+                **STANDALONE_STEPS,
             }[probe]
             if not all(name in by_name for name in required):
                 raise ValueError("UI probe is missing required evidence: " + probe)
@@ -536,6 +670,8 @@ def validate_ui(manifest, ui, events, now_ms=None):
                 validate_observation(probe, by_name, attempt, steps[:index + 1], events, manifest)
             if probe in TERMINAL_STEPS:
                 validate_terminal(by_name, attempt, events, manifest)
+            if probe in STANDALONE_STEPS:
+                validate_standalone(probe, attempt, steps[:index + 1], events, manifest)
             if probe == "recovery":
                 validate_recovery(by_name, events)
             completed.append(probe)
@@ -555,7 +691,7 @@ def owned_controller(manifest):
     return str(Path(__file__).resolve()) in result.stdout and manifest["fixtureRoot"] in result.stdout
 
 
-def serve(root, app, evidence):
+def serve(root, app, evidence, fixture_mode="default"):
     owned = False
     listener = None
     manifest = None
@@ -569,10 +705,10 @@ def serve(root, app, evidence):
     signal.signal(signal.SIGINT, stop_requested)
     process = None
     try:
-        make_fixture(root)
+        make_fixture(root, fixture_mode)
         owned = True
         executable = app / "Contents/MacOS/docker2u"
-        manifest = {"marker": "NATIVE_SMOKE_HARNESS", "runId": root.name, "fixtureRoot": str(root), "app": str(app), "binarySha256": hashlib.sha256(executable.read_bytes()).hexdigest(), "controllerPid": os.getpid(), "evidenceDirectory": str(evidence), "startedAtMs": time.time_ns() // 1_000_000, "status": "running"}
+        manifest = {"marker": "NATIVE_SMOKE_HARNESS", "runId": root.name, "fixtureRoot": str(root), "fixtureMode": fixture_mode, "coverageProfile": "group-observation-v2", "app": str(app), "binarySha256": hashlib.sha256(executable.read_bytes()).hexdigest(), "controllerPid": os.getpid(), "evidenceDirectory": str(evidence), "startedAtMs": time.time_ns() // 1_000_000, "status": "running"}
         listener = engine_listener(root)
         write_json(root / "launch.json", manifest)
         evidence.mkdir(parents=True, exist_ok=True)
@@ -641,10 +777,11 @@ def main():
     parser.add_argument("--root", type=Path)
     parser.add_argument("--evidence", type=Path)
     parser.add_argument("--ui-results", type=Path)
+    parser.add_argument("--fixture-mode", choices=["default", "standalone"], default="default")
     args = parser.parse_args()
     STATE.mkdir(parents=True, exist_ok=True)
     if args.command == "serve":
-        serve(args.root, args.app, args.evidence)
+        serve(args.root, args.app, args.evidence, args.fixture_mode)
         return
     if args.command == "launch":
         if ACTIVE.exists() and owned_controller(json.loads(ACTIVE.read_text())):
@@ -654,7 +791,7 @@ def main():
         root = Path("/tmp").resolve() / ("d2u-smoke-" + uuid.uuid4().hex[:10])
         evidence = STATE / "runs" / root.name
         evidence.mkdir(parents=True)
-        os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve()), "serve", "--app", str(args.app.resolve()), "--root", str(root), "--evidence", str(evidence)])
+        os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve()), "serve", "--app", str(args.app.resolve()), "--root", str(root), "--evidence", str(evidence), "--fixture-mode", args.fixture_mode])
     if not ACTIVE.exists():
         raise RuntimeError("No native smoke run exists")
     manifest = json.loads(ACTIVE.read_text())

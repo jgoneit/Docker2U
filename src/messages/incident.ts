@@ -17,6 +17,8 @@ export const incidentMessages = {
   unknownCoverage: { ko: '확인 가능한 보관 구간 없음', en: 'No retained interval available' },
   projectDropped: { ko: '프로젝트 전체: 보관 한도로 {count}행 삭제됨', en: 'Project total: {count} rows removed at retention limit' },
   projectGaps: { ko: '프로젝트 전체 수집 공백 {count}회', en: 'Project total: {count} collection gaps' },
+  standaloneDropped: { ko: '독립 컨테이너 전체: 보관 한도로 {count}행 삭제됨', en: 'Standalone total: {count} rows removed at retention limit' },
+  standaloneGaps: { ko: '독립 컨테이너 전체 수집 공백 {count}회', en: 'Standalone total: {count} collection gaps' },
   sourceMissing: { ko: '이 컨테이너의 수집 상태를 확인할 수 없습니다. 보관된 자료만 표시합니다.', en: 'Collection status for this container is unavailable. Only retained records are shown.' },
   sourceNotSelected: { ko: '이 컨테이너는 현재 로그 수집 대상으로 선택되지 않았습니다.', en: 'This container is not currently selected for log collection.' },
   current: { ko: '현재 정보 확인', en: 'Inspect current information' },

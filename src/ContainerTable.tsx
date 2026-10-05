@@ -11,6 +11,7 @@ import type { ResourceSample } from './useContainerStats';
 import './containerTable.css';
 
 const messages = {
+  standalone: { ko: '독립 컨테이너', en: 'Standalone containers' },
   projectView: { ko: '{name} 프로젝트', en: '{name} project' },
   collapse: { ko: '{name} 접기', en: 'Collapse {name}' },
   expand: { ko: '{name} 펼치기', en: 'Expand {name}' },
@@ -22,7 +23,7 @@ const messages = {
   connectionsFor: { ko: '{name} 접속 정보 보기', en: 'View connections for {name}' },
 };
 
-export type NavigationTarget = { kind: 'project'; name: string } | { kind: 'container'; fullId: string } | null;
+export type NavigationTarget = { kind: 'standalone' } | { kind: 'project'; name: string } | { kind: 'container'; fullId: string } | null;
 export interface ContainerTableProps {
   groups: ProjectTreeGroup[];
   selectedTarget: NavigationTarget;
@@ -54,7 +55,7 @@ export function ContainerTable({ groups, selectedTarget, checkedHandles, checkbo
     const key = projectKey(group.name);
     return [{ key, parent: null, group }, ...(collapsed.has(key) ? [] : group.containers.map(container => ({ key: containerKey(container.fullId), parent: key, group, container })))];
   });
-  const selectedKey = selectedTarget?.kind === 'project' ? projectKey(selectedTarget.name)
+  const selectedKey = selectedTarget?.kind === 'standalone' ? projectKey(null) : selectedTarget?.kind === 'project' ? projectKey(selectedTarget.name)
     : selectedTarget?.kind === 'container' ? containerKey(selectedTarget.fullId) : null;
   const selectedGroup = selectedTarget?.kind === 'container' ? groups.find(group => group.containers.some(container => container.fullId === selectedTarget.fullId)) : undefined;
   const visibleSelectedKey = entries.some(entry => entry.key === selectedKey) ? selectedKey : selectedGroup ? projectKey(selectedGroup.name) : null;
@@ -71,8 +72,7 @@ export function ContainerTable({ groups, selectedTarget, checkedHandles, checkbo
   function activate(entry: TreeEntry) {
     setFocusedKey(entry.key);
     if (entry.container) onSelect(entry.container);
-    else if (entry.group.name !== null) onProjectView?.(entry.group.name);
-    else toggleGroup(entry.key);
+    else onProjectView?.(entry.group.name);
   }
   function keyDown(event: KeyboardEvent<HTMLDivElement>, entry: TreeEntry) {
     // Checkboxes and port links keep their own keyboard behavior.
@@ -103,15 +103,15 @@ export function ContainerTable({ groups, selectedTarget, checkedHandles, checkbo
     <div ref={inventoryRef} className="container-tree" role="tree" aria-label={app('containerList')} aria-busy={busy}>
       {groups.map((group, groupIndex) => {
         const key = projectKey(group.name);
-        const name = group.name ?? app('noProject');
+        const name = group.name ?? t('standalone');
         const expanded = !collapsed.has(key);
-        const selected = selectedTarget?.kind === 'project' && selectedTarget.name === group.name;
+        const selected = group.name === null ? selectedTarget?.kind === 'standalone' : selectedTarget?.kind === 'project' && selectedTarget.name === group.name;
         const selectedChild = !expanded && selectedTarget?.kind === 'container' ? group.containers.find(container => container.fullId === selectedTarget.fullId) : undefined;
         const selectedChildId = selectedChild ? `${id}-selected-child-${groupIndex}` : undefined;
         const entry: TreeEntry = { key, parent: null, group };
         return <div key={key} ref={node => register(key, node)} role="treeitem" aria-label={group.name === null ? name : t('projectView', { name })}
-          aria-level={1} aria-expanded={expanded} aria-selected={group.name === null ? undefined : selected} aria-describedby={selectedChildId}
-          className="project-tree-item" data-selected={selected || undefined} data-selected-descendant={!!selectedChild || undefined}
+          aria-level={1} aria-expanded={expanded} aria-selected={selected} aria-describedby={selectedChildId}
+          className="project-tree-item" data-log-scope={group.name === null ? 'standalone' : 'project'} data-selected={selected || undefined} data-selected-descendant={!!selectedChild || undefined}
           tabIndex={tabKey === key ? 0 : -1} onFocus={event => { if (event.target === event.currentTarget) setFocusedKey(key); }}
           onKeyDown={event => keyDown(event, entry)} onClick={event => {
             if (!(event.target instanceof Element) || event.target.closest('[role="treeitem"]') !== event.currentTarget || event.target.closest('button, input')) return;
