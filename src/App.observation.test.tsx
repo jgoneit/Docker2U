@@ -218,6 +218,9 @@ it('does not restore a previous-session history cursor after reconnect unmount c
   expect(document.querySelector('.observation-history')?.scrollTop).toBe(0);
 });
 
+// Scope controls so each lookup does not traverse hundreds of event buttons.
+function incidentControls() { return within(document.querySelector<HTMLElement>('.incident-detail')!); }
+
 it('restores a deleted-container incident into an already mounted project history', async () => {
   const { observed } = incidentFixture();
   const many = { ...observed, sequence: 402, events: Array.from({ length: 401 }, (_, index) => ({ ...observed.events[0]!, sequence: index + 1 })) };
@@ -226,20 +229,20 @@ it('restores a deleted-container incident into an already mounted project histor
   render(<App />); await ready();
   fireEvent.click(screen.getByRole('treeitem', { name: 'demo 프로젝트' }));
   fireEvent.click(screen.getByRole('tab', { name: '이력' }));
-  fireEvent.click(screen.getByRole('button', { name: '이전 기록' }));
+  fireEvent.click(within(document.querySelector<HTMLElement>('.history-event-pages')!).getByRole('button', { name: '이전 기록' }));
   expect(document.querySelector('.history-event-trigger')).toHaveAttribute('data-event-sequence', '201');
   fireEvent.click(screen.getByRole('treeitem', { name: 'web 상세' }));
   fireEvent.click(screen.getByRole('tab', { name: '이력' }));
   fireEvent.click(document.querySelector('.history-event-trigger')!);
-  await screen.findByRole('button', { name: '사건 상세 닫기' });
+  await incidentControls().findByRole('button', { name: '사건 상세 닫기' });
   const history = document.querySelector<HTMLElement>('.observation-history')!;
   history.scrollTop = 95; fireEvent.scroll(history);
-  fireEvent.click(screen.getByRole('button', { name: '현재 진단' }));
+  fireEvent.click(incidentControls().getByRole('button', { name: '현재 진단' }));
   await waitFor(() => expect(screen.getByRole('tab', { name: '상태 진단' })).toHaveAttribute('aria-selected', 'true'));
   await waitFor(() => expect(observationApi.read).toHaveBeenCalled(), { timeout: 2000 });
   await act(async () => next.resolve({ ...many, sequence: 403, inventory: { ...inventory(2), containers: [] } }));
   expect(document.querySelector('.history-event-trigger')).toHaveAttribute('data-event-sequence', '201');
-  fireEvent.click(screen.getByRole('button', { name: '사건으로 돌아가기' }));
+  fireEvent.click(within(document.querySelector<HTMLElement>('.incident-return')!).getByRole('button', { name: '사건으로 돌아가기' }));
   expect(document.querySelector('[data-event-sequence="401"]')).toHaveFocus();
   expect(document.querySelector('.incident-detail')).toHaveAttribute('data-incident-sequence', '401');
   expect(document.querySelector('.observation-history')?.scrollTop).toBe(95);
@@ -259,7 +262,7 @@ it.each([
   const original = document.querySelector<HTMLButtonElement>('.history-event-trigger')!;
   const originalSequence = original.dataset.eventSequence;
   fireEvent.click(original);
-  await screen.findByRole('button', { name: '사건 상세 닫기' });
+  await incidentControls().findByRole('button', { name: '사건 상세 닫기' });
   const paging = pageButton(direction === 'older' ? '이전 기록' : '최신 위치');
   paging.focus(); fireEvent.click(paging);
   expect(document.querySelector('.incident-detail')).not.toBeInTheDocument();
@@ -273,12 +276,12 @@ it.each([
   const next = document.querySelector<HTMLButtonElement>('.history-event-trigger')!;
   const nextSequence = next.dataset.eventSequence;
   fireEvent.click(next);
-  await screen.findByRole('button', { name: '사건 상세 닫기' });
-  fireEvent.click(screen.getByRole('button', { name: '전후 5분' }));
-  fireEvent.click(screen.getByRole('button', { name: '현재 진단' }));
+  await incidentControls().findByRole('button', { name: '사건 상세 닫기' });
+  fireEvent.click(incidentControls().getByRole('button', { name: '전후 5분' }));
+  fireEvent.click(incidentControls().getByRole('button', { name: '현재 진단' }));
   await waitFor(() => expect(screen.getByRole('tab', { name: '상태 진단' })).toHaveAttribute('aria-selected', 'true'));
-  fireEvent.click(screen.getByRole('button', { name: '사건으로 돌아가기' }));
+  fireEvent.click(within(document.querySelector<HTMLElement>('.incident-return')!).getByRole('button', { name: '사건으로 돌아가기' }));
   expect(document.querySelector('.incident-detail')).toHaveAttribute('data-incident-sequence', nextSequence);
-  expect(screen.getByRole('button', { name: '전후 5분' })).toHaveAttribute('aria-pressed', 'true');
+  expect(incidentControls().getByRole('button', { name: '전후 5분' })).toHaveAttribute('aria-pressed', 'true');
   expect(document.querySelector(`[data-event-sequence="${nextSequence}"]`)).toHaveFocus();
 });
