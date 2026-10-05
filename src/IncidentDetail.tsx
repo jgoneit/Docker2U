@@ -89,6 +89,6 @@ export function IncidentDetail({ review, onClose, onNavigate, currentAvailable }
       </div>) : !state.loading && <p className="incident-hint">{state.error ? t('unavailable') : t('empty')}</p>}
     </div>
     <div className="incident-log-pages"><span>{t('page', { from: page?.rows.length ? page.offset + 1 : 0, to: page ? page.offset + page.rows.length : 0, total: page?.totalRows ?? 0 })}</span><button type="button" disabled={state.loading || !page || page.offset === 0} onClick={() => review.page(Math.max(0, (page?.offset ?? 0) - INCIDENT_PAGE_SIZE))}>{t('previous')}</button><button type="button" disabled={state.loading || !page || page.offset + page.rows.length >= page.totalRows || !page.rows.length} onClick={() => review.page(page!.offset + page!.rows.length)}>{t('next')}</button></div>
-    <footer className="incident-current"><strong>{t('current')}</strong><p className="incident-hint">{currentAvailable ? t('currentHint') : t('currentUnavailable')}</p><div>{(['diagnostics', 'connectivity', 'storage'] as const).map(tab => <button type="button" key={tab} disabled={!currentAvailable} onClick={() => onNavigate(tab)}>{t(tab)}</button>)}</div></footer>
+    <footer className="incident-current"><strong>{t('current')}</strong><p className="incident-hint">{currentAvailable ? t('currentHint') : t('currentUnavailable')}</p><div>{(['diagnostics', 'connectivity', 'storage', 'terminal'] as const).map(tab => <button type="button" key={tab} disabled={!currentAvailable} onClick={() => onNavigate(tab)}>{t(tab)}</button>)}</div></footer>
   </section>;
 }

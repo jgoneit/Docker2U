@@ -523,9 +523,18 @@ test('uses manual keyboard tabs while preserving a paused live log search and it
   const callsBefore = await fixtureCalls(page);
   expect(callsBefore.getContainerDetails).toBe(0);
   const logsTab = page.getByRole('tab', { name: t.logsTab, exact: true });
+  const terminalTab = page.getByRole('tab', { name: lang === 'ko' ? '터미널' : 'Terminal', exact: true });
   const diagnosticsTab = page.getByRole('tab', { name: t.diagnosticsTab, exact: true });
   const connectionsTab = page.getByRole('tab', { name: t.connectionsTab, exact: true });
   await logsTab.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(terminalTab).toBeFocused();
+  await expect(terminalTab).toHaveAttribute('aria-selected', 'false');
+  await expect(logsTab).toHaveAttribute('aria-selected', 'true');
+  await page.keyboard.press('Enter');
+  await expect(terminalTab).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.terminal-connect')).toBeEnabled();
+  await expect(page.locator('.terminal-screen')).toBeHidden();
   await page.keyboard.press('ArrowRight');
   await expect(diagnosticsTab).toBeFocused();
   await expect(diagnosticsTab).toHaveAttribute('aria-selected', 'false');

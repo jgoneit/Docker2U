@@ -287,8 +287,11 @@ v0.1은 검증된 로컬 endpoint만 허용한다. Remote Engine은 기능 부�
 
 ### 6.5 Safe by Small Surface
 
-범용 shell, 자유 형식 명령, 임의 인자 입력을 제공하지 않는다. 사용자는 제품이
-미리 정의한 작업만 실행할 수 있다.
+호스트의 범용 shell 실행과 임의 Docker 인자 입력을 제공하지 않는다. 제품이
+정의한 작업과, 사용자가 명시적으로 연결한 컨테이너 터미널을 제공한다.
+컨테이너 터미널은 Rust가 검증한 세션·전체 컨테이너 ID에 고정되며 컨테이너
+기본 사용자·작업 디렉터리의 셸에만 입력을 전달한다. 대상·수명·출력 제한은
+[컨테이너 터미널 계약](CONTAINER-TERMINAL.md)을 따른다.
 
 ### 6.6 No Silent Magic
 
@@ -1096,7 +1099,10 @@ copy_diagnostics()
 
 ### 12.2 금지 IPC
 
-다음과 같은 범용 실행 API는 만들지 않는다.
+다음과 같은 호스트 또는 임의 Docker 명령을 실행하는 범용 API는 만들지 않는다.
+컨테이너 터미널은 별도의 typed 시작·입력·크기 변경·출력 확인·연결 해제 API로
+제공한다. 입력 바이트는 이미 검증해 발급한 terminal ID에만 전달하며 시작 요청은
+현재 session·generation·handle과 `sh | bash` 셸 enum만 대상으로 받는다.
 
 ```text
 execute(command: string, arguments: string[])
@@ -1622,7 +1628,7 @@ macOS 14+ arm64 + Colima Docker runtime
 - discovery의 TLS 입력을 보존하고 실패 시 TLS 제거 후 재시도나 fallback하지 않음
 - 모든 operation에 고정된 `--host`가 들어가고 TLS override가 제거됨
 - Container Name에 특수문자가 있어도 명령 구조가 바뀌지 않음
-- 프런트엔드에서 raw shell command 호출 불가
+- 프런트엔드에서 호스트 raw shell command 호출 불가; 컨테이너 셸 입력은 검증된 terminal ID로 한정
 - 프런트엔드에서 임의 Docker argument 호출 불가
 - WebView가 executable candidate path를 IPC로 전달할 수 없음
 - stale environment session과 다른 session의 container handle 거부
@@ -1861,7 +1867,8 @@ Container 복구
 - Name, short ID 또는 stale session 값으로 mutation 대상이 바뀔 수 있음
 - 이전 list generation의 handle로 mutation을 실행할 수 있음
 - 같은 endpoint 뒤 Engine fingerprint가 바뀌어도 기존 session으로 mutation이 가능함
-- WebView에서 raw shell, process spawn 또는 raw Docker args를 호출할 수 있음
+- WebView에서 호스트 raw shell, process spawn 또는 raw Docker args를 호출할 수 있음
+- 다른 session·컨테이너에 속한 terminal ID로 입력하거나 터미널 출력으로 호스트 실행을 유도할 수 있음
 - WebView가 executable path를 전달해 Core process 실행을 유도할 수 있음
 - 승인되지 않은 SupportedRuntimeProfileId에서 mutation이 가능함
 - ResultUnknown mutation을 자동으로 재시도함
@@ -1880,10 +1887,12 @@ Container 복구
 ## 21. v0.1에서 제외할 기능
 
 선택 대상의 실시간 로그, Compose 프로젝트 구분, 현재 CPU·메모리 표시는 macOS 알파에 포함한다. Windows 구현과 검증으로 확대 해석하지 않는다.
+사용자가 명시적으로 여는 컨테이너 Terminal/Exec는 후속 알파 확장으로 포함하며
+[터미널 계약](CONTAINER-TERMINAL.md)을 따른다.
 
 ### 명시적 제외
 
-- Container Terminal / Exec
+- 호스트 범용 Terminal / Shell 실행
 - 소형 모니터 창 및 최상위 고정
 - 목록 Auto Refresh
 - Docker Compose 실행·편집 (표준 project/service 라벨 표시는 포함)

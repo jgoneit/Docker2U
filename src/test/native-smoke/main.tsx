@@ -8,6 +8,7 @@ import '../../styles.css';
 import { initializePreferences } from '../../preferences';
 import { nativeCheckpoint, nativePaneSize, readyNativeInventory, readyNativeLogs, type NativeCheckpoint } from './readiness';
 import { captureObservationBaseline, verifyObservationRestore, visibleLogTimes } from './observationProbes';
+import { terminalRoundtripProbe } from './terminalProbes';
 
 const marker = 'NATIVE_SMOKE_HARNESS';
 type Mode = 'worker' | 'constructor-fail' | 'never-ready';
@@ -579,6 +580,7 @@ function Harness() {
     {open && <><h2 style={{ fontSize: 16 }}>Native smoke · isolated real IPC</h2><p>Arm the next Engine failure, or remove/restore the fixture socket using the runner before its corresponding probe. No real Docker is used. Legacy probes select the projectless native-smoke-3. Bind its ready stream before arming faults or enabling live-on; keep live-off for dense search.</p>
       <label>Worker mode <select disabled={running} value={mode} onChange={event => { sessionStorage.setItem(marker, event.target.value); location.reload(); }}><option value="worker">Real Worker</option><option value="constructor-fail">Injected constructor failure</option><option value="never-ready">Suppress ready for timeout</option></select></label>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, margin: '8px 0' }}>
+        <button disabled={running} onClick={() => void run('terminal-roundtrip', async () => { const binding = await terminalRoundtripProbe(record); assert(!report.binding || JSON.stringify(report.binding) === JSON.stringify(binding), 'Native fixture changed during this page run'); report.binding = binding; })}>Run native terminal roundtrip</button>
         <button disabled={running} onClick={() => void run('project-recovery', projectRecoveryProbe)}>Run project initial-response recovery</button>
         <button disabled={running} onClick={() => void run('observation-baseline', async () => { const binding = await captureObservationBaseline(record); assert(!report.binding || JSON.stringify(report.binding) === JSON.stringify(binding), 'Native fixture changed during this page run'); report.binding = binding; })}>Capture project observation baseline</button>
         <button disabled={running} onClick={() => void run('observation-restore', () => verifyObservationRestore(record))}>Verify minimized collection / restore</button>

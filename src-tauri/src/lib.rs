@@ -9,7 +9,8 @@ use docker::{
     ComposeProjectPreview, ComposeServiceSelection, ContainerDetails, ContainerList, Core,
     Environment, ImageExportDestination, ImageExportOperation, ImageExportPreview, LogStreamChunk,
     LogStreamStarted, Logs, MountInventory, Mutation, ObservationHold, ObservationRead,
-    ObservationScope, ProjectLogPage, ProjectLogQuery, StatsSnapshot,
+    ObservationScope, ProjectLogPage, ProjectLogQuery, StatsSnapshot, TerminalDescriptor,
+    TerminalEvent, TerminalShell,
 };
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
@@ -143,6 +144,82 @@ async fn stop_log_stream(
 ) -> Result<(), ApiError> {
     let core = core.inner().clone();
     worker(move || core.stop_log_stream(&session_id, &stream_id)).await
+}
+
+#[tauri::command]
+async fn start_container_terminal(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    generation: u64,
+    handle: String,
+    shell: TerminalShell,
+    cols: u16,
+    rows: u16,
+    on_event: tauri::ipc::Channel<TerminalEvent>,
+) -> Result<TerminalDescriptor, ApiError> {
+    let core = core.inner().clone();
+    let sink: docker::TerminalSink = std::sync::Arc::new(move |event| {
+        on_event.send(event).map_err(|_| ApiError {
+            code: "TerminalChannelClosed".into(),
+            message: "The terminal display closed".into(),
+            command: None,
+            stderr: None,
+        })
+    });
+    worker(move || {
+        core.start_container_terminal(&session_id, generation, &handle, shell, cols, rows, sink)
+    })
+    .await
+}
+#[tauri::command]
+async fn write_container_terminal(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    terminal_id: String,
+    bytes: Vec<u8>,
+) -> Result<(), ApiError> {
+    let core = core.inner().clone();
+    core.write_container_terminal(&session_id, &terminal_id, bytes)
+        .await
+}
+#[tauri::command]
+async fn resize_container_terminal(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    terminal_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), ApiError> {
+    let core = core.inner().clone();
+    core.resize_container_terminal(&session_id, &terminal_id, cols, rows)
+        .await
+}
+#[tauri::command]
+async fn ack_container_terminal(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    terminal_id: String,
+    through_sequence: u64,
+) -> Result<(), ApiError> {
+    core.ack_container_terminal(&session_id, &terminal_id, through_sequence)
+}
+#[tauri::command]
+async fn disconnect_container_terminal(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    terminal_id: String,
+) -> Result<(), ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.disconnect_container_terminal(&session_id, &terminal_id)).await
+}
+#[tauri::command]
+async fn close_container_terminal(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    terminal_id: String,
+) -> Result<(), ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.close_container_terminal(&session_id, &terminal_id)).await
 }
 #[tauri::command]
 async fn mutate_container(
@@ -479,6 +556,12 @@ pub fn run() {
             start_log_stream,
             read_log_stream,
             stop_log_stream,
+            start_container_terminal,
+            write_container_terminal,
+            resize_container_terminal,
+            ack_container_terminal,
+            disconnect_container_terminal,
+            close_container_terminal,
             mutate_container,
             mutate_containers,
             configure_observation,
@@ -566,7 +649,13 @@ mod ipc_tests {
                 "allow-start-image-export",
                 "allow-read-image-export",
                 "allow-list-image-exports",
-                "allow-cancel-image-export"
+                "allow-cancel-image-export",
+                "allow-start-container-terminal",
+                "allow-write-container-terminal",
+                "allow-resize-container-terminal",
+                "allow-ack-container-terminal",
+                "allow-disconnect-container-terminal",
+                "allow-close-container-terminal"
             ])
         );
     }

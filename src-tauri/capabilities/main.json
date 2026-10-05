@@ -42,6 +42,12 @@
     "allow-start-image-export",
     "allow-read-image-export",
     "allow-list-image-exports",
-    "allow-cancel-image-export"
+    "allow-cancel-image-export",
+    "allow-start-container-terminal",
+    "allow-write-container-terminal",
+    "allow-resize-container-terminal",
+    "allow-ack-container-terminal",
+    "allow-disconnect-container-terminal",
+    "allow-close-container-terminal"
   ]
 }

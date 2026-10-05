@@ -1,0 +1,24 @@
+.container-terminal { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 16px; }
+.terminal-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.terminal-heading > code { display: block; flex-basis: 100%; overflow-wrap: anywhere; color: var(--text-muted); font-size: 11px; user-select: text; }
+.terminal-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.terminal-toolbar button, .terminal-retained button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 30px; padding: 5px 9px; font-size: 12px; }
+.terminal-toolbar label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+.terminal-toolbar select { min-height: 30px; border: 1px solid var(--border); border-radius: 5px; padding: 4px 24px 4px 8px; color: var(--text); background: var(--surface); font: inherit; }
+.terminal-status { color: var(--text-muted); font-size: 12px; margin-right: 2px; }
+.terminal-status[data-status="running"] { color: var(--success, #31a472); }
+.terminal-status[data-status="failed"] { color: var(--danger, #c74a4a); }
+.terminal-shell { color: var(--text-muted); font-size: 12px; }
+.terminal-hint { color: var(--text-muted); font-size: 12px; margin: 0; line-height: 1.5; }
+.terminal-screen { height: clamp(220px, 43vh, 540px); min-width: 0; overflow: hidden; padding: 8px; background: #171b22; border: 1px solid var(--border); border-radius: 7px; }
+[data-theme="light"] .terminal-screen { background: #f8fafc; }
+.terminal-screen[hidden] { display: none; }
+.terminal-emulator { width: 100%; height: 100%; }
+.terminal-emulator .xterm { height: 100%; padding: 0; }
+.terminal-emulator .xterm-viewport { overscroll-behavior: contain; }
+.terminal-retained { font-size: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+.terminal-retained summary { cursor: pointer; color: var(--text-muted); }
+.terminal-retained ul { list-style: none; padding: 0; margin: 10px 0 0; }
+.terminal-retained li { display: flex; align-items: center; gap: 7px; padding: 5px 0; }
+.terminal-retained li > span { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.terminal-retained code, .terminal-retained li > span > span { color: var(--text-muted); }

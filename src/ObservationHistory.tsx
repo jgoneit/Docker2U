@@ -52,7 +52,7 @@ export function ObservationHistory({ observation, containers, fullId, scope = ob
   incident, onSelectEvent, onCloseIncident, onNavigateIncident, currentAvailable = false, viewCache, viewKey = '', visible = true,
 }: { observation: ObservationRead | null; containers: Container[]; fullId?: string; scope?: ProjectFilter; onRetry?: () => void; retrying?: boolean;
   incident?: IncidentReview; onSelectEvent?: (event: ObservationEvent) => void; onCloseIncident?: () => void;
-  onNavigateIncident?: (tab: 'diagnostics' | 'connectivity' | 'storage') => void; currentAvailable?: boolean;
+  onNavigateIncident?: (tab: 'diagnostics' | 'connectivity' | 'storage' | 'terminal') => void; currentAvailable?: boolean;
   viewCache?: HistoryViewCache; viewKey?: string; visible?: boolean;
 }) {
   const t = useI18n(observationMessages);

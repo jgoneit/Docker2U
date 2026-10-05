@@ -32,7 +32,7 @@ export type Operation = MutationResult & ConnectionTarget & { fullId: string; na
 export type Confirmation = ConnectionTarget & { action: 'stop' | 'restart'; sessionId: string; generation: number; returnFocus?: HTMLElement }
   & ({ container: Container; containers?: never } | { containers: Container[]; container?: never });
 export type CopyLabel = 'logs' | 'fullId' | 'diagnostics' | 'command' | 'address' | 'healthOutput' | 'path';
-export type DetailTab = 'logs' | 'diagnostics' | 'connectivity' | 'storage' | 'history';
+export type DetailTab = 'logs' | 'terminal' | 'diagnostics' | 'connectivity' | 'storage' | 'history';
 export type CopyText = (text: string, label: CopyLabel) => Promise<void>;
 
 export function formatTime(value?: string, language: Language = 'ko') {
@@ -188,8 +188,8 @@ export function ContainerDetail({ container, snapshot, logs, logsError, loadingL
 }) {
   const t = useI18n(componentMessages);
   const tabId = useId();
-  const tabs: DetailTab[] = historyEnabled ? ['logs', 'diagnostics', 'connectivity', 'storage', 'history'] : ['logs', 'diagnostics', 'connectivity', 'storage'];
-  const tabLabels = { logs: 'tabLogs', diagnostics: 'tabDiagnostics', connectivity: 'tabConnectivity', storage: 'tabStorage', history: 'tabHistory' } as const;
+  const tabs: DetailTab[] = historyEnabled ? ['logs', 'terminal', 'diagnostics', 'connectivity', 'storage', 'history'] : ['logs', 'terminal', 'diagnostics', 'connectivity', 'storage'];
+  const tabLabels = { logs: 'tabLogs', terminal: 'tabTerminal', diagnostics: 'tabDiagnostics', connectivity: 'tabConnectivity', storage: 'tabStorage', history: 'tabHistory' } as const;
   function tabKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
     const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : null;
     if (next === null) return;

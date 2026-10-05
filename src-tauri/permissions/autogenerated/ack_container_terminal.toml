@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-ack-container-terminal"
+description = "Enables the ack_container_terminal command without any pre-configured scope."
+commands.allow = ["ack_container_terminal"]
+
+[[permission]]
+identifier = "deny-ack-container-terminal"
+description = "Denies the ack_container_terminal command without any pre-configured scope."
+commands.deny = ["ack_container_terminal"]

@@ -1,13 +1,19 @@
-"""Read-only HTTP Engine fixture on an owned Unix socket; never calls Docker."""
+"""Synthetic HTTP Engine on an owned Unix socket; never calls Docker or a shell."""
 from http.server import BaseHTTPRequestHandler
+import importlib.util
 import json
 import os
+from pathlib import Path
 import socket
 import socketserver
 import struct
 import threading
 import time
 from urllib.parse import urlsplit
+
+_terminal_spec = importlib.util.spec_from_file_location("native_terminal", Path(__file__).with_name("terminal_fixture.py"))
+terminal = importlib.util.module_from_spec(_terminal_spec)
+_terminal_spec.loader.exec_module(terminal)
 
 
 def launch_binding(root):
@@ -38,6 +44,9 @@ class EngineServer(socketserver.ThreadingUnixStreamServer):
         self.stopping = threading.Event()
         self.connections = set()
         self.connection_lock = threading.Lock()
+        self.exec_lock = threading.Lock()
+        self.execs = {}
+        self.exec_counter = 0
         super().__init__(str(root / "engine.sock"), EngineHandler)
         self.worker = threading.Thread(target=self.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
         self.worker.start()
@@ -71,9 +80,9 @@ class EngineHandler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
 
-    def json_response(self, data):
+    def json_response(self, data, status=200):
         payload = json.dumps(data).encode()
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
@@ -89,8 +98,17 @@ class EngineHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, OSError):
             self.close_connection = True
 
+    def do_POST(self):
+        try:
+            if not terminal.dispatch(self, "POST", compose_containers, record):
+                self.send_error(501)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            self.close_connection = True
+
     def read_only_get(self):
         path = urlsplit(self.path).path
+        if terminal.dispatch(self, "GET", compose_containers, record):
+            return
         if path in ("/v1.54/version", "/version"):
             self.json_response({"Version": "29.8.0", "ApiVersion": "1.54", "MinAPIVersion": "1.40", "Os": "linux", "Arch": "arm64"})
             return

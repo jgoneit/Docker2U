@@ -4,6 +4,7 @@ import type { Action, BulkMutationResult, Container, ContainerList, CoreError, E
 // Do not mount App until every API method has been replaced with an in-memory fake.
 if (import.meta.env.DEV) {
   const scenarios = {
+    terminal: 'Container terminal sessions and input fixture',
     compose: 'Compose project registration and operation fixture',
     observation: 'Project observation — combined logs and resource history',
     live: 'Live — continuous bilingual output',
@@ -264,6 +265,7 @@ if (import.meta.env.DEV) {
   }
   if (scenario === 'compose') { const { installComposeFixture } = await import('./composeFixture'); installComposeFixture(); }
   if (scenario === 'observation' || scenario === 'compose') { const { installObservationFixture } = await import('./observationFixture'); installObservationFixture(); }
+  const { installTerminalFixture } = await import('./terminalFixture'); installTerminalFixture();
   const { installMountFixture } = await import('./mountFixture'); installMountFixture();
   const { installImageExportFixture } = await import('./imageExportFixture'); installImageExportFixture();
   const { default: App } = await import('../App');
