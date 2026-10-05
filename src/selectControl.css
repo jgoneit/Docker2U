@@ -1,0 +1,9 @@
+.select-control { position: relative; display: flex; min-width: 0; width: 100%; height: 40px; border-radius: 10px; background: var(--raised); color: var(--text-muted); }
+.select-control--compact { height: 34px; }
+.select-control > select { -webkit-appearance: none; appearance: none; min-width: 0; width: 100%; height: 100%; padding: 0 36px 0 12px; border: 0; border-radius: inherit; background: transparent; color: var(--text); outline: none; font: inherit; font-weight: 400; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.select-control > svg { position: absolute; top: 50%; right: 12px; transform: translateY(-50%); pointer-events: none; }
+.select-control:hover:not(:has(select:disabled)) { background: var(--hover); }
+.select-control:has(select:focus-visible) { outline: 2px solid var(--focus); outline-offset: 3px; }
+.select-control > select:focus-visible { outline: none; }
+.select-control:has(select:disabled) { color: var(--disabled-text); background: var(--disabled-bg); }
+.select-control > select:disabled { color: var(--disabled-text); -webkit-text-fill-color: var(--disabled-text); opacity: 1; cursor: not-allowed; }
