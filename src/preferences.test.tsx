@@ -174,8 +174,10 @@ describe('appearance preferences', () => {
   it('bootstraps the same saved language/theme before React renders', () => {
     localStorage.setItem(PREFERENCES_KEY, JSON.stringify({ theme: 'light', language: 'en' }));
     mediaController(true);
-    const bootstrap = html.match(/<script>([\s\S]*?)<\/script>/)![1]!;
-    new Function(bootstrap)();
+    const parsed = new DOMParser().parseFromString(html, 'text/html');
+    const bootstrap = parsed.querySelector('head > script:not([src])')?.textContent;
+    expect(bootstrap).toBeTruthy();
+    new Function(bootstrap!)();
     expect(document.documentElement).toHaveAttribute('data-theme', 'light');
     expect(document.documentElement).toHaveAttribute('lang', 'en');
     expect(document.documentElement.style.colorScheme).toBe('light');
