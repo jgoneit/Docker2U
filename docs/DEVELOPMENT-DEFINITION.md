@@ -47,6 +47,10 @@ Compose 실행 제외 조항보다 우선한다. 기존 개별 컨테이너 조�
   시스템·라이트·다크 테마와 한국어·영어를 제공한다.
 - 개별 상세 선택과 별도로 여러 Container를 체크하여 Start·Stop·Restart할 수 있다.
   전체 선택은 현재 검색·필터 결과로 보이는 목록에만 적용한다.
+- Compose 프로젝트와 독립 컨테이너 그룹은 통합 로그·이력을 제공한다. 사건 당시
+  보관 로그·자원을 확인하고 현재 상세·터미널에서 점검한 뒤 사건으로 복귀한다.
+  [독립 범위 수집과 전체 ID 보관](STANDALONE-INCIDENTS.md)은 한 앱 세션 안에서
+  기존 보관 상한을 공유하며 디스크 기록·알림은 추가하지 않는다.
 - Rust Core는 시작·Reconnect에서 인자 없는 `docker context inspect`를 실행하여
   CLI가 선택한 context와 endpoint를 함께 읽는다. 환경변수와 Docker 설정의 우선순위를
   앱에서 재구현하지 않는다. canonical local Unix socket과 Engine identity를 session에

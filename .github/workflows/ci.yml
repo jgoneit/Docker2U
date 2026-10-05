@@ -42,6 +42,16 @@ jobs:
         run: pnpm build
       - name: Install Chromium for synthetic browser tests
         run: pnpm exec playwright install --with-deps chromium
+      - name: Product website checks and screenshots
+        run: node scripts/check-site.mjs
+      - name: Retain product website screenshots
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: website-preview-${{ github.sha }}
+          path: .cache/site-screenshots/
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Browser layout and interaction tests
         run: pnpm test:browser
       - name: Retain browser failure diagnostics

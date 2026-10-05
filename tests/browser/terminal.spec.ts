@@ -49,7 +49,30 @@ test('starts only on explicit connect and renders interactive Unicode with visib
   await page.getByRole('tab', { name: w.terminal, exact: true }).click();
   expect((await calls(page)).start ?? 0).toBe(0);
   await expect(page.locator('.container-terminal')).toContainText('a'.repeat(64));
-  await page.locator('.terminal-connect').click();
+  const shell = page.getByRole('combobox', { name: info.project.metadata.language === 'en' ? 'Shell' : '셸', exact: true });
+  const connect = page.locator('.terminal-connect');
+  await expect(shell).toHaveValue('sh');
+  await expect(shell).toHaveCSS('appearance', 'none');
+  await expect(shell.locator('..').locator('svg')).toBeVisible();
+  await shell.focus();
+  await shell.press('Tab');
+  await expect(connect).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(shell).toBeFocused();
+  await shell.selectOption('bash');
+  expect((await calls(page)).start ?? 0).toBe(0);
+  await shell.selectOption('sh');
+  for (const control of [shell, connect]) {
+    await expect(control).toBeInViewport();
+    const bounds = (await control.boundingBox())!;
+    expect(bounds.height).toBeCloseTo(34, 0);
+    expect(bounds.x).toBeGreaterThanOrEqual(0);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(page.viewportSize()!.width + 1);
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
+  await info.attach('terminal-before-connect', { body: await page.screenshot(), contentType: 'image/png' });
+  expect((await calls(page)).start ?? 0).toBe(0);
+  await connect.click();
   await expect(screen(page).locator('.xterm')).toBeVisible();
   await command(page, 'echo D2U_TERMINAL_한글');
   await expect(output(page)).toContainText('D2U_TERMINAL_한글');

@@ -9,8 +9,8 @@ use docker::{
     ComposeProjectPreview, ComposeServiceSelection, ContainerDetails, ContainerList, Core,
     Environment, ImageExportDestination, ImageExportOperation, ImageExportPreview, LogStreamChunk,
     LogStreamStarted, Logs, MountInventory, Mutation, ObservationHold, ObservationRead,
-    ObservationScope, ProjectLogPage, ProjectLogQuery, StatsSnapshot, TerminalDescriptor,
-    TerminalEvent, TerminalShell,
+    ObservationScope, ProjectLogPage, ProjectLogQuery, StandaloneLogPage, StandaloneLogQuery,
+    StatsSnapshot, TerminalDescriptor, TerminalEvent, TerminalShell,
 };
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
@@ -306,6 +306,32 @@ async fn retry_project_logs(
     worker(move || core.retry_project_logs(&session_id)).await
 }
 #[tauri::command]
+async fn configure_standalone_logs(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    handles: Option<Vec<String>>,
+) -> Result<StandaloneLogPage, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.configure_standalone_logs(&session_id, handles)).await
+}
+#[tauri::command]
+async fn query_standalone_logs(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+    query: StandaloneLogQuery,
+) -> Result<StandaloneLogPage, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.query_standalone_logs(&session_id, &query)).await
+}
+#[tauri::command]
+async fn retry_standalone_logs(
+    core: tauri::State<'_, Core>,
+    session_id: String,
+) -> Result<StandaloneLogPage, ApiError> {
+    let core = core.inner().clone();
+    worker(move || core.retry_standalone_logs(&session_id)).await
+}
+#[tauri::command]
 async fn stop_project_logs(
     core: tauri::State<'_, Core>,
     session_id: String,
@@ -572,6 +598,9 @@ pub fn run() {
             configure_project_logs,
             query_project_logs,
             retry_project_logs,
+            configure_standalone_logs,
+            query_standalone_logs,
+            retry_standalone_logs,
             stop_project_logs,
             pick_compose_path,
             list_compose_projects,
@@ -632,6 +661,9 @@ mod ipc_tests {
                 "allow-configure-project-logs",
                 "allow-query-project-logs",
                 "allow-retry-project-logs",
+                "allow-configure-standalone-logs",
+                "allow-query-standalone-logs",
+                "allow-retry-standalone-logs",
                 "allow-stop-project-logs",
                 "allow-pick-compose-path",
                 "allow-list-compose-projects",

@@ -1,128 +1,101 @@
-# Docker2U
+<p align="center">
+  <a href="https://jgoneit.github.io/Docker2U/?lang=ko"><img src="assets/app-icon.png" width="112" height="112" alt="Docker2U 앱 아이콘" /></a>
+</p>
 
-> **Docker CLI, without the CLI friction.**
+<h1 align="center">Docker2U</h1>
+<p align="center"><strong>컨테이너 작업, 한 화면에서.</strong><br />내 Mac의 Docker를 위한 데스크톱 컨트롤 패널</p>
+<p align="center">macOS 14+ · Apple Silicon · 한국어 / English · 시스템 / 라이트 / 다크</p>
+<p align="center">
+  <a href="https://github.com/jgoneit/Docker2U/releases/download/v0.1.0-alpha.2/Docker2U_0.1.0-alpha.2_aarch64.dmg"><strong>alpha.2 DMG 다운로드</strong></a> ·
+  <a href="https://jgoneit.github.io/Docker2U/?lang=ko">제품 소개</a> ·
+  <a href="docs/INSTALL.md">설치 안내</a> ·
+  <a href="https://github.com/jgoneit/Docker2U/releases/tag/v0.1.0-alpha.2">릴리스 노트</a>
+</p>
+<p align="center"><strong>한국어</strong> · <a href="README.en.md">English</a></p>
 
-Docker2U는 Windows와 macOS에서 이미 설치된 조직 승인 로컬 컨테이너
-런타임을 비전문 개발자가 안전하게 조회하고 복구할 수 있도록 돕는 경량
-데스크톱 컨트롤 패널이다.
+---
 
-## 현재 상태
+어느 컨테이너가 멈췄는지, 어떤 로그가 남았는지, 지금 무엇을 확인해야 하는지.
+Docker2U에서 프로젝트와 컨테이너를 고르고 **로그 → 사건 확인 → 현재 진단 → 터미널**로 이어가세요.
+이미 사용하는 Docker CLI와 로컬 Linux Engine에 연결합니다. 런타임은 별도로 준비해야 합니다.
 
-```text
-사용자 문제 검증 완료
-macOS 로컬 알파: Docker CLI가 선택한 로컬 Engine에 연결
-목록·로그·단건 및 다중 Start·Stop·Restart
-연결 정책 변경의 검증 결과는 알파 검증 기록에 별도 기록
-```
+## 이런 일을 할 수 있어요
 
-현재 구현 대상은 macOS 14 이상 / Apple Silicon의 `Docker2U.app`이다.
-앱 시작과 Reconnect에서 Docker CLI가 선택한 context를 읽고 실제 로컬 Unix
-socket과 Linux Engine의 응답을 확인한다. CLI·Engine의 정확한 버전이나 Colima
-프로파일·VM 설정·Engine 이름은 허용 조건이 아니다. Windows·Intel Mac과 외부
-배포용 서명·notarization은 후속 단계이며, 지원 범위의 모든 조합을 검증했다는 뜻은 아니다.
+| 하고 싶은 일 | Docker2U에서 |
+| --- | --- |
+| 프로젝트 상태 한눈에 보기 | Compose 프로젝트·독립 컨테이너를 트리로 탐색하고 상태·Health·CPU·메모리 확인 |
+| 여러 컨테이너 로그 함께 읽기 | 프로젝트·독립 그룹의 통합 로그를 검색하고, 화면을 오가도 필터와 읽던 위치 유지 |
+| 멈춘 시점부터 점검하기 | 사건 전후 로그·자원을 확인하고 현재 진단·접속·저장소·터미널로 이동한 뒤 사건으로 복귀 |
+| 필요한 컨테이너만 조작하기 | 단건·다중 Start / Stop / Restart, 대상 확인 후 실행 |
+| Compose 변경 반영하기 | 로컬 Compose 파일을 등록해 실행·중지하고, 서비스별 이미지 다운로드·빌드·현재 이미지 사용을 선택해 재생성 |
+| 컨테이너 안에서 확인하기 | 실행 중인 컨테이너에 `/bin/sh` 또는 `/bin/bash`로 연결하고 다른 화면에서도 세션 유지 |
+| 이미지 가져가기 | 컨테이너가 사용하는 이미지를 `.tar`로 저장. 볼륨 데이터와 실행 후 파일 변경은 제외 |
 
-연결 후에는 canonical socket과 Engine identity를 세션에 고정한다. 외부에서
-Docker context를 변경해도 Refresh·로그·복구 작업은 기존 세션의 Engine을 사용하며,
-새 선택은 Reconnect에서만 반영한다. 앱이 전역 context를 바꾸거나 Runtime을
-설치·시작하지 않는다. 원격 endpoint 또는 연결 실패에는 다른 Engine으로 fallback하지 않는다.
+## 시작하기
 
-## 이전 알파 검증 이력
+1. **환경을 준비합니다.** macOS 14 이상인 Apple Silicon Mac에 Docker CLI와 실행 중인 로컬 Linux Engine이 필요합니다. Compose 기능에는 Docker Compose 플러그인도 필요합니다.
+2. **앱을 설치합니다.** [DMG](https://github.com/jgoneit/Docker2U/releases/download/v0.1.0-alpha.2/Docker2U_0.1.0-alpha.2_aarch64.dmg)를 열어 `Docker2U.app`을 Applications로 옮긴 뒤 실행합니다. 현재는 **ad-hoc 서명·미공증 알파**입니다. [첫 실행 안내](docs/INSTALL.md#처음-실행하기)를 확인하세요.
+3. **연결을 확인합니다.** 시작할 때 Docker CLI가 선택한 context의 로컬 Unix socket과 Linux Engine을 확인합니다. 연결되지 않으면 앱 진단에서 CLI·context·endpoint를 확인하세요.
+4. **대상을 고릅니다.** 왼쪽에서 프로젝트나 컨테이너를 선택해 로그·상태를 확인합니다. 터미널은 탭을 연 뒤 **연결**을 눌러야 셸을 시작합니다.
 
-아래는 2026-09-05의 고정 `colima-docker2u` 연결 정책에서 수행한 기록이다.
-Rust 27개·React/IPC 44개 통과와 초기 실제 Colima 검사 2개·Finder GUI 확인은
-그 당시 코드의 증거이며, 현재 연결 정책 변경의 검증 결과와 구분한다.
+사용 중 CLI의 context를 바꿨다면 **Reconnect**로 새 대상을 연결하세요. 그 전까지 앱은 기존 Engine을 사용합니다.
+앱은 전역 context를 변경하거나 런타임을 설치·시작하지 않습니다.
 
-환경 진단, Container 목록·Health·최근 로그, 수동 Refresh와 Start·Stop·Restart를
-구현했다. 테스트가 생성한 Container는 정확한 ID와 label을 확인해 정리했고,
-기존 전역 Docker context는 `desktop-linux`로 유지했다.
+## alpha.2에서 달라진 점
 
-빌드한 앱은 `src-tauri/target/release/bundle/macos/Docker2U.app`이다.
-Computer Use 권한 허용 후 Finder에서 재빌드한 앱을 실행해 실제 Colima 연결,
-목록·Health·로그·검색·필터, Start·Stop·Restart와 확인창을 조작했다.
-상세 스크롤 중 전역 제어가 가려지는 문제와 확인창 종료 후 버튼 focus 복원을
-수정하고 재빌드한 앱에서 확인했다. 정상 GUI Quit과 검증용 CLI wrapper가 실행
-중인 상태의 Quit에서 앱·자식 프로세스 정리를 확인했다.
+- 프로젝트·독립 컨테이너의 **통합 로그, CPU·메모리, 상태 이력**을 함께 확인합니다.
+- 사건 당시의 기록에서 현재 진단과 터미널로 이동하고, 원래 사건과 읽던 위치로 돌아옵니다.
+- **Compose 실행·중지와 선택 서비스 변경 반영**, 저장소 조회, 이미지 내보내기를 제공합니다.
+- 컨테이너별 터미널 세션을 유지하며, 한국어·영어와 시스템·라이트·다크 테마를 선택할 수 있습니다.
 
-## 기준 문서
+구체적인 변경과 이번 배포물의 검증 범위는 [릴리스 노트](https://github.com/jgoneit/Docker2U/releases/tag/v0.1.0-alpha.2)를 참고하세요.
 
-- [Docker2U 개발 정의서](docs/DEVELOPMENT-DEFINITION.md)
-- [macOS 로컬 알파 구현·검증 기준](docs/MACOS-ALPHA.md)
-- [프로젝트 통합 로그·자원 및 상태 이력](docs/PROJECT-OBSERVATION.md)
-- [Compose 사건 시각의 로그·자원 확인](docs/INCIDENT-REVIEW.md)
-- [컨테이너 터미널](docs/CONTAINER-TERMINAL.md)
-- [컨테이너 이미지 내보내기](docs/IMAGE-EXPORT.md)
+## 사용 전에 알아두세요
 
-개발 정의서는 다음 내용을 하나의 기준으로 관리한다.
+- **지원 범위:** macOS 14+ / Apple Silicon의 로컬 Linux Engine. Windows·Intel Mac·원격 Docker endpoint는 지원하지 않습니다.
+- **알파 배포:** Developer ID 서명과 Apple 공증이 없습니다. 사용 환경에 따라 첫 실행이 차단될 수 있습니다. 자동 업데이트도 없어 새 DMG로 직접 교체합니다.
+- **기록은 세션 안에서:** 로그·자원·이력은 제한된 메모리에 보관합니다. 앱 종료·Engine 재연결 시 기록이 초기화되며 영구 기록이나 모니터링 알림을 제공하지 않습니다. 수집하지 못한 구간은 복원되지 않습니다. [보관 범위](docs/PROJECT-OBSERVATION.md#core-수집과-보관)
+- **터미널은 실제 명령 실행:** 컨테이너의 사용자·네트워크·마운트 권한을 따릅니다. 최대 8개 세션과 세션당 2,000줄을 보관합니다. 연결 끊기는 실행 중인 명령의 종료를 보장하지 않습니다.
+- **조작 후 상태 확인:** 컨테이너·Compose 작업은 실제 환경을 변경합니다. 명령 종료와 서비스의 준비 완료는 다르며, 실패·취소 시 이미 적용된 변경을 자동으로 되돌리지 않습니다.
+- **제공하지 않는 기능:** 런타임 설치, 호스트 범용 셸, Delete / Prune, Compose 파일 편집.
 
-- 제품 문제, 대상 사용자와 성공·중단 기준
-- Windows/macOS 및 Runtime 지원 matrix
-- Rust + Tauri 2 기반 기술 방향
-- v0.1 기능과 명시적 제외 범위
-- Local-only endpoint와 typed IPC 보안 경계
-- 테스트, 서명 배포, Acceptance Criteria와 Release Blocker
+## 도움말과 피드백
 
-## 확정된 핵심 방향
+- [설치·업데이트·연결 문제](docs/INSTALL.md)
+- [통합 로그와 보관 범위](docs/PROJECT-OBSERVATION.md) · [독립 컨테이너와 사건](docs/STANDALONE-INCIDENTS.md)
+- [사건 확인](docs/INCIDENT-REVIEW.md) · [컨테이너 터미널](docs/CONTAINER-TERMINAL.md)
+- [Compose 실행·중지](docs/COMPOSE-PROJECT-CONTROLS.md) · [선택 서비스 변경 반영](docs/COMPOSE-APPLY.md)
+- [저장소 탐색](docs/COMPOSE-STORAGE.md) · [이미지 내보내기](docs/IMAGE-EXPORT.md)
+- [문제 제보·기능 제안](https://github.com/jgoneit/Docker2U/issues)
 
-- Docker2U는 Docker Desktop 대체품이나 Runtime 설치 도구가 아니다.
-- 조직이 제공한 Docker CLI와 로컬 Docker/Moby Runtime을 그대로 사용하는
-  BYOR(Bring Your Own Runtime) 제품이다.
-- macOS 알파는 Container·Compose 프로젝트 조회, 실시간 로그, 현재 CPU·메모리, Start·Stop·Restart를 제공한다. [범위와 검증 경계](docs/MACOS-LIVE-INSIGHTS.md)를 참고한다.
-- 로컬 Compose 파일 등록과 프로젝트 실행·중지를 추가한다. [Compose 프로젝트 실행 범위](docs/COMPOSE-PROJECT-CONTROLS.md)를 따른다.
-- 명령 종료와 현재 서비스 State·Health를 구분하고, 프로젝트·컨테이너의 실제 마운트와 공유 관계를 읽기 전용으로 조회한다. [상태 표시와 저장소 탐색](docs/COMPOSE-STORAGE.md)을 참고한다.
-- 등록 프로젝트에서 서비스마다 이미지 다운로드·빌드·준비 생략을 선택하고 해당 서비스만 재생성한다. [선택 서비스 변경 반영](docs/COMPOSE-APPLY.md)과 [검증 경계](docs/COMPOSE-APPLY-AUDIT.md)를 참고한다.
-- 실행·중지 컨테이너가 사용하는 실제 이미지를 `.tar`로 저장한다. 볼륨 데이터와 실행 후 변경한 파일은 포함하지 않는다. [이미지 내보내기](docs/IMAGE-EXPORT.md)를 참고한다.
-- 선택한 컨테이너의 대화형 셸은 [컨테이너 터미널](docs/CONTAINER-TERMINAL.md)의 대상·세션 경계를 따른다.
-- 원격 endpoint, 호스트 범용 shell, Delete/Prune, Compose 파일 편집은 제외한다.
-- 기술 스택은 Rust + Tauri 2 + React + TypeScript strict로 정의한다.
-- 사용자가 제공한 React 패널의 어두운 테마, 검색·필터, 목록·상세 분할을 유지한다.
-- 로컬 알파는 시작·Reconnect에서 인자 없는 `docker context inspect`로 선택을
-  확인한다. 이후 모든 Engine 명령은 세션에 고정된 Unix socket을 사용한다.
+문제를 제보할 때 앱 버전, macOS 버전, 런타임 종류와 재현 순서를 함께 알려주세요.
+로그·진단 정보에 비밀번호, 토큰, 내부 주소가 포함돼 있지 않은지 확인한 뒤 공유해 주세요.
 
-초기 알파는 Seal과 Ward 없이 검증했다. PR #1 리뷰 수정에는 사용자 요청으로
-Seal Basic Acceptance와 기존 검사 catalog를 추가하며 Ward는 사용하지 않는다.
-Rust·React 자동 검사, 실제 Colima 연동과 네이티브 앱 실행은 각각 검증한다.
-빌드나 mock 성공은 실제 Docker 조작 또는 Finder에서의 화면 확인을 대신하지 않는다.
+## 개발에 참여하기
 
-## 로컬 개발
-
-`.seal/checks.json`은 기존 `pnpm test`, `pnpm build`, `pnpm rust:fmt`,
-`pnpm rust:test`를 필수 검사로 등록한다. 앞의 세 검사는 각각 120초, Rust 테스트는
-300초 제한이다. Seal Task와 Evidence는 로컬 ignored 상태이며 PR에 포함하지 않는다.
-Native 앱 빌드와 실제 Engine·GUI 검사는 별도로 기록한다.
-
-PR과 `main` push는 [CI](.github/workflows/ci.yml)에서 React/IPC 테스트·TypeScript·
-frontend build와 macOS ARM64 Rust 검사·앱 빌드를 실행한다. 성공한 실행은 서명하지
-않은 앱 ZIP과 SHA-256 checksum을 7일간 보관한다. 실제 Engine 조작과 Finder GUI
-검증은 준비된 Mac에서 별도로 수행한다.
-
-저장소에서 `pnpm install --frozen-lockfile`로 의존성 설치를 완료한 후 다음
-명령을 사용한다. macOS 알파는 사용자가 이미 준비한 Docker CLI와 로컬 Linux
-Engine을 사용한다.
+Rust + Tauri 2 + React + TypeScript로 구현합니다. 저장소에 고정한 Node·pnpm·Rust 도구체인을 사용합니다.
 
 ```sh
+pnpm install --frozen-lockfile
+pnpm test
+pnpm build
+pnpm rust:fmt
+pnpm rust:test
 pnpm native:dev
-pnpm native:build
 ```
 
-native 명령은 승인된 `assets/app-icon.png`에서 ignored `src-tauri/gen/icons` 아래에
-앱 아이콘을 생성한다. 검사·재개 명령과 현재 제한은
-[알파 검증 기록](docs/MACOS-ALPHA.md)을 참고한다.
+Apple Silicon 앱과 DMG를 빌드하려면:
 
-Apple Silicon용 `.app`과 `.dmg`는 `pnpm native:build:dmg --ci -- --locked`로
-생성한다. 이 명령은 `aarch64-apple-darwin`을 지정하며 서명·공증 자격 증명을
-설정하지 않는다. 테스트용 ad-hoc 서명과 배포 검증 절차는
-[macOS DMG 패키징](docs/releases/MACOS-DMG.md)을 참고한다.
+```sh
+pnpm native:build:dmg --ci -- --locked
+```
 
-두 명령의 Rust 실행은 [toolchain wrapper](scripts/with-toolchain.mjs)를 통해
-준비한 도구체인을 사용한다. 현재 개발 장비의 별도 도구 디렉터리는
-`../.docker2u-tools`이며 앱 배포물에는 포함하지 않는다.
+아이콘은 `assets/app-icon.png`에서 생성합니다. Docker CLI와 Engine은 앱 번들에 포함하지 않습니다.
+실제 Engine 조작·네이티브 앱 확인·배포물 검증은 자동 테스트와 별도로 수행합니다.
 
-Docker 설정 디렉터리는 앱 프로세스의 `DOCKER_CONFIG` 또는 기본 `$HOME/.docker`다.
-native `runtime.json`에서는 `dockerPath`만 적용한다. 이전의 `dockerConfig`,
-`colimaPath`, `colimaHome`, `limaHome`은 무시하고 설정 파일을 자동 수정하지 않는다.
-Finder에서 실행한 앱은 별도 터미널에서 나중에 `export`한 환경을 받지 않는다.
-Docker CLI 환경변수를 사용하려면 앱 실행 환경에 설정하고 앱을 다시 시작해야 한다.
-설정 경로와 실제 context·endpoint는 앱 진단에서 확인한다.
+- [제품·기술 기준](docs/DEVELOPMENT-DEFINITION.md)
+- [로컬 개발과 알파 검증 기록](docs/MACOS-ALPHA.md)
+- [DMG 빌드·서명·배포 검증](docs/releases/MACOS-DMG.md)
+- [CI](.github/workflows/ci.yml) · [변경 내역](https://github.com/jgoneit/Docker2U/releases)
 
-이전 Colima·GUI 검사와 새 연결 정책의 검증 범위는
-[알파 검증 기록](docs/MACOS-ALPHA.md)을 확인한다.
+소개 사이트는 `site/`의 독립적인 정적 페이지입니다. Docker Engine에 연결하지 않습니다.

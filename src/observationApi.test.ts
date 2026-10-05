@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
-import { observationApi, projectLogApi } from './observationApi';
+import { observationApi, projectLogApi, standaloneLogApi } from './observationApi';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(), isTauri: () => true }));
 beforeEach(() => vi.resetAllMocks());
 it('sends the bounded project log query as the Rust command query DTO', async () => {
@@ -19,4 +19,13 @@ it('uses typed scope and a separate hold token without supplying engine or comma
 it('retries events in the same session without configuring a new environment', async () => {
   await observationApi.retryEvents('session');
   expect(invoke).toHaveBeenCalledExactlyOnceWith('retry_observation_events', { sessionId: 'session' });
+});
+it('uses distinct standalone configure/query/retry commands without a project name or endpoint', async () => {
+  const query = { sourceIds: ['old-full-id'], keyword: '', offset: null, limit: 160, throughSequence: 25,
+    timeFrom: '2026-09-16T00:58:00Z', timeTo: '2026-09-16T01:02:00Z', anchorTime: '2026-09-16T01:00:00Z' };
+  await standaloneLogApi.configure('session', ['opaque-handle']); await standaloneLogApi.query('session', query); await standaloneLogApi.retry('session');
+  expect(vi.mocked(invoke).mock.calls).toEqual([
+    ['configure_standalone_logs', { sessionId: 'session', handles: ['opaque-handle'] }],
+    ['query_standalone_logs', { sessionId: 'session', query }], ['retry_standalone_logs', { sessionId: 'session' }],
+  ]);
 });

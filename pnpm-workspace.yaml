@@ -1,3 +1,5 @@
 minimumReleaseAgeStrict: true
 storeDir: .cache/pnpm/store
 cacheDir: .cache/pnpm/cache
+overrides:
+  undici: 8.10.2

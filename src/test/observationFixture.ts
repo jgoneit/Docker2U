@@ -1,5 +1,5 @@
 import { api, type ContainerList } from '../api';
-import { observationApi, projectLogApi, type ObservationRead, type ProjectLogPage, type ProjectLogQuery, type ProjectLogRow } from '../observationApi';
+import { observationApi, projectLogApi, type ObservationRead, type ProjectLogPage, type RetainedLogPage, type ProjectLogQuery, type ProjectLogRow } from '../observationApi';
 import type { ProjectFilter } from '../projects';
 
 function timestampNanos(value: string): bigint | null {
@@ -12,7 +12,7 @@ function timestampNanos(value: string): bigint | null {
 }
 
 /** Mirror retained-log queries without starting or switching fixture collection. */
-export function queryObservationFixtureLogs(result: ProjectLogPage, query: ProjectLogQuery): ProjectLogPage {
+export function queryObservationFixtureLogs<T extends RetainedLogPage>(result: T, query: ProjectLogQuery): T {
   const invalid = () => { throw { code: 'InvalidSelection', message: 'Invalid log time selection.' }; };
   const parseBound = (value: string | null | undefined) => value == null ? null : timestampNanos(value) ?? invalid();
   const from = parseBound(query.timeFrom), to = parseBound(query.timeTo), at = parseBound(query.anchorTime);

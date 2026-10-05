@@ -1,4 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { version as appVersion } from '../package.json';
 import { frontendError } from './frontendErrors';
 import { sessionDiagnostics, type FrontendSession } from './frontendSession';
 import type { ContainerDetails } from './containerDetailsTypes';
@@ -121,7 +122,7 @@ export const api = {
 // Explicit allowlist: no output, logs, credentials, or ambient environment.
 export function diagnosticsText(environment: Environment | null, frontendSession?: FrontendSession): string {
   return JSON.stringify({
-    app: 'Docker2U', version: '0.1.0-alpha.1', status: environment?.status ?? null, contextName: environment?.contextName ?? null,
+    app: 'Docker2U', version: appVersion, status: environment?.status ?? null, contextName: environment?.contextName ?? null,
     endpoint: environment?.endpoint ?? null, dockerPath: environment?.dockerPath ?? null, dockerConfigPath: environment?.dockerConfigPath ?? null,
     clientVersion: environment?.clientVersion ?? null, errorCode: environment?.error?.code ?? null,
     serverVersion: environment?.serverVersion ?? null, apiVersion: environment?.apiVersion ?? null, engineId: environment?.engineId ?? null,
