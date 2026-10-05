@@ -226,7 +226,7 @@ em {
   font-size:12px;
   margin-top:20px;
 }
-.hero-meta>span {
+.hero-meta>span:not([data-locale]) {
   padding:0 6px;
   color:#536681;
 }

@@ -41,6 +41,10 @@ try {
       const download = page.locator('a[href$="Docker2U_0.1.0-alpha.2_aarch64.dmg"]').first();
       assert.ok(await download.isVisible());
       await page.screenshot({ path: `${output}/${label}-${language}.png` });
+      for (const section of ['features', 'start']) {
+        await page.locator(`#${section}`).scrollIntoViewIfNeeded();
+        await page.screenshot({ path: `${output}/${label}-${language}-${section}.png` });
+      }
       const summary = page.locator('summary').first();
       await summary.click();
       assert.ok(await summary.evaluate(element => element.parentElement.open));
