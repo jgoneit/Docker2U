@@ -57,7 +57,7 @@ if (command === 'build') {
     override,
   }, null, 2) + '\n');
   console.log(`Validation bundle: ${app}\nProduction CSP and Rust IPC are unchanged. This is a test-only bundle.`);
-} else if (['live-on', 'live-off', 'compose-success', 'compose-fail', 'compose-quiet', 'compose-pull-fail', 'compose-build-fail', 'compose-recreate-fail', 'image-export-success', 'image-export-failed', 'image-export-quiet', 'image-export-source-changed', 'image-export-source-original'].includes(command)) {
+} else if (['standalone-recreate', 'standalone-remove-all', 'live-on', 'live-off', 'compose-success', 'compose-fail', 'compose-quiet', 'compose-pull-fail', 'compose-build-fail', 'compose-recreate-fail', 'image-export-success', 'image-export-failed', 'image-export-quiet', 'image-export-source-changed', 'image-export-source-original'].includes(command)) {
   // Reuse the fixture's controller ownership check. Only the exact live run in
   // /tmp can receive a gate; no Docker endpoint or user config is modified.
   await run('/usr/bin/python3', ['-c', `
@@ -76,6 +76,12 @@ if root.resolve() != root or root.parent != Path("/tmp").resolve() or not root.n
 launch = json.loads((root / "launch.json").read_text())
 if any(launch.get(key) != manifest.get(key) for key in ["runId", "binarySha256", "startedAtMs", "controllerPid"]):
     raise RuntimeError("Native smoke launch identity does not match")
+if sys.argv[2].startswith("standalone-"):
+    if manifest.get("fixtureMode") != "standalone":
+        raise RuntimeError("Launch with --fixture-mode standalone first")
+    fixture.standalone_module().transition(root, sys.argv[2], lambda root, **event: fixture.append_event(root, event))
+    print(json.dumps({"command": sys.argv[2], "fixtureRoot": str(root), "syntheticOnly": True}))
+    sys.exit(0)
 compose = sys.argv[2].startswith("compose-")
 image_export = sys.argv[2].startswith("image-export-")
 export_source = sys.argv[2] in ("image-export-source-changed", "image-export-source-original")
@@ -108,13 +114,15 @@ print(json.dumps({"command": sys.argv[2], "fixtureRoot": str(root), "liveOutput"
 } else {
   console.log(`Native smoke (test-only packaged App with real Rust IPC):
   pnpm native:smoke build        Build a distinct, incognito validation bundle
-  pnpm native:smoke launch [--app path.app]  Run the recorded build with an isolated fake CLI/socket
+  pnpm native:smoke launch [--app path.app] [--fixture-mode standalone]  Run an isolated fake CLI/socket
   pnpm native:smoke status       Show only owned run metadata and trace summary
   pnpm native:smoke arm-engine-change  Delay the next info response for 3s, then change identity
   pnpm native:smoke socket-off   Remove only the fixture socket before a log read
   pnpm native:smoke socket-on    Restore the fixture socket before recovery checks
   pnpm native:smoke live-on      Emit fixture stdout/stderr ticks for live/pause/resume checks
   pnpm native:smoke live-off     Keep follow connected with no new fixture ticks
+  pnpm native:smoke standalone-recreate  Replace synthetic standalone ID 3 with ID 5 of the same name
+  pnpm native:smoke standalone-remove-all  Remove remaining synthetic standalone IDs 4/5
   pnpm native:smoke compose-success  Complete synthetic Compose operations
   pnpm native:smoke compose-fail  Fail after creating one fixture service
   pnpm native:smoke compose-quiet  Wait silently until explicit cancellation
@@ -129,11 +137,13 @@ print(json.dumps({"command": sys.argv[2], "fixtureRoot": str(root), "liveOutput"
   pnpm native:smoke report [--ui-results path.json]  Combine CLI trace with the UI JSON report
   pnpm native:smoke stop         Stop only the owned validation run and archive evidence
 
-The fixture exposes two Compose services and one standalone container, plus
-explicit batched CPU/memory samples. Follow starts with the stable 2 MiB search
-payload; live-on enables new stdout/stderr output every 250ms. Keep live-off for
-dense search probes and resubscribe after live ticks evict the identity header.
-The test page offers search, Clear/connection, socket-error and recovery probes.
+Default mode exposes two Compose services and one standalone container.
+Standalone mode adds IDs 3/4 with live HTTP logs and synthetic Health events.
+Run the standalone incident button first; then standalone-recreate and the archive
+verification button; then standalone-remove-all and the empty-group verification.
+All lifecycle controls change only the owned synthetic JSON state. No Docker is used.
+The page offers current group observation, incident and terminal IPC probes.
+Historical CLI LogPanel/Worker probe reports remain readable by the validator.
 Read the page report through Computer Use and save its JSON for the combined report.
 Never use this validation bundle as the final production app.`);
 }

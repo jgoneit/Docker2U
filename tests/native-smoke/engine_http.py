@@ -14,6 +14,9 @@ from urllib.parse import urlsplit
 _terminal_spec = importlib.util.spec_from_file_location("native_terminal", Path(__file__).with_name("terminal_fixture.py"))
 terminal = importlib.util.module_from_spec(_terminal_spec)
 _terminal_spec.loader.exec_module(terminal)
+_standalone_spec = importlib.util.spec_from_file_location("native_standalone", Path(__file__).with_name("standalone_fixture.py"))
+standalone = importlib.util.module_from_spec(_standalone_spec)
+_standalone_spec.loader.exec_module(standalone)
 
 
 def launch_binding(root):
@@ -23,7 +26,8 @@ def launch_binding(root):
 
 def compose_containers(root):
     path = root / "compose-state.json"
-    return {row["Id"]: row for row in json.loads(path.read_text()).get("containers", [])} if path.exists() else {}
+    rows = json.loads(path.read_text()).get("containers", []) if path.exists() else []
+    return {row["Id"]: row for row in rows + standalone.rows(root)}
 
 
 def record(root, **event):
@@ -118,7 +122,7 @@ class EngineHandler(BaseHTTPRequestHandler):
         prefix = "/v1.47/containers/"
         identifier = path[len(prefix):-len("/logs")] if path.startswith(prefix) and path.endswith("/logs") else None
         events = path == "/v1.47/events"
-        baseline_ids = [format(value, "064x") for value in (1, 2, 3)]
+        baseline_ids = [format(value, "064x") for value in ((1, 2) if standalone.enabled(self.server.root) else (1, 2, 3))]
         if not events and identifier not in [*baseline_ids, *compose_containers(self.server.root)]:
             self.send_error(404)
             return
@@ -127,14 +131,21 @@ class EngineHandler(BaseHTTPRequestHandler):
         self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
         sequence = 0
+        scenario_event = 0
         while not self.server.stopping.is_set():
+            if events and standalone.enabled(self.server.root):
+                for event in standalone.state(self.server.root)["events"][scenario_event:]:
+                    self.chunk((json.dumps(event) + "\n").encode())
+                    scenario_event += 1
+                    record(self.server.root, phase="api-standalone-event", fullId=event["Actor"]["ID"], action=event["Action"], producedAtMs=event["timeNano"] // 1_000_000)
             if not events and identifier not in baseline_ids:
                 row = compose_containers(self.server.root).get(identifier)
                 if row is None or (sequence > 0 and row["State"] != "running"):
+                    phase = "api-standalone-log-ended" if standalone.enabled(self.server.root) and identifier in [format(value, "064x") for value in (3, 4, 5)] else "api-compose-log-ended"
+                    record(self.server.root, phase=phase, fullId=identifier)
                     self.wfile.write(b"0\r\n\r\n")
                     self.wfile.flush()
                     self.close_connection = True
-                    record(self.server.root, phase="api-compose-log-ended", fullId=identifier)
                     return
             if sequence == 0 or (self.server.root / "follow-live").exists():
                 sequence += 1
@@ -146,17 +157,21 @@ class EngineHandler(BaseHTTPRequestHandler):
                         payload = (json.dumps({"Type": "container", "Action": action, "Actor": {"ID": format(1, "064x"), "Attributes": {"name": "native-smoke-1", "com.docker.compose.project": "native-smoke-project", "com.docker.compose.service": "api"}}, "timeNano": now}) + "\n").encode()
                         self.chunk(payload)
                         record(self.server.root, phase="api-health-event", fullId=format(1, "064x"), sequence=sequence, action=action, producedAtMs=now // 1_000_000)
+                        for item in standalone.rows(self.server.root):
+                            payload = {"Type": "container", "Action": action, "Actor": {"ID": item["Id"], "Attributes": {"name": item["Name"].lstrip("/")}}, "timeNano": now}
+                            self.chunk((json.dumps(payload) + "\n").encode())
+                            record(self.server.root, phase="api-standalone-event", fullId=item["Id"], sequence=sequence, action=action, producedAtMs=now // 1_000_000)
                 else:
                     if sequence == 1:
                         binding = launch_binding(self.server.root)
                         header = f"{timestamp} NATIVE_PROJECT_RUN {json.dumps(binding, separators=(',', ':'))}\n".encode()
-                        if identifier != format(2, "064x"):
+                        if identifier not in (format(2, "064x"), format(4, "064x")):
                             header = struct.pack(">BxxxI", 1, len(header)) + header
                         self.chunk(header)
                         record(self.server.root, phase="api-log-binding", fullId=identifier, binding=binding)
                     payload = f"{timestamp} NATIVE_PROJECT_LOG {sequence} 한글 fullId={identifier}\n".encode()
                     # Redis exercises TTY raw output; API uses multiplex frames.
-                    if identifier != format(2, "064x"):
+                    if identifier not in (format(2, "064x"), format(4, "064x")):
                         payload = struct.pack(">BxxxI", 1 if sequence % 2 else 2, len(payload)) + payload
                     self.chunk(payload)
                     record(self.server.root, phase="api-log-output", fullId=identifier, sequence=sequence, producedAtMs=now // 1_000_000)

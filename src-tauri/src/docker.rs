@@ -38,7 +38,7 @@ pub use details::ContainerDetails;
 pub use image_export::{ImageExportDestination, ImageExportOperation, ImageExportPreview};
 pub use mounts::MountInventory;
 pub use observation::{ObservationHold, ObservationRead, ObservationScope};
-pub use project_logs::{ProjectLogPage, ProjectLogQuery};
+pub use project_logs::{ProjectLogPage, ProjectLogQuery, StandaloneLogPage, StandaloneLogQuery};
 pub use stats::StatsSnapshot;
 pub use stream::{LogStreamChunk, LogStreamStarted};
 pub use terminal::{TerminalDescriptor, TerminalEvent, TerminalShell, TerminalSink};

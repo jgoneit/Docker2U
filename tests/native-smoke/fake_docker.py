@@ -15,6 +15,9 @@ _compose_spec.loader.exec_module(compose)
 _export_spec = importlib.util.spec_from_file_location("native_image_export", Path(__file__).with_name("image_export_fixture.py"))
 image_export = importlib.util.module_from_spec(_export_spec)
 _export_spec.loader.exec_module(image_export)
+_standalone_spec = importlib.util.spec_from_file_location("native_standalone", Path(__file__).with_name("standalone_fixture.py"))
+standalone = importlib.util.module_from_spec(_standalone_spec)
+_standalone_spec.loader.exec_module(standalone)
 
 LIMIT = 2 * 1024 * 1024
 END = b"\nNATIVE_SMOKE_END\n"
@@ -88,7 +91,9 @@ def run(root, arguments):
     if compose_result is not None:
         return compose_result
     compose_rows = compose.rows(root)
-    identifiers = [*IDS, *(row["Id"] for row in compose_rows)]
+    standalone_rows = standalone.rows(root)
+    baseline_ids = IDS[:2] if standalone.enabled(root) else IDS
+    identifiers = [*baseline_ids, *(row["Id"] for row in compose_rows + standalone_rows)]
     export_result = image_export.dispatch(root, args, identifiers, record, lambda: STOP_REQUESTED)
     if export_result is not None:
         return export_result
@@ -130,14 +135,18 @@ def run(root, arguments):
             print(json.dumps({"Id": identifier, "Project": row.get("ComposeProject", "native-smoke-project" if identifier in IDS[:2] else None), "WorkingDirectory": row.get("WorkingDirectory"), "ConfigFiles": row.get("ConfigFiles")}))
         record(root, phase="compose-provenance-inspect", fullIds=args[4:])
         return 0
-    if len(args) == 5 and args[:4] == ["container", "inspect", "--format", DETAILS_FORMAT] and args[4] in identifiers and args[4] not in IDS:
+    if len(args) == 5 and args[:4] == ["container", "inspect", "--format", DETAILS_FORMAT] and any(row["Id"] == args[4] for row in standalone_rows):
+        print(json.dumps(standalone.details(next(row for row in standalone_rows if row["Id"] == args[4]))))
+        record(root, phase="details-payload", fullId=args[4], exitCode=137, oomKilled=False, healthConfigured=True)
+        return 0
+    if len(args) == 5 and args[:4] == ["container", "inspect", "--format", DETAILS_FORMAT] and args[4] in identifiers and args[4] not in baseline_ids:
         row = next(row for row in compose_rows if row["Id"] == args[4])
         configured = row["ComposeService"] == "api"
         running = row["State"] == "running"
         print(json.dumps({"Id": row["Id"], "State": row["State"], "ExitCode": 0, "StartedAt": row["StartedAt"], "FinishedAt": "0001-01-01T00:00:00Z" if running else "2026-09-13T00:01:00Z", "OOMKilled": False, "RestartCount": 0, "HealthConfigured": configured, "Health": {"Status": row["Health"], "FailingStreak": 0, "Log": []} if configured and running else None, "NetworkMode": "bridge", "Ports": row["Ports"], "Networks": {row["ComposeProject"] + "_default": {"Aliases": [row["ComposeService"]], "IPAddress": "172.19.0.2", "GlobalIPv6Address": ""}}}))
         record(root, phase="details-payload", fullId=row["Id"], exitCode=0, oomKilled=False, healthConfigured=configured)
         return 0
-    if len(args) == 5 and args[:4] == ["container", "inspect", "--format", DETAILS_FORMAT] and args[4] in IDS:
+    if len(args) == 5 and args[:4] == ["container", "inspect", "--format", DETAILS_FORMAT] and args[4] in baseline_ids:
         identifier = args[4]
         record(root, phase="details-payload", fullId=identifier, exitCode=137, oomKilled=False, healthConfigured=True)
         print(json.dumps({"Id": identifier, "State": "running", "ExitCode": 137,
@@ -168,8 +177,8 @@ def run(root, arguments):
         for identifier in args[4:]:
             if identifier not in identifiers:
                 raise ValueError("fixture rejected an unknown container")
-            if identifier not in IDS:
-                print(json.dumps(next(row for row in compose_rows if row["Id"] == identifier)))
+            if identifier not in baseline_ids:
+                print(json.dumps(next(row for row in compose_rows + standalone_rows if row["Id"] == identifier)))
                 continue
             number = int(identifier, 16)
             print(json.dumps({"Id": identifier, "Name": "/native-smoke-" + str(number), "Image": "native-smoke:synthetic", "Created": "2026-09-06T00:00:00Z", "StartedAt": "2026-09-08T00:00:00Z", "Tty": number == 2, "State": "running", "Health": "healthy", "HealthConfigured": True, "Ports": None,

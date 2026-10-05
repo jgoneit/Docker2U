@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-retry-standalone-logs"
+description = "Enables the retry_standalone_logs command without any pre-configured scope."
+commands.allow = ["retry_standalone_logs"]
+
+[[permission]]
+identifier = "deny-retry-standalone-logs"
+description = "Denies the retry_standalone_logs command without any pre-configured scope."
+commands.deny = ["retry_standalone_logs"]

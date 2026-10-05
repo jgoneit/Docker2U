@@ -40,6 +40,11 @@ export interface ProjectLogPage {
   totalRows: number; offset: number; droppedRows: number; needsSelection: boolean; error: CoreError | null;
   retainedFrom: string | null; retainedTo: string | null; anchorLost?: boolean; coverageGaps?: number;
 }
+export interface StandaloneLogPage extends Omit<ProjectLogPage, 'project'> { project: null }
+export type RetainedLogPage = ProjectLogPage | StandaloneLogPage;
+export type LogScope = { kind: 'project'; name: string } | { kind: 'standalone' };
+export const logScopeKey = (scope: LogScope) => JSON.stringify(scope.kind === 'project' ? ['project', scope.name] : ['standalone']);
+export const logScopeProject = (scope: LogScope) => scope.kind === 'project' ? scope.name : null;
 export interface ProjectLogQuery {
   sourceIds: string[]; keyword: string; offset: number | null; limit: number; throughSequence: number | null; anchorRowId?: string | null;
   afterSequence?: number | null;
@@ -50,4 +55,9 @@ export const projectLogApi = {
   query: (sessionId: string, project: string, query: ProjectLogQuery) => invoke<ProjectLogPage>('query_project_logs', { sessionId, query: { project, ...query } }),
   stop: (sessionId: string) => invoke<void>('stop_project_logs', { sessionId }),
   retry: (sessionId: string) => invoke<ProjectLogPage>('retry_project_logs', { sessionId }),
+};
+export const standaloneLogApi = {
+  configure: (sessionId: string, handles: string[] | null) => invoke<StandaloneLogPage>('configure_standalone_logs', { sessionId, handles }),
+  query: (sessionId: string, query: ProjectLogQuery) => invoke<StandaloneLogPage>('query_standalone_logs', { sessionId, query }),
+  retry: (sessionId: string) => invoke<StandaloneLogPage>('retry_standalone_logs', { sessionId }),
 };

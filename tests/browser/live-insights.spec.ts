@@ -5,7 +5,7 @@ const worker = 'worker-상태확인-required';
 const standalone = 'scheduler-일시정지-paused';
 const words = {
   ko: {
-    project: '프로젝트', refresh: '새로고침', none: '프로젝트 없음', settings: '설정', details: '상세',
+    project: '프로젝트', refresh: '새로고침', none: '독립 컨테이너', settings: '설정', details: '상세',
     selectAll: '보이는 컨테이너 전체 선택', searchContainers: '컨테이너 검색',
     logs: '로그', connections: '접속 정보', diagnostics: '상태 진단', history: '이력',
     resources: '자원 사용량', pause: '일시정지', resume: '재개', resize: '탐색 영역 너비 조절',
@@ -13,7 +13,7 @@ const words = {
     clear: '로그 화면 비우기', copy: '표시된 로그 복사', load: '로그 조회', latest: '최신 로그로',
   },
   en: {
-    project: 'project', refresh: 'Refresh', none: 'No project', settings: 'Settings', details: 'details',
+    project: 'project', refresh: 'Refresh', none: 'Standalone containers', settings: 'Settings', details: 'details',
     selectAll: 'Select all visible containers', searchContainers: 'Search containers',
     logs: 'Logs', connections: 'Connections', diagnostics: 'Diagnostics', history: 'History',
     resources: 'Resource usage', pause: 'Pause', resume: 'Resume', resize: 'Resize navigation pane',

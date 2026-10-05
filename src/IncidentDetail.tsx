@@ -75,8 +75,8 @@ export function IncidentDetail({ review, onClose, onNavigate, currentAvailable }
     {state.resourceTruncated && <p className="observation-warning">{observation('resourceTruncated')}</p>}
     <h4>{t('logs')}</h4>
     {page && <div className="incident-log-meta"><span>{t('logCoverage')}: {page.retainedFrom && page.retainedTo ? <><time dateTime={page.retainedFrom}>{time(page.retainedFrom)}</time>–<time dateTime={page.retainedTo}>{time(page.retainedTo)}</time></> : t('unknownCoverage')}</span>{source && <span>{observation(source.status)}</span>}</div>}
-    {!!page?.droppedRows && <p className="observation-warning">{t('projectDropped', { count: page.droppedRows })}</p>}
-    {!!page?.coverageGaps && <p className="observation-warning">{t('projectGaps', { count: page.coverageGaps })}</p>}
+    {!!page?.droppedRows && <p className="observation-warning">{t(event.composeProject === null ? 'standaloneDropped' : 'projectDropped', { count: page.droppedRows })}</p>}
+    {!!page?.coverageGaps && <p className="observation-warning">{t(event.composeProject === null ? 'standaloneGaps' : 'projectGaps', { count: page.coverageGaps })}</p>}
     {page?.anchorLost && <p className="observation-warning">{observation('anchorLost')}</p>}
     {page && !source && <p className="incident-hint">{t('sourceMissing')}</p>}
     {source && !source.selected && <p className="incident-hint">{t('sourceNotSelected')}</p>}
