@@ -1,0 +1,115 @@
+name: Release package
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'index.html'
+      - 'vite.config.ts'
+      - 'tsconfig.json'
+      - 'rust-toolchain.toml'
+      - 'scripts/with-toolchain.mjs'
+      - 'scripts/check-production-fixtures.mjs'
+      - 'assets/**'
+      - 'src-tauri/**'
+      - 'src/**'
+      - 'docs/releases/**'
+      - 'scripts/release-metadata.mjs'
+      - '.github/workflows/release-candidate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-package-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: macOS DMG and startup
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '26.5.1'
+          package-manager-cache: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          run_install: false
+          cache: true
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+            src-tauri/target
+          key: release-macos15-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}
+      - name: Build the prerelease app and DMG
+        env:
+          APPLE_SIGNING_IDENTITY: '-'
+        run: |
+          test "$(uname -m)" = arm64
+          pnpm install --frozen-lockfile
+          pnpm native:build:dmg --ci -- --locked
+      - name: Mount, copy and start the packaged app
+        run: |
+          set -euo pipefail
+          version=$(node -p "JSON.parse(require('fs').readFileSync('package.json')).version")
+          dmg="src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/Docker2U_${version}_aarch64.dmg"
+          mkdir -p "$RUNNER_TEMP/package-output" "$RUNNER_TEMP/package-mount" "$RUNNER_TEMP/package-install"
+          hdiutil verify "$dmg"
+          hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$RUNNER_TEMP/package-mount"
+          trap 'hdiutil detach "$RUNNER_TEMP/package-mount" || true' EXIT
+          test -L "$RUNNER_TEMP/package-mount/Applications"
+          ditto "$RUNNER_TEMP/package-mount/Docker2U.app" "$RUNNER_TEMP/package-install/Docker2U.app"
+          app="$RUNNER_TEMP/package-install/Docker2U.app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$version"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = io.github.jgoneit.docker2u
+          lipo "$app/Contents/MacOS/docker2u" -verify_arch arm64
+          codesign --verify --deep --strict "$app"
+          codesign -dv --verbose=4 "$app" 2> "$RUNNER_TEMP/package-output/signature.txt"
+          "$app/Contents/MacOS/docker2u" > "$RUNNER_TEMP/package-output/startup.log" 2>&1 &
+          app_pid=$!
+          sleep 8
+          kill -0 "$app_pid"
+          screencapture -x "$RUNNER_TEMP/package-output/startup.png" || true
+          kill "$app_pid"
+          wait "$app_pid" || true
+          hdiutil detach "$RUNNER_TEMP/package-mount"
+          trap - EXIT
+          cp "$dmg" "$RUNNER_TEMP/package-output/"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/package-output/Docker2U.app.zip"
+          git diff --exit-code -- package.json pnpm-lock.yaml src-tauri/Cargo.lock
+          node <<'NODE'
+          const fs = require('fs'), cp = require('child_process'), crypto = require('crypto');
+          const run = (command, args) => cp.execFileSync(command, args, { encoding: 'utf8' }).trim();
+          const git = (...args) => run('git', args);
+          const sha = path => crypto.createHash('sha256').update(fs.readFileSync(path)).digest('hex');
+          const version = JSON.parse(fs.readFileSync('package.json')).version;
+          const name = `Docker2U_${version}_aarch64.dmg`;
+          fs.writeFileSync(process.env.RUNNER_TEMP + '/package-output/CANDIDATE.json', JSON.stringify({
+            sourceCommit: git('rev-parse', 'HEAD'), sourceTree: git('rev-parse', 'HEAD^{tree}'), version,
+            runUrl: process.env.GITHUB_SERVER_URL + '/' + process.env.GITHUB_REPOSITORY + '/actions/runs/' + process.env.GITHUB_RUN_ID,
+            toolchain: { node: process.version, pnpm: run('pnpm', ['--version']), rustc: run('rustc', ['--version']), cargo: run('cargo', ['--version']), macos: run('sw_vers', ['-productVersion']), xcode: run('xcodebuild', ['-version']) },
+            artifacts: { dmg: { name, sha256: sha(process.env.RUNNER_TEMP + '/package-output/' + name) }, binary: { sha256: sha(process.env.RUNNER_TEMP + '/package-install/Docker2U.app/Contents/MacOS/docker2u') } },
+            verification: { dmgVerified: true, mountedReadOnly: true, copiedFromDmg: true, arm64: true, signatureVerified: true, startupAliveSeconds: 8, realDockerEngine: false, gatekeeper: false, notarized: false }
+          }, null, 2) + '\n');
+          NODE
+          cd "$RUNNER_TEMP/package-output"
+          shasum -a 256 *.dmg Docker2U.app.zip > CANDIDATE-SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: macos-release-candidate-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/package-output/
+          if-no-files-found: warn
+          retention-days: 14
